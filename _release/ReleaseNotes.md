@@ -50,9 +50,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'ht
 
 - 安装位置校验改用 `%%~fp` 归一化：`E:/x` 这种写法、多余结尾斜杠都能正确处理，盘根（`E:\`）会被拦住；
 - 回归测试：`e2e_market.py` 从 59 项加到 **92 项**（线路增删停用、地址校验、配置损坏兜底、
-  环境变量优先级、HTTP 接口），新增 `dashboard/e2e_ai_install.py` **59 项**
+  环境变量优先级、HTTP 接口），新增 `dashboard/e2e_ai_install.py` **60 项**
   （一页纸内容、install.json 一致性、ps1 编码/语法/参数、bat 无人值守钩子、
-  用假安装器跑通成功/失败/缺产物/盘根四种结局）。全套 **11 套 526 项全绿**。
+  用假安装器跑通成功/失败/缺产物/盘根四种结局）。全套 **11 套 527 项全绿**。
 
 ### 升级
 

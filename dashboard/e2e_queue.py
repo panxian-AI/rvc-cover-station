@@ -17,6 +17,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ["RVC_PANEL_PORT"] = "8895"
 os.environ["RVC_NO_AUTOPUMP"] = "1"   # 测试实例不要自动跑真任务
+# 高级设置用临时文件：这个用例断言「同时只跑一单」，不能被站长调大的并发数干扰
+os.environ.setdefault("RVC_SETTINGS_PATH",
+                      os.path.join(os.environ.get("TEMP") or ".", "rvc_queue_settings.json"))
 
 import panel   # noqa: E402
 import guest   # noqa: E402

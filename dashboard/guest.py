@@ -24,6 +24,7 @@ import traceback
 
 import cover as cover_mod
 import captcha as captcha_mod
+import settings as settings_mod    # 高级设置（同时制作数量 / 翻唱参数）
 
 try:
     import tts as tts_mod
@@ -45,7 +46,8 @@ STATE_REJECTED = "rejected"
 STATE_ERROR = "error"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(HERE, "guest_db.json")
+# 测试实例用 RVC_GUEST_DB 指到临时库，避免和正在跑的面板抢同一份 guest_db.json
+DB_PATH = os.environ.get("RVC_GUEST_DB") or os.path.join(HERE, "guest_db.json")
 MAX_VISITS = 400
 MAX_REQ = 300
 MAX_PENDING_PER_GID = 3      # 同一访客同时待批的申请上限
@@ -848,8 +850,11 @@ def queue_list():
                         "model": os.path.basename(str(r.get("model") or "")),
                         "voice": r.get("voice", "")})
         running = [r for r in _db["requests"] if r.get("state") == STATE_RUNNING]
+        titles = [r.get("title") or "" for r in running]
         return {"ok": True, "queue": out, "total": len(out),
-                "running": running[0].get("title") if running else "",
+                "running": titles[0] if titles else "",
+                "running_all": titles, "running_count": len(titles),
+                "cap": max(1, settings_mod.concurrency()),
                 "cooldown": max(0, int(_cooldown_until - time.time()))}
 
 
@@ -917,24 +922,37 @@ def _launch_locked(r) -> dict:
 
 
 def pump(force=False) -> dict:
-    """推进队列：没人在做就取队首开跑。返回 {ok, started, msg, watch}。"""
+    """推进队列：有空位就按顺序开跑，最多同时做「高级设置」里的同时制作数量（默认 1）。
+
+    返回 {ok, started, started_all, msg, watch, watch_list, reuse}
+        started     这次开的第一单（前端/老代码只认这一个，保持兼容）
+        started_all 这次开的全部单号
+        watch_list  每一单的监视线程参数，调用方要逐条起线程
+    """
     global _cooldown_until
     with _lock:
         _prune_zombies()      # 面板重启后残留的 running 先清掉，否则队列永远推不动
         _queue_alive()
+        cap = max(1, settings_mod.concurrency())
         running = [x for x in _db["requests"] if x.get("state") == STATE_RUNNING]
-        if running:
-            return {"ok": True, "started": None, "msg": "有一单在做，队列继续等"}
+        if len(running) >= cap:
+            msg = ("有 %d 单在做（同时制作上限 %d），队列继续等" % (len(running), cap)
+                   if cap > 1 else "有一单在做，队列继续等")
+            return {"ok": True, "started": None, "started_all": [], "watch_list": [],
+                    "msg": msg}
         if not _db["queue"]:
             _save()
-            return {"ok": True, "started": None, "msg": "队列是空的"}
+            return {"ok": True, "started": None, "started_all": [], "watch_list": [],
+                    "msg": "队列是空的"}
         if not force and time.time() < _cooldown_until:
-            return {"ok": False, "started": None,
+            return {"ok": False, "started": None, "started_all": [], "watch_list": [],
                     "msg": "刚失败过，%d 秒后再自动往下推（也可以点「立即开始下一单」）"
                            % max(0, int(_cooldown_until - time.time()))}
-        # 一次推进一单；队首无效（被删/取消）就跳过继续看下一个
+
+        started, watches, first_reuse, first_msg = [], [], False, ""
+        # 有空位就继续取下一单；队首无效（被删/取消）就跳过继续看下一个
         for _ in range(len(_db["queue"]) + 1):
-            if not _db["queue"]:
+            if not _db["queue"] or len(running) + len(started) >= cap:
                 break
             rid = _db["queue"].pop(0)
             r = _find(rid)
@@ -945,12 +963,40 @@ def pump(force=False) -> dict:
                 r.update(state=STATE_ERROR, error=str(res.get("msg"))[:200])
                 _cooldown_until = time.time() + FAIL_COOLDOWN
                 _save()
-                return {"ok": False, "started": rid, "msg": res.get("msg")}
+                if not started:
+                    return {"ok": False, "started": rid, "started_all": [],
+                            "watch_list": [], "msg": res.get("msg")}
+                return {"ok": True, "started": started[0], "started_all": started,
+                        "watch_list": watches, "watch": watches[0] if len(watches) == 1 else None,
+                        "reuse": first_reuse,
+                        "msg": "已开始 %d 单；后面一单启动失败：%s"
+                               % (len(started), res.get("msg"))}
+            started.append(rid)
+            if res.get("watch"):
+                watches.append(res["watch"])
+            if len(started) == 1:
+                first_reuse = bool(res.get("reuse"))
+                first_msg = res.get("msg") or ""
             _save()
-            return {"ok": True, "started": rid, "msg": res.get("msg") or "开始制作",
-                    "watch": res.get("watch"), "reuse": bool(res.get("reuse"))}
-        _save()
-        return {"ok": True, "started": None, "msg": "队列里没有可做的单"}
+        if not started:
+            _save()
+            return {"ok": True, "started": None, "started_all": [], "watch_list": [],
+                    "msg": "队列里没有可做的单"}
+        msg = ("开始制作 %d 单（同时进行）" % len(started)) if len(started) > 1 \
+            else (first_msg or "开始制作")
+        return {"ok": True, "started": started[0], "started_all": started,
+                "watch_list": watches, "watch": watches[0] if len(watches) == 1 else None,
+                "reuse": first_reuse, "msg": msg}
+
+
+def _start_watchers(res: dict) -> None:
+    """把这一轮开的每一单都接上监视线程（并发模式下一轮可能开好几单）。"""
+    ws = res.get("watch_list")
+    if ws is None:
+        w = res.get("watch")
+        ws = [w] if w else []
+    for w in ws:
+        threading.Thread(target=_watch, args=w, daemon=True).start()
 
 
 def _pump_async(force=False):
@@ -958,9 +1004,7 @@ def _pump_async(force=False):
     def run():
         try:
             res = pump(force=force)
-            w = res.get("watch")
-            if w:
-                threading.Thread(target=_watch, args=w, daemon=True).start()
+            _start_watchers(res)
         except Exception:
             traceback.print_exc()
     threading.Thread(target=run, daemon=True).start()
@@ -969,9 +1013,9 @@ def _pump_async(force=False):
 def pump_now(force=True) -> dict:
     """同步推一次队列并接上监视线程，返回值可以直接丢给前端。"""
     res = pump(force=force)
-    w = res.pop("watch", None)
-    if w:
-        threading.Thread(target=_watch, args=w, daemon=True).start()
+    _start_watchers(res)        # 先起监视，再把内部字段从返回值里摘掉
+    res.pop("watch_list", None)
+    res.pop("watch", None)
     if res.get("started"):
         r = _find(res["started"]) or {}
         res["state"] = r.get("state")

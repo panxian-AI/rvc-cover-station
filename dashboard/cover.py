@@ -35,6 +35,7 @@ import uuid
 # ---------------- 常量 ----------------
 # 路径由 paths.py 按本文件位置推导，搬盘/改盘符都不用改代码
 from paths import API_DIR, COVERS_DIR, RVC_ROOT  # noqa: E402
+import settings as settings_mod                 # noqa: E402 高级设置（并发数 + 推理参数）
 
 NCM_BASE = "http://127.0.0.1:3002"
 API_BASE = "http://127.0.0.1:3333"
@@ -60,6 +61,37 @@ _MAX_JOBS = 40
 
 # 去重台账：复用键 -> 正在跑的 job id（同一首同一声线只跑一次）
 _inflight: dict[str, str] = {}
+
+# ---------------- 并发闸 ----------------
+# 站长在控制台「高级设置」里调「同时制作数量」，这里每次取槽位都现读设置，
+# 所以在跑的单还没结束前把上限调大，也能立刻多放行几单。
+_slot_lock = threading.Lock()
+_slots_used = 0
+
+
+def slots_used() -> int:
+    with _slot_lock:
+        return _slots_used
+
+
+def _acquire_slot(jid: str) -> None:
+    """占一个制作位；满了就原地等（线程阻塞在 sleep 上，不占锁）。"""
+    global _slots_used
+    while True:
+        cap = max(1, settings_mod.concurrency())
+        with _slot_lock:
+            if _slots_used < cap:
+                _slots_used += 1
+                return
+            busy = _slots_used
+        _update(jid, stage="排队中（已有 %d 单在做，上限 %d，等一个空位）…" % (busy, cap))
+        time.sleep(1.0)
+
+
+def _release_slot() -> None:
+    global _slots_used
+    with _slot_lock:
+        _slots_used = max(0, _slots_used - 1)
 
 
 def _new_job(**kw) -> str:
@@ -548,12 +580,19 @@ def start_cover(payload: dict) -> dict:
     t = threading.Thread(target=_run_cover, args=(jid, song_id, title, artist, model,
                                                  key_shift, acapella, key), daemon=True)
     t.start()
-    return {"ok": True, "job": jid, "msg": "已开始，约 2~4 分钟"}
+    cap = max(1, settings_mod.concurrency())
+    waiting = slots_used() >= cap
+    return {"ok": True, "job": jid, "waiting": waiting,
+            "msg": ("已排队：同时制作已达上限 %d 单，前面做完就轮到这首" % cap) if waiting
+                   else "已开始，约 2~4 分钟"}
 
 
 def _run_cover(jid, song_id, title, artist, model, key_shift, acapella, key=None):
-    _update(jid, state="running", started=time.time(), stage="连接后端…")
+    # 参数在「这一单真正开跑前」读一次：站长改设置对还没开始的任务立刻生效
+    params = settings_mod.gen_params()
+    _acquire_slot(jid)          # 并发上限：满了在这里等空位（状态仍是排队中）
     try:
+        _update(jid, state="running", started=time.time(), stage="连接后端…")
         # gradio_client 较大，只在真正用时导入，避免拖慢面板启动
         from gradio_client import Client
 
@@ -563,14 +602,17 @@ def _run_cover(jid, song_id, title, artist, model, key_shift, acapella, key=None
         _update(jid, stage="派发任务（下载 + 人声分离 + 推理）…")
         c = Client(API_BASE + "/", verbose=False)
         result = c.predict(
-            song_name_src=song_id, key_shift=key_shift, vocal_vol=0, inst_vol=0,
+            song_name_src=song_id, key_shift=key_shift,
+            vocal_vol=params["vocal_vol"], inst_vol=params["inst_vol"],
             model_dropdown=model,
-            reverb_intensity=4, delay_intensity=0,
-            uvr5_agg=10, uvr5_tta=False, uvr5_postprocess=False,
+            reverb_intensity=params["reverb_intensity"],
+            delay_intensity=params["delay_intensity"],
+            uvr5_agg=params["uvr5_agg"], uvr5_tta=False, uvr5_postprocess=False,
             uvr5_window_size=512, uvr5_high_end_process="mirroring",
             msst_batch_size=1, msst_num_overlap=4, msst_normalize=False,
             vocal_postprocess=False, shift_accompaniment=True,
-            f0_method="rmvpe", index_rate="0.75", filter_radius=3,
+            f0_method=params["f0_method"], index_rate=str(params["index_rate"]),
+            filter_radius=params["filter_radius"],
             acapella=acapella,
             api_name="/convert",
         )
@@ -587,6 +629,7 @@ def _run_cover(jid, song_id, title, artist, model, key_shift, acapella, key=None
                 error="%s: %s" % (type(e).__name__, e))
         traceback.print_exc()
     finally:
+        _release_slot()         # 不管成败都还位，否则上限会被「漏算」卡死
         # 跑完（不管成败）就把台账摘掉，失败的单允许下次重跑
         if key:
             with _lock:

@@ -1,6 +1,7 @@
 # ============ 凭据 / 私人数据（绝不能提交） ============
 ncmapi/ncm_cookie.txt
 dashboard/guest_db.json
+dashboard/advanced_settings.json
 dashboard/auth.json
 dashboard/auth.py.disabled
 dashboard/security.log

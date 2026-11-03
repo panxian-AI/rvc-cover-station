@@ -154,6 +154,17 @@ summary:hover{color:#dce9ff}
   </div>
 
   <div class="card">
+    <h2>高级设置 <span id="advSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="advBox"><div class="empty">读取中…</div></div>
+    <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center">
+      <button class="green" onclick="saveAdv()">💾 保存设置</button>
+      <button class="gray" onclick="resetAdv()">恢复默认</button>
+      <span style="color:#75869f;font-size:11.5px">改完立即生效：同时制作数量马上下一次推进就按新值，翻唱参数对还没开跑的单生效</span>
+    </div>
+    <div class="hint">「同时制作数量」调大可以让多单并行，但每路都分显卡算力（单首会更慢），显存小于 8G 建议保持 1~2。其余是成品的默认翻唱参数，访客自己不用管。</div>
+  </div>
+
+  <div class="card">
     <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="reqs"><div class="empty">读取中…</div></div>
     <details id="visitBox">
@@ -211,9 +222,13 @@ async function loadQueue(){
   catch(e){ $('#queue').innerHTML = '<div class="empty">读取失败</div>'; return; }
   if(!d.ok){ $('#queue').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
   const n = d.total || 0;
-  $('#qSum').textContent = (n ? ('· 排队 ' + n + ' 单') : '') + (d.running ? ' · 正在做' : '');
-  let html = `<div class="qbar">正在做：<b>${d.running ? esc(d.running) : '（空闲）'}</b>
-    · 排队 ${n} 单${d.cooldown ? `　<span style="color:#f0c674">冷却 ${d.cooldown}s</span>` : ''}
+  const runTitles = (d.running_all && d.running_all.length) ? d.running_all
+                                                             : (d.running ? [d.running] : []);
+  const cap = d.cap || 1;
+  $('#qSum').textContent = (n ? ('· 排队 ' + n + ' 单') : '')
+    + (runTitles.length ? (' · 正在做 ' + runTitles.length + '/' + cap + ' 单') : '');
+  let html = `<div class="qbar">正在做：<b>${runTitles.length ? runTitles.map(esc).join(' / ') : '（空闲）'}</b>
+    · 排队 ${n} 单 · 同时上限 ${cap} 单${d.cooldown ? `　<span style="color:#f0c674">冷却 ${d.cooldown}s</span>` : ''}
     <button class="gray mini" style="margin-left:auto" onclick="pumpNow()">▶ 立即开始下一单</button></div>`;
   if(!n){
     html += '<div class="empty">队列是空的 · 批准后会自动排到这里</div>';
@@ -478,7 +493,64 @@ async function importInstall(i){
   }catch(e){ toast('请求失败：' + e.message); }
 }
 
-function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); }
+/* ---------- 高级设置 ---------- */
+let ADV = null;
+function advField(f){
+  const cur = (ADV.values && ADV.values[f.key] != null) ? ADV.values[f.key] : f.value;
+  const label = '<div style="flex:1;min-width:160px"><b style="font-size:12.5px">' + esc(f.label) + '</b>'
+    + '<div style="color:#75869f;font-size:11.5px;line-height:1.45;margin-top:2px">' + esc(f.hint) + '</div></div>';
+  let input;
+  if(f.type === 'enum'){
+    input = '<select data-k="' + esc(f.key) + '" style="width:110px">'
+      + f.choices.map(c => '<option value="' + esc(c) + '"' + (c === cur ? ' selected' : '') + '>'
+                           + esc(c) + '</option>').join('') + '</select>';
+  }else{
+    const step = (f.step != null) ? f.step : 1;
+    input = '<input type="number" data-k="' + esc(f.key) + '" value="' + esc(String(cur)) + '"'
+      + ' min="' + f.min + '" max="' + f.max + '" step="' + step + '" style="width:92px">';
+  }
+  return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #1d2738">'
+       + label + input + '</div>';
+}
+function advRender(){
+  const box = $('#advBox');
+  if(!ADV){ box.innerHTML = '<div class="empty">还没读到设置</div>'; return; }
+  const v = ADV.values || {};
+  $('#advSum').textContent = '· 同时制作 ' + (v.max_parallel || 1) + ' 单 · '
+    + (v.f0_method || 'rmvpe') + ' · 检索 ' + (v.index_rate != null ? v.index_rate : '');
+  box.innerHTML = ADV.fields.map(advField).join('');
+}
+async function loadAdv(){
+  try{
+    const d = await (await fetch('/api/admin/settings', {cache:'no-store'})).json();
+    if(!d.ok){ $('#advBox').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
+    ADV = d; advRender();
+  }catch(e){ $('#advBox').innerHTML = '<div class="empty">读取失败</div>'; }
+}
+async function advPost(body){
+  const r = await fetch('/api/admin/settings', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})});
+  return await r.json();
+}
+async function saveAdv(){
+  const values = {};
+  document.querySelectorAll('#advBox [data-k]').forEach(el => { values[el.dataset.k] = el.value; });
+  try{
+    const d = await advPost({values});
+    toast(d.msg || (d.ok ? '已保存' : '保存失败'));
+    if(d.ok){ if(d.values) ADV.values = d.values; advRender(); refresh(); }
+  }catch(e){ toast('请求失败：' + e.message); }
+}
+async function resetAdv(){
+  if(!confirm('把所有高级设置恢复成默认值？（同时制作数量会回到 1）')) return;
+  try{
+    const d = await advPost({act:'reset'});
+    toast(d.msg || (d.ok ? '已恢复默认' : '恢复失败'));
+    if(d.ok){ if(d.values) ADV.values = d.values; advRender(); refresh(); }
+  }catch(e){ toast('请求失败：' + e.message); }
+}
+
+function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadAdv(); }
 refresh(); setInterval(refresh, 8000);
 </script>
 </body>

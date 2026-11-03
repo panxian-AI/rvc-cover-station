@@ -48,6 +48,13 @@ except Exception as _e:
     model_import = None
     print("⚠️ 模型导入未加载（model_import.py 导入失败）: %s" % _e)
 
+# 高级设置（同时制作数量 + 翻唱参数），控制台读写
+try:
+    import settings as settings_mod
+except Exception as _e:
+    settings_mod = None
+    print("⚠️ 高级设置未加载（settings.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -868,6 +875,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 code, obj = 500, {"ok": False, "msg": str(e)}
             self._send(code, json.dumps(obj, ensure_ascii=False))
+        elif settings_mod and path == "/api/admin/settings":
+            # 必须排在 guest 的 /api/admin/ 通配之前，否则会被它截胡成 404
+            try:
+                self._send(200, json.dumps(settings_mod.ui(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({"ok": False, "msg": str(e)}, ensure_ascii=False))
         elif guest_mod and path.startswith("/api/admin/"):
             code, obj = guest_mod.handle_get(path, q, gid, True, ip)
             self._send(code, json.dumps(obj, ensure_ascii=False))
@@ -963,6 +976,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 code, obj = 500, {"ok": False, "msg": str(e)}
             self._send(code, json.dumps(obj, ensure_ascii=False))
+            return
+        # 高级设置：读 / 存 / 恢复默认（必须排在 guest 的 /api/admin/ 通配之前）
+        if settings_mod and path == "/api/admin/settings":
+            act = str(body.get("act") or "save").lower()
+            try:
+                if act == "reset":
+                    obj = settings_mod.reset()
+                else:
+                    vals = body.get("values")
+                    if not isinstance(vals, dict):
+                        vals = {k: v for k, v in body.items() if k in settings_mod._BY_KEY}
+                    obj = settings_mod.save(vals)
+            except Exception as e:
+                obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+            self._send(200 if obj.get("ok") else 400,
+                       json.dumps(obj, ensure_ascii=False))
             return
         # 管理员：审批
         if guest_mod and path.startswith("/api/admin/"):

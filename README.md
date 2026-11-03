@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.1.3-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v1.1.4-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)

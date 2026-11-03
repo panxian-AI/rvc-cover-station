@@ -1,0 +1,10 @@
+# 批处理/脚本按原样存储（不做换行转换）
+#
+# 为什么：仓库开了 core.autocrlf，默认会把 .bat 的 CRLF 归一成 LF 提交。
+# LF 的批处理在 cmd 里能跑一部分，但 goto 标签扫描、括号块、中文输出都会出问题
+# （实测报 "'AI' 不是内部或外部命令"）。而 AI 安装入口是从 raw.githubusercontent.com
+# 直接下 一键安装.bat 的，拿到 LF 版本就装不动。
+*.bat -text
+*.cmd -text
+*.ps1 -text
+*.zip binary

@@ -71,6 +71,132 @@ SEC_LOG = os.path.join(HERE, "security.log")
 _sec_lock = threading.Lock()
 _sec_last = {"ip": None, "t": 0.0}
 
+# ---------------- 公网暴露面（fail-closed） ----------------
+# 公网（隧道）能碰到的**只有**下面这些路径，其余一律当不存在处理并记一次探测。
+# 为什么用白名单而不是黑名单：以后再加管理接口/调试接口时，忘了加保护也不会
+# 自动暴露到隧道外面 —— 新路由默认是「公网不可见」。
+PUBLIC_GET_EXACT = {"/", "/index.html", "/guest", "/console", "/favicon.ico",
+                     "/admin", "/login", "/logout"}   # 后三个只做 302 回访客页
+PUBLIC_GET_PREFIX = ("/api/guest/",)
+PUBLIC_POST_EXACT = {"/api/guest/request", "/api/guest/wl_apply"}
+
+# 扫描/越权探测：同一 IP 10 分钟内碰 20 次非公开路径 → 封 30 分钟。
+# 隧道地址一旦被扫到，全世界的小爬虫都会来试 /admin、/.env、/api/admin/...；
+# 光回 403 太客气了（还会白烧 CPU），直接断一段时间。
+PROBE_WINDOW = 600
+PROBE_LIMIT = 20
+PROBE_BAN = 1800
+_probe = {}                       # ip -> [时间戳]
+_ban = {}                         # ip -> 解封时间戳
+_probe_lock = threading.Lock()
+_probe_stat = {"total": 0}
+_probe_recent = []                # [(时间戳, ip, 路径)]，最近 30 条，给控制台看
+
+# 公网访问总开关：被刷爆 / 不想让人用了，控制台一键暂停，访客只看到维护页。
+PUBLIC_STATE = (os.environ.get("RVC_PUBLIC_STATE")
+                or os.path.join(HERE, "public_access.json"))
+_pub_lock = threading.Lock()
+_pub_cache = {"v": None}
+
+
+def public_state():
+    """公网访问开关的完整状态（给控制台看）。"""
+    with _pub_lock:
+        if _pub_cache["v"] is None:
+            st = {"paused": False, "at": 0, "note": ""}
+            try:
+                with open(PUBLIC_STATE, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict):
+                    st = {"paused": bool(d.get("paused")), "at": float(d.get("at") or 0),
+                          "note": str(d.get("note") or "")[:120]}
+            except Exception:
+                pass
+            _pub_cache["v"] = st
+        return dict(_pub_cache["v"])
+
+
+def public_paused():
+    """公网访客是否被暂停（本机控制台不受影响）。注意返回 bool。"""
+    return bool(public_state().get("paused"))
+
+
+def set_public_paused(flag, note=""):
+    st = {"paused": bool(flag), "at": time.time(), "note": str(note or "")[:120]}
+    with _pub_lock:
+        try:
+            tmp = PUBLIC_STATE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(st, f, ensure_ascii=False)
+            os.replace(tmp, PUBLIC_STATE)
+        except OSError as e:
+            return {"ok": False, "msg": "保存失败：%s" % e}
+        _pub_cache["v"] = st
+    sec_log("公网访问%s（站长操作）" % ("已暂停" if flag else "已恢复"))
+    return {"ok": True, "paused": st["paused"],
+            "msg": "已暂停公网访问：访客打开只会看到维护提示，本机控制台不受影响"
+                   if flag else "已恢复公网访问"}
+
+
+def _ban_left(ip):
+    if not ip:
+        return 0
+    with _probe_lock:
+        until = _ban.get(ip) or 0
+        left = until - time.time()
+        if left <= 0:
+            _ban.pop(ip, None)
+            return 0
+        return int(left)
+
+
+def _probe_hit(ip, path):
+    """记一次「公网碰了不该碰的路径」。返回 (是否已封, 封禁剩余秒数)。"""
+    if not ip:
+        return False, 0
+    now = time.time()
+    with _probe_lock:
+        _probe_stat["total"] += 1
+        _probe_recent.append((now, ip, str(path or "")[:80]))
+        del _probe_recent[:-30]
+        hits = [t for t in _probe.get(ip, []) if now - t < PROBE_WINDOW]
+        hits.append(now)
+        _probe[ip] = hits
+        if len(_probe) > 5000:
+            for k in list(_probe)[:2500]:
+                _probe.pop(k, None)
+        if len(hits) >= PROBE_LIMIT:
+            _ban[ip] = now + PROBE_BAN
+            _probe[ip] = []
+            banned = True
+        else:
+            banned = _ban.get(ip, 0) > now
+        left = int(max(0, _ban.get(ip, 0) - now))
+    if banned:
+        sec_log("公网探测触发封禁 ip=%s path=%s 封 %d 分钟" % (ip, path, PROBE_BAN // 60), ip="")
+    return banned, left
+
+
+def security_view():
+    """控制台「安全」卡片的数据。"""
+    now = time.time()
+    with _probe_lock:
+        banned = [{"ip": k, "left": int(v - now)}
+                  for k, v in _ban.items() if v > now]
+        banned.sort(key=lambda x: -x["left"])
+        recent = [{"t": time.strftime("%H:%M:%S", time.localtime(t)), "ip": i,
+                   "path": p} for (t, i, p) in reversed(_probe_recent[-12:])]
+        total = _probe_stat["total"]
+        tracked = len(_probe)
+    st = public_state()
+    return {"ok": True, "paused": st["paused"], "paused_at": st["at"], "note": st["note"],
+            "banned": banned[:20], "banned_count": len(banned),
+            "probe_total": total, "tracked": tracked, "recent": recent,
+            "public_paths": sorted(PUBLIC_GET_EXACT - {"/favicon.ico"}),
+            "limits": {"probe_window": PROBE_WINDOW, "probe_limit": PROBE_LIMIT,
+                       "ban_minutes": PROBE_BAN // 60}}
+
+
 
 def sec_log(line, ip=""):
     """追加一行安全日志；文件超过 512KB 就只留后半段，避免被刷爆磁盘。
@@ -751,14 +877,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return v.split(",")[0].strip() or "0.0.0.0", True
         return peer or "0.0.0.0", False
 
+    def _host_ok(self):
+        """Host 头必须是本机名/回环/本机网卡 IP。
+
+        为什么查这个：防 DNS rebinding —— 恶意站点把域名解析到 127.0.0.1，
+        浏览器发来的请求 peer 是回环、又没有转发头，不查 Host 的话会被当成站长，
+        网页里的 JS 就能读管理接口、点「一键更新」。隧道域名不在白名单里，
+        但它本来就带转发头、走不到本机判定。
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return False
+        if host.startswith("["):
+            base = host.split("]")[0] + "]"
+            rest = host[len(base):]
+            port = rest[1:] if rest.startswith(":") else ""
+        else:
+            base, _, port = host.partition(":")
+        if port and not port.isdigit():
+            return False
+        if base in ("127.0.0.1", "localhost", "[::1]", "::1"):
+            return True
+        try:
+            for x in lan_ips():
+                if base and base == str(x.get("ip") or "").lower():
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _is_local(self):
-        """是否本机直连：回环地址，且**没有**任何转发头（不是走隧道进来的）。
+        """是否本机直连：回环地址、**没有**任何转发头、且 Host 是本机地址。
 
         cloudflared 连本地时来源也是 127.0.0.1，所以必须同时看有没有转发头，
-        否则公网来客会被误判成站长。
+        否则公网来客会被误判成站长。Host 校验再加一道，防 DNS rebinding。
         """
         ip, proxied = self._client()
-        return (not proxied) and ip in ("127.0.0.1", "::1")
+        return (not proxied) and ip in ("127.0.0.1", "::1") and self._host_ok()
 
     def _local_only(self, as_json=True):
         """True=放行；False=已回 403。
@@ -777,6 +932,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._send(403, MSG_LOCAL_ONLY, "text/plain; charset=utf-8")
         return False
+
+    def _maintenance(self, as_json=False):
+        """公网访问被站长暂停时的统一响应（本机控制台不受影响）。"""
+        if as_json:
+            self._send(503, json.dumps({
+                "ok": False, "paused": True,
+                "msg": "站长暂时关闭了公网访问，请稍后再来"}, ensure_ascii=False))
+            return
+        html = ("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                "<title>维护中</title><style>body{background:#0f1420;color:#e8eefc;"
+                "font-family:-apple-system,'Microsoft YaHei',sans-serif;display:flex;"
+                "align-items:center;justify-content:center;height:100vh;margin:0;padding:20px}"
+                ".b{background:#182031;border:1px solid #2a3550;border-radius:16px;"
+                "padding:26px 28px;max-width:420px;text-align:center;line-height:1.8}"
+                "h1{font-size:17px;margin:0 0 8px}p{margin:0;color:#9fb0cc;font-size:13px}"
+                "</style></head><body><div class=\"b\"><h1>🛠 暂时关闭中</h1>"
+                "<p>站长暂停了公网访问，稍后再来试试。</p></div></body></html>")
+        self._send(503, html, "text/html; charset=utf-8")
 
     def _csrf_ok(self):
         """跨站请求防护：带了 Origin 就必须和本站同源。
@@ -800,6 +974,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(parsed.query)
         ip, proxied = self._client()
         local = self._is_local()
+
+        # ---- 公网第一道闸（fail-closed）：封禁 → 暂停 → 路径白名单 ----
+        if not local:
+            left = _ban_left(ip)
+            if left:
+                self._send(403, json.dumps({
+                    "ok": False, "msg": "这个网络访问过于频繁，已被临时限制（%d 分钟后自动解除）"
+                                        % max(1, left // 60)}, ensure_ascii=False))
+                return
+            if public_paused():
+                self._maintenance(as_json=path.startswith("/api/"))
+                return
+            if not (path in PUBLIC_GET_EXACT or path.startswith(PUBLIC_GET_PREFIX)):
+                # 既不是公开路径 → 记一次探测，再按「管理功能只在本机」拒掉
+                _probe_hit(ip, path)
+                self._local_only(as_json=path.startswith("/api/"))
+                return
+            # 明确拒绝路径穿越/危险字符（正常访客不会这么请求）
+            if ".." in path or "%2e" in path.lower() or "\x00" in path:
+                _probe_hit(ip, path)
+                self._send(400, json.dumps({"error": "bad request"}))
+                return
+
         if guest_mod:
             gid, new_gid = guest_mod.gid_from(self.headers.get("Cookie"))
         else:
@@ -888,6 +1085,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, json.dumps(settings_mod.ui(), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({"ok": False, "msg": str(e)}, ensure_ascii=False))
+        elif path == "/api/admin/security":
+            # 同样必须排在 guest 的 /api/admin/ 通配之前
+            self._send(200, json.dumps(security_view(), ensure_ascii=False))
         elif guest_mod and path.startswith("/api/admin/"):
             code, obj = guest_mod.handle_get(path, q, gid, True, ip)
             self._send(code, json.dumps(obj, ensure_ascii=False))
@@ -961,6 +1161,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._redirect("/")
             return
         ip, proxied = self._client()
+        local = self._is_local()
+
+        # ---- 公网第一道闸（fail-closed）：封禁 → 暂停 → 路径白名单 ----
+        if not local:
+            left = _ban_left(ip)
+            if left:
+                self._send(403, json.dumps({
+                    "ok": False, "msg": "这个网络访问过于频繁，已被临时限制（%d 分钟后自动解除）"
+                                        % max(1, left // 60)}, ensure_ascii=False))
+                return
+            if public_paused():
+                self._maintenance(as_json=True)
+                return
+            if path not in PUBLIC_POST_EXACT:
+                _probe_hit(ip, path)
+                self._local_only(as_json=True)
+                return
+
         if guest_mod:
             gid, new_gid = guest_mod.gid_from(self.headers.get("Cookie"))
         else:
@@ -1017,6 +1235,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
             self._send(200 if obj.get("ok") else 400, json.dumps(obj, ensure_ascii=False))
+            return
+        # 安全操作：暂停/恢复公网访问、解除误封（必须排在 guest 的 /api/admin/ 通配之前）
+        if path == "/api/admin/security":
+            act = str(body.get("act") or "").lower()
+            if act in ("pause", "resume"):
+                obj = set_public_paused(act == "pause", body.get("note") or "")
+            elif act == "unban":
+                ipx = str(body.get("ip") or "").strip()
+                with _probe_lock:
+                    n = 1 if _ban.pop(ipx, None) else 0
+                    if ipx:
+                        _probe.pop(ipx, None)
+                obj = {"ok": bool(n), "msg": "已解除 %s 的限制" % ipx if n else "这个 IP 不在限制列表里"}
+            else:
+                obj = {"ok": False, "msg": "未知操作"}
+            self._send(200 if obj.get("ok") else 400,
+                       json.dumps(obj, ensure_ascii=False))
             return
         # 管理员：审批
         if guest_mod and path.startswith("/api/admin/"):

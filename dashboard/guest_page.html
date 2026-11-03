@@ -345,10 +345,11 @@ async function submitReq(){
   $('#btnGo').disabled = true; $('#btnGo').textContent = '提交中…';
   try{
     const fp = await deviceFp();
+    const dv = deviceKey();
     const d = await (await fetch('/api/guest/request', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({type:'cover', song_id: picked.id, title: picked.name,
-                            artist: picked.artist, model, acapella: $('#acapella').checked, fp})
+                            artist: picked.artist, model, acapella: $('#acapella').checked, fp, dv})
     })).json();
     toast(d.msg || (d.ok ? '已提交' : '提交失败'));
     if(d.ok){ loadMine(); }
@@ -399,10 +400,11 @@ async function submitTts(){
   const btn = $('#btnTts'); btn.disabled = true; btn.textContent = '提交中…';
   try{
     const fp = await deviceFp();
+    const dv = deviceKey();
     const d = await (await fetch('/api/guest/request', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({type:'tts', text, voice, rate: $('#rate').value,
-                            base: voice.indexOf('rvc:') === 0 ? ($('#baseVoice').value || '') : '', fp})
+                            base: voice.indexOf('rvc:') === 0 ? ($('#baseVoice').value || '') : '', fp, dv})
     })).json();
     toast(d.msg || (d.ok ? '已提交' : '提交失败'));
     if(d.ok){ $('#ttsText').value = ''; $('#ttsCount').textContent = '0'; loadMine(); }
@@ -458,6 +460,21 @@ async function deviceFp(){
   return hex;
 }
 
+// 设备密钥：白名单身份的第二把钥匙（服务端只存它的哈希）。
+// 和指纹不同 —— 指纹同型号设备完全一样、还能照着填；这串随机值只存在本机
+// localStorage，不出现在链接/Cookie 里，别人抄了 gid 和指纹也对不上。
+function deviceKey(){
+  let dv = '';
+  try{ dv = localStorage.getItem('rvc_dv') || ''; }catch(e){}
+  if(/^[0-9a-f]{32,64}$/.test(dv)) return dv;
+  const bytes = new Uint8Array(24);
+  try{ crypto.getRandomValues(bytes); }
+  catch(e){ for(let i=0;i<bytes.length;i++) bytes[i] = Math.floor(Math.random()*256); }
+  dv = [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+  try{ localStorage.setItem('rvc_dv', dv); }catch(e){}
+  return dv;
+}
+
 async function loadMine(){
   let d;
   try{
@@ -500,7 +517,8 @@ let WLFP = '';
 async function loadWl(){
   if(!WLFP) WLFP = await deviceFp();
   let d;
-  try{ d = await (await fetch('/api/guest/wl?fp=' + encodeURIComponent(WLFP), {cache:'no-store'})).json(); }
+  try{ d = await (await fetch('/api/guest/wl?fp=' + encodeURIComponent(WLFP)
+      + '&dv=' + encodeURIComponent(deviceKey()), {cache:'no-store'})).json(); }
   catch(e){ return; }
   const box = $('#wlState'), form = $('#wlForm');
   if(!d || !d.ok){ box.textContent = ''; form.style.display = 'none'; return; }
@@ -510,6 +528,9 @@ async function loadWl(){
     form.style.display = 'none';
   }else if(st === 'pending'){
     box.innerHTML = '<span style="color:#f0c674">⏳ 白名单申请审核中，等站长处理</span>';
+    form.style.display = 'none';
+  }else if(st === 'suspended'){
+    box.innerHTML = '<span style="color:#ff8f8f">⛔ ' + esc(d.note||'这个身份已被暂停') + '</span>';
     form.style.display = 'none';
   }else if(st === 'mismatch'){
     box.innerHTML = '<span style="color:#f0c674">' + esc(d.note||'设备或网络变了，白名单暂不生效') + '</span>';
@@ -530,7 +551,7 @@ async function submitWl(){
   try{
     const d = await (await fetch('/api/guest/wl_apply', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({fp: WLFP, reason})})).json();
+      body: JSON.stringify({fp: WLFP, dv: deviceKey(), reason})})).json();
     toast(d.msg || (d.ok ? '已提交' : '提交失败'));
     if(d.ok){ $('#wlReason').value = ''; $('#wlCount').textContent = '0'; loadWl(); }
   }catch(e){ toast('提交失败：' + e.message); }

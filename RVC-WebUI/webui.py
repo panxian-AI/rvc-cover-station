@@ -125,7 +125,9 @@ def launch_webui_with_port_fallback(app, config):
             )
         try:
             queued_app.launch(
-                server_name="0.0.0.0",
+                # 默认只绑回环：WebUI 没有任何登录，绑 0.0.0.0 等于整栋楼都能改模型/
+                # 跑推理。要局域网访问（比如手机）再设环境变量 RVC_BIND=0.0.0.0。
+                server_name=os.environ.get("RVC_BIND", "127.0.0.1"),
                 inbrowser=not config.noautoopen,
                 server_port=config.listen_port,
                 quiet=True,

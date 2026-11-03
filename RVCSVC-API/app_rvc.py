@@ -1099,4 +1099,6 @@ else:
 
 
 app.queue(max_size=40, api_open=False)
-app.launch(server_name="0.0.0.0", server_port=3333, share=False, show_error=True)
+# 只绑回环：这个接口没有任何鉴权，绑 0.0.0.0 等于把 GPU 和模型管理交给整个局域网
+app.launch(server_name=os.environ.get("RVC_BIND", "127.0.0.1"),
+           server_port=3333, share=False, show_error=True)

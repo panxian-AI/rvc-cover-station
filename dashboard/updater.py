@@ -29,7 +29,7 @@ import zipfile
 from paths import DATA, DASH, PROJ, RVC_ROOT
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "1.0.6"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "1.0.7"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")

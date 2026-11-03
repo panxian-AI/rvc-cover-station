@@ -1,7 +1,7 @@
 @echo off
 chcp 936 >nul
 setlocal
-title RVC 翻唱站 一键安装
+title RVC 翻唱站 一键安装（长效版）
 
 rem ================================================================
 rem  【下载地址配置】不懂代码也能改：只需要改下面几个等号后面的内容
@@ -15,9 +15,9 @@ rem  PIP_INDEX = Python 包国内镜像源（一般不用改）
 rem  TORCH_INDEX = 显卡版 torch 下载源（一般不用改）
 rem ================================================================
 set "REPO=panxian-AI/rvc-cover-station"
-rem  RVC_TAG   = 要安装的版本。留空 = 自动装当前最新发布版本（推荐）
-rem              也可以填死某个版本，例如: set "RVC_TAG=v1.0.2"
-set "RVC_TAG="
+rem  RVC_TAG   = 要安装的版本（空 = 长效模式：装 main 分支最新代码，推荐）
+rem              以后程序更新，重跑本安装器自动拿到新版，无需重新下载安装包
+rem              也可以锁定某个旧版本，例如: set "RVC_TAG=v1.0.3"
 set "GH_PREFIX="
 set "GH_LINE1="
 set "GH_LINE2=https://ghfast.top/"
@@ -36,19 +36,32 @@ set "TORCH_INDEX=https://mirrors.nju.edu.cn/pytorch/whl/cu128"
 
 echo ==================================================
 echo    RVC 翻唱站 一键安装
-echo    自动完成：测速选线、下载程序、装 Python、装依赖、下模型
+echo    自动完成：选线路、下载安装 Python、装程序装模型。长效版：装一次，
+echo    以后程序更新直接重跑本安装器即可升级，无需重新下载安装包。
 echo    全程需要联网。NVIDIA 显卡版约需 12GB 磁盘空间，
 echo    CPU 版约需 6GB。安装位置不要选 C 盘根目录。
 echo ==================================================
 echo.
 
 set "INSTALL=%~dp0RVC-Cover-Station"
+set "RVC_DEFDIR=%INSTALL%"
+set "RVC_PICK="
+echo    正在打开「文件夹选择」窗口，请在窗口里选安装位置
+echo    （窗口若被挡住请看任务栏；直接关掉窗口则改为手动输入路径）。
+for /f "delims=" %i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Add-Type -AssemblyName System.Windows.Forms; $f=New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description='选择 RVC 翻唱站的安装位置（建议新建一个空文件夹，别选 C 盘根目录）'; $f.ShowNewFolderButton=$true; if($env:RVC_DEFDIR){ $f.SelectedPath=$env:RVC_DEFDIR }; $top=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; if($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK){ Write-Output $f.SelectedPath }"') do set "RVC_PICK=%%i"
+set "RVC_DEFDIR="
+if "%RVC_PICK%"=="" goto :dir_manual
+echo    已从窗口选择：%RVC_PICK%
+set "INSTALL=%RVC_PICK%"
+goto :dir_ready
+:dir_manual
 set /p "INSTALL=安装到哪个文件夹？直接回车=默认（%INSTALL%）："
+:dir_ready
 set "INSTALL=%INSTALL:"=%"
 if "%INSTALL:~-1%"=="\" set "INSTALL=%INSTALL:~0,-1%"
 if "%INSTALL%"=="" goto :bad_dir
 if "%INSTALL:~2%"=="" goto :bad_dir
-echo   安装位置：%INSTALL%
+echo    安装位置：%INSTALL%
 echo.
 
 set "STACK=%INSTALL%\RVC-Data"
@@ -94,24 +107,18 @@ goto :gh_done
 echo   使用手动指定的线路：%GH_PREFIX%
 :gh_done
 echo.
-echo [0/6] 查询当前最新发布版本...
+echo [0/6] 确定要安装的程序版本...
 set "TAG=%RVC_TAG%"
 if not "%TAG%"=="" goto :tag_ready
-set "RVC_GP=%GH_PREFIX%"
-for /f "tokens=1,2 delims==" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ls=@('https://api.github.com/repos/%REPO%/releases/latest'); if($env:RVC_GP){ $ls+=$env:RVC_GP+'https://api.github.com/repos/%REPO%/releases/latest' }; $t=''; foreach($u in $ls){ try{ $r=Invoke-RestMethod -Uri $u -Headers @{'User-Agent'='rvc-installer'} -TimeoutSec 6; if($r.tag_name){ $t=$r.tag_name; break } }catch{} }; Write-Output ('TAG='+$t)"') do (
-  if /i "%%i"=="TAG" set "TAG=%%j"
-)
-set "RVC_GP="
-:tag_ready
-if "%TAG%"=="" goto :use_main
-set "VER=%TAG%"
-echo   最新发布版本：%TAG%
-set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
-goto :zip_ready
-:use_main
-set "VER=main 分支最新代码"
-echo   没取到发布版本号，改用 main 分支最新代码。
+set "VER=main 分支长效最新"
+echo    长效模式：直接下载 main 分支最新代码。
+echo    以后程序更新，重跑本安装器即可升级，无需重新下载安装包。
 set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/heads/main"
+goto :zip_ready
+:tag_ready
+set "VER=%TAG%"
+echo    锁定安装版本：%TAG%
+set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
 :zip_ready
 
 echo [1/6] 下载程序代码（约 3MB）...

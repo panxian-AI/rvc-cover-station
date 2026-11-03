@@ -92,7 +92,8 @@ _sec_last = {"ip": None, "t": 0.0}
 PUBLIC_GET_EXACT = {"/", "/index.html", "/guest", "/console", "/favicon.ico",
                      "/admin", "/login", "/logout"}   # 后三个只做 302 回访客页
 PUBLIC_GET_PREFIX = ("/api/guest/",)
-PUBLIC_POST_EXACT = {"/api/guest/request", "/api/guest/wl_apply"}
+PUBLIC_POST_EXACT = {"/api/guest/request", "/api/guest/wl_apply",
+                     "/api/guest/unlock_request"}   # 解锁请求：限频 + 站长批准才生效
 
 # 扫描/越权探测：同一 IP 10 分钟内碰 20 次非公开路径 → 封 30 分钟。
 # 隧道地址一旦被扫到，全世界的小爬虫都会来试 /admin、/.env、/api/admin/...；
@@ -1368,9 +1369,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             gid, new_gid = "", False
 
-        # 公开：访客提交翻唱申请 / 白名单申请（不需密码，翻唱要等站长批准；
-        # 白名单申请本身也要站长批，且申请侧限流比点歌更紧）
-        if guest_mod and path in ("/api/guest/request", "/api/guest/wl_apply"):
+        # 公开：访客提交翻唱申请 / 白名单申请 / 解锁请求（不需密码；解锁请求
+        # 服务端限频且要站长批准才生效）
+        if guest_mod and path in ("/api/guest/request", "/api/guest/wl_apply",
+                                  "/api/guest/unlock_request"):
             body = self._read_json()
             if self._too_big():
                 return

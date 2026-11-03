@@ -103,6 +103,19 @@ footer{text-align:center;color:#55647d;font-size:12px;margin-top:22px}
       <a href="javascript:void(0)" onclick="resetCap()">重新验证</a>
     </div>
     <div class="hint">首次搜索需输入图中字符（防滥用）；一次通过后 10 分钟内连续搜索都不用再输。输错可以再试 2 次，不用重新看图。</div>
+    <div id="lockBox" style="display:none;margin-top:10px;border:1px solid #e8b4b4;background:#fdf3f3;border-radius:10px;padding:12px 14px">
+      <div style="font-weight:700;color:#b42323">🔒 验证码输错次数太多，已临时锁定</div>
+      <div style="font-size:13px;color:#7a4a4a;margin-top:6px">
+        还剩约 <b id="lockLeft">--</b> 秒自动解除。期间搜索暂时用不了，其他功能不受影响。
+      </div>
+      <div style="font-size:13px;color:#7a4a4a;margin-top:4px">
+        可以请站长提前解除：点下面的按钮发一条请求，<b>站长同意后只解除这一次锁定</b>，并不是从此不用验证——之后再输错还是会照常锁定。
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="btnUnlock" type="button" onclick="requestUnlock()">🙋 向站长请求解锁</button>
+        <span id="unlockMsg" style="font-size:13px;color:#7a4a4a"></span>
+      </div>
+    </div>
     <div id="songs" style="margin-top:10px"></div>
   </div>
 
@@ -219,6 +232,53 @@ function resetCap(){
   clearPass(); syncCap(); newCap();
 }
 
+/* ---- 验证码临时锁定：明确提示 + 请求站长解锁（只解一次） ---- */
+let lockTimer = null;
+function fmtLockLeft(n){
+  if(n >= 60) return Math.ceil(n/60) + ' 分钟';
+  return n + ' 秒';
+}
+function showLock(left){
+  $('#lockBox').style.display = '';
+  $('#lockLeft').textContent = fmtLockLeft(left);
+  if(!lockTimer) pollLock();
+}
+function hideLock(){
+  $('#lockBox').style.display = 'none';
+  $('#unlockMsg').textContent = '';
+  if(lockTimer){ clearTimeout(lockTimer); lockTimer = null; }
+}
+async function pollLock(){
+  clearTimeout(lockTimer); lockTimer = null;
+  try{
+    const d = await (await fetch('/api/guest/lock', {cache:'no-store'})).json();
+    if(!d.locked){
+      if(d.status === 'ok'){ hideLock(); syncCap(); toast('站长已同意解锁（只这一次），可以继续了'); newCap(); return; }
+      hideLock(); return;                     // 自己等到过期也算解除
+    }
+    $('#lockLeft').textContent = fmtLockLeft(d.left);
+    if(d.status === 'pending' && !$('#unlockMsg').textContent)
+      $('#unlockMsg').textContent = '请求已发给站长，等待处理…';
+    else if(d.status === 'no')
+      $('#unlockMsg').textContent = '站长拒绝了解锁请求，等锁定结束再试吧';
+    lockTimer = setTimeout(pollLock, 6000);
+  }catch(e){ lockTimer = setTimeout(pollLock, 10000); }
+}
+async function requestUnlock(){
+  const btn = $('#btnUnlock');
+  btn.disabled = true;
+  try{
+    const r = await fetch('/api/guest/unlock_request', {method:'POST'});
+    const d = await r.json();
+    $('#unlockMsg').textContent = d.msg || (d.ok ? '请求已发送' : '发送失败');
+    if(d.ok) pollLock();
+  }catch(e){
+    $('#unlockMsg').textContent = '网络错误，稍后再试';
+  }finally{
+    setTimeout(()=>{ btn.disabled = false; }, 3000);
+  }
+}
+
 async function newCap(){
   capToken = ''; capTries = 3;
   const img = $('#capImg');
@@ -252,21 +312,24 @@ async function doSearch(){
 
     if(!d.ok && d.code === 'captcha'){
       if(usingPass) clearPass();                  // 通行证过期 / 次数用完
-      if(!usingPass && Number(d.tries_left) > 0){
+      if(d.locked){ showLock(Number(d.left) || 0); }
+      else if(!usingPass && Number(d.tries_left) > 0){
         keepImg = true;                           // 图还有效，保留图只清输入框
         capTries = Number(d.tries_left);
         $('#cap').value = ''; $('#cap').focus();
-      }
+      } else { hideLock(); }
       syncCap();
       box.innerHTML = '<div class="empty">' + esc(d.msg || '验证码不对') + '</div>';
       toast(d.msg || '验证码不对');
       return;
     }
     if(!d.ok){
+      hideLock();
       box.innerHTML = '<div class="empty">' + esc(d.msg || '搜索失败') + '</div>';
       return;
     }
 
+    hideLock();
     if(d.pass){ savePass(d.pass, d.pass_ttl); }
     syncCap();
 
@@ -282,7 +345,7 @@ async function doSearch(){
   }finally{
     btn.disabled = false;
     // 只有「图已作废」才换图，避免每搜一次都白渲染一张（也省得出图限流）
-    if(!passValid() && !keepImg) newCap();
+    if(!passValid() && !keepImg && $('#lockBox').style.display === 'none') newCap();
   }
 }
 

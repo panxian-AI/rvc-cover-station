@@ -39,6 +39,9 @@ LOCK_SECS = (60, 180, 600)
 GEN_LIMIT = 40            # 同一 IP 10 分钟内最多取多少张图（防刷图耗 CPU）
 GEN_WINDOW = 600
 GEN_GLOBAL_LIMIT = 150    # 全局 10 分钟取图总闸：换一堆 IP 也刷不动，护住 CPU
+ULREQ_WINDOW = 600        # 解锁请求限频：同一 IP 10 分钟只能发一次（不管批没批）
+ULREQ_TTL = 3600          # 解锁请求记录保留 1 小时（访客轮询结果用）
+ULREQ_MAX = 50            # 待处理请求上限，防队列被灌爆
 
 _lock = threading.RLock()
 _tokens = {}              # token -> {"code", "gid", "exp", "tries"}
@@ -46,6 +49,7 @@ _passes = {}              # pass  -> {"gid", "ip", "exp", "left"}
 _fails = {}               # ip -> {"streak": int, "until": float}
 _gen = {}                 # ip -> [时间戳]
 _gen_all = []             # 全局取图时间戳（不分 IP）
+_ulreqs = {}              # ip -> {"t", "status": pending/ok/no, "streak"} 解锁请求
 
 _WARNED = False
 
@@ -296,7 +300,9 @@ def consume(token, answer, gid="", ip=""):
     """
     wait = _wait_secs(ip)
     if wait:
-        return False, "验证码错误次数太多，请 %d 秒后再试" % wait, {"need_new": False}
+        return False, ("验证码错误次数太多，已临时锁定，还剩 %d 秒。"
+                       "可以先向站长请求解锁（只解这一次），或等锁定结束再试") % wait, \
+            {"need_new": False, "locked": True, "left": wait}
 
     token = (token or "").strip()
     answer = (answer or "").strip().replace(" ", "").upper()
@@ -376,3 +382,107 @@ def stats():
         return {"tokens": len(_tokens),
                 "passes": len(_passes),
                 "locked_ips": sum(1 for v in _fails.values() if v.get("until", 0) > now)}
+
+
+# ---------------- 锁定信息与「请求站长解锁」（v1.3.0） ----------------
+def lock_info(ip):
+    """当前 IP 的锁定状态：是否被锁、还剩几秒、已连错几次。"""
+    ip = ip or ""
+    with _lock:
+        f = _fails.get(ip) or {}
+        left = int(max(0, (f.get("until") or 0) - time.time()))
+        return {"locked": left > 0, "left": left,
+                "streak": int(f.get("streak", 0) or 0)}
+
+
+def _prune_ulreqs(now):
+    dead = [k for k, v in _ulreqs.items() if now - v.get("t", 0) > ULREQ_TTL]
+    for k in dead:
+        _ulreqs.pop(k, None)
+    if len(_ulreqs) > ULREQ_MAX:
+        for k in sorted(_ulreqs, key=lambda k: _ulreqs[k].get("t", 0))[:len(_ulreqs) - ULREQ_MAX]:
+            _ulreqs.pop(k, None)
+
+
+def request_unlock(ip):
+    """访客向站长发一条解锁请求。返回 (ok, msg)。
+
+    限频：同一 IP 10 分钟只能发一次（无论上次批没批）；没被锁不给发。
+    """
+    ip = ip or ""
+    now = time.time()
+    with _lock:
+        _prune_ulreqs(now)
+        info = lock_info(ip)
+        if not info["locked"]:
+            return False, "你现在没有被锁定，直接输入验证码就行，不用申请解锁"
+        old = _ulreqs.get(ip)
+        if old and now - old["t"] < ULREQ_WINDOW:
+            left = int(ULREQ_WINDOW - (now - old["t"]))
+            tag = {"pending": "还在等站长处理", "ok": "上次已被同意过",
+                   "no": "上次被站长拒绝"}.get(old.get("status"), "刚发过请求")
+            return False, "%s，%d 秒内不能再发（请别重复刷）" % (tag, left)
+        _ulreqs[ip] = {"t": now, "status": "pending", "streak": info["streak"]}
+        _prune_ulreqs(now)
+    return True, ("请求已发给站长，页面会自动等待结果。注意：解锁只解除这一次"
+                  "锁定，之后再输错还是会照常锁定")
+
+
+def unlock_status(ip):
+    """访客轮询：我的解锁请求现在什么状态。"""
+    ip = ip or ""
+    now = time.time()
+    with _lock:
+        _prune_ulreqs(now)
+        req = _ulreqs.get(ip)
+        info = lock_info(ip)
+        out = {"locked": info["locked"], "left": info["left"], "streak": info["streak"]}
+        if req:
+            out["status"] = req["status"]
+            out["age"] = int(now - req["t"])
+        return out
+
+
+def pending_unlocks():
+    """站长端：待处理的解锁请求（新到旧）。"""
+    now = time.time()
+    with _lock:
+        _prune_ulreqs(now)
+        rows = [{"ip": ip, "t": v["t"], "age": int(now - v["t"]),
+                 "streak": v.get("streak", 0)}
+                for ip, v in _ulreqs.items() if v.get("status") == "pending"]
+        rows.sort(key=lambda r: -r["t"])
+        return {"ok": True, "pending": rows, "count": len(rows)}
+
+
+def decide_unlock(ip, allow):
+    """站长审批一条解锁请求。返回 (ok, msg)。
+
+    **一次性**：同意只清除「当前正在生效的这次锁定」，连错计数（streak）原样保留 ——
+    之后只要再输错，还是按原来的阶梯继续锁，绝不会因为批过一次就从此豁免。
+    没有正在生效的锁定时也允许「同意」（比如刚自己等到过期），但同样不会豁免后续。
+    """
+    ip = (ip or "").strip()
+    if not ip:
+        return False, "缺少 IP"
+    with _lock:
+        req = _ulreqs.get(ip)
+        if not req:
+            return False, "这个 IP 没有待处理的解锁请求"
+        if req.get("status") != "pending":
+            return False, "这条请求已经处理过了"
+        req["status"] = "ok" if allow else "no"
+        cleared = False
+        f = _fails.get(ip)
+        if allow and f and (f.get("until") or 0) > time.time():
+            f["until"] = 0          # 只解除当前这一次；streak 保留，不是豁免
+            cleared = True
+    try:
+        from panel import sec_log  # 面板安全日志（同进程，直接调）；单独导入 captcha 时不强求
+        sec_log("验证码解锁请求已%s ip=%s（一次性，非豁免）" % ("同意" if allow else "拒绝", ip))
+    except Exception:
+        pass
+    if allow:
+        return True, ("已同意 %s：当前锁定已解除（这一次有效）" % ip) if cleared \
+            else ("已同意 %s：它当前没有生效中的锁定" % ip)
+    return True, "已拒绝 %s 的解锁请求" % ip

@@ -1505,6 +1505,13 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
             fp = (q.get("fp") or [""])[0] if isinstance(q.get("fp"), list) else (q.get("fp") or "")
             dv = (q.get("dv") or [""])[0] if isinstance(q.get("dv"), list) else (q.get("dv") or "")
             return 200, wl_mine(gid, fp, ip, dv)
+        if path == "/api/guest/lock":
+            # 访客轮询：我的锁定状态 + 解锁请求进度（只吐自己的，按 IP 定位）
+            return 200, captcha_mod.unlock_status(ip)
+        if path == "/api/admin/unlock":
+            if not is_admin:
+                return 403, {"ok": False, "msg": "需要管理员"}
+            return 200, captcha_mod.pending_unlocks()
         if path == "/api/admin/visits":
             if not is_admin:
                 return 403, {"ok": False, "msg": "需要管理员"}
@@ -1539,6 +1546,16 @@ def handle_post(path, body, gid, ip, country, ua, is_admin=False):
         if path == "/api/guest/wl_apply":
             return 200, wl_apply(gid, str(body.get("fp") or ""), ip, country, ua,
                                  body.get("reason"), str(body.get("dv") or ""))
+        if path == "/api/guest/unlock_request":
+            # 访客请求解除验证码锁定（限频，且要站长批准；同意只解一次）
+            ok, msg = captcha_mod.request_unlock(ip)
+            return 200, {"ok": bool(ok), "msg": msg}
+        if path == "/api/admin/unlock":
+            if not is_admin:
+                return 403, {"ok": False, "msg": "需要管理员"}
+            ok, msg = captcha_mod.decide_unlock(str(body.get("ip") or ""),
+                                                bool(body.get("allow")))
+            return 200, {"ok": bool(ok), "msg": msg}
         if path == "/api/admin/wl_decide":
             if not is_admin:
                 return 403, {"ok": False, "msg": "需要管理员"}

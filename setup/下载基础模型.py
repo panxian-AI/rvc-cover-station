@@ -17,6 +17,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.request
 import zipfile
@@ -63,6 +64,12 @@ ITEMS = {
 FFMPEG_URL = GH_PREFIX + "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
 
 # hubert 的 transformers 配置直接内置（本体 pytorch_model.bin 见 MANUAL）
+#
+# conv_kernel 必须与权重逐层对齐：本项目的 hubert_base 权重（fairseq hubert_base
+# 转 transformers 格式）最后两层卷积核是 2，前五层是 3 —— 写错会得到
+#   RuntimeError: size mismatch for feature_extractor.conv_layers.5.conv.weight
+# 而 RVC 的推理接口只会返回 HTTP 500 + {"error": null}，用户根本看不出原因。
+HUBERT_CONV_KERNEL = [10, 3, 3, 3, 3, 2, 2]
 HUBERT_CONFIG = {
     "config.json": r'''{
   "activation_dropout": 0.0,
@@ -73,7 +80,7 @@ HUBERT_CONFIG = {
   "classifier_proj_size": 256,
   "conv_bias": false,
   "conv_dim": [512, 512, 512, 512, 512, 512, 512],
-  "conv_kernel": [10, 3, 3, 3, 3, 3, 3],
+  "conv_kernel": [10, 3, 3, 3, 3, 2, 2],
   "conv_stride": [5, 2, 2, 2, 2, 2, 2],
   "do_stable_layer_norm": false,
   "feat_extract_activation": "gelu",
@@ -144,6 +151,35 @@ MANUAL = {
         "hint": "自己训练（WebUI 训练页）或从模型作者处获取，文件名即声线名。",
     },
 }
+
+
+def repair_hubert_config(hub):
+    """把 hubert 的 config.json 纠正到与权重一致（幂等；改过返回 True）。
+
+    hubert_base 权重的卷积核是 [10,3,3,3,3,2,2]。历史版本这里写成了
+    [10,3,3,3,3,3,3]，transformers 加载时报
+    size mismatch for feature_extractor.conv_layers.5.conv.weight，
+    而 RVC 推理接口只回 HTTP 500 + {"error": null}，界面上什么线索都没有。
+    """
+    p = os.path.join(hub, "config.json")
+    if not os.path.isfile(p):
+        return False
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return False
+    if cfg.get("conv_kernel") == HUBERT_CONV_KERNEL:
+        return False
+    try:
+        shutil.copyfile(p, p + ".bak")
+    except Exception:
+        pass
+    cfg["conv_kernel"] = HUBERT_CONV_KERNEL
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print("  ! 已修正 hubert config.json 的 conv_kernel → %s" % HUBERT_CONV_KERNEL)
+    return True
 
 
 def human(n):
@@ -241,6 +277,9 @@ def main():
         if not os.path.isfile(p):
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
+    # 老安装可能带着写错的 conv_kernel（历史 bug：最后两层写成 3，权重是 2）。
+    # 这里主动纠正，否则重跑安装器也修不好，推理一律 500。
+    repair_hubert_config(hub)
     binf = os.path.join(hub, "pytorch_model.bin")
     if os.path.isfile(binf) and os.path.getsize(binf) == MANUAL["hubert"]["size"]:
         print("✓ hubert 本体已就位")

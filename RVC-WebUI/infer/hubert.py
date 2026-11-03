@@ -1,3 +1,4 @@
+import json
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,76 @@ def _device_type(device):
     return str(device).split(":", 1)[0]
 
 
+# 权重文件里卷积层的实际形状才是真相；config.json 是手写的，容易与权重不一致。
+# 历史 bug：conv_kernel 写成 [10,3,3,3,3,3,3]，权重是 [10,3,3,3,3,2,2]，
+# 加载时报 size mismatch，而 RVC 推理接口只回 HTTP 500 + {"error": null}。
+_WEIGHT_FILES = ("pytorch_model.bin", "model.safetensors")
+
+
+def _conv_shapes_from_weights():
+    """读出权重里 feature_extractor 各层卷积的 (out_dim, kernel)，读不到返回 None。"""
+    bin_path = HUBERT_MODEL_PATH / "pytorch_model.bin"
+    state = None
+    if bin_path.is_file():
+        try:
+            state = torch.load(str(bin_path), map_location="cpu", weights_only=True)
+        except Exception as e:  # 老 torch / 非 zip 格式
+            logger.warning("读取 hubert 权重失败，跳过配置自检: %s", e)
+            return None
+    else:
+        try:
+            from safetensors.torch import load_file
+
+            sf = HUBERT_MODEL_PATH / "model.safetensors"
+            if not sf.is_file():
+                return None
+            state = load_file(str(sf))
+        except Exception:
+            return None
+
+    dims, kernels = [], []
+    idx = 0
+    while True:
+        key = f"feature_extractor.conv_layers.{idx}.conv.weight"
+        if key not in state:
+            break
+        shape = tuple(state[key].shape)
+        dims.append(shape[0])
+        kernels.append(shape[2])
+        idx += 1
+    return (dims, kernels) if kernels else None
+
+
+def repair_config_from_weights():
+    """把 config.json 的 conv_dim/conv_kernel 校正到与权重一致。改过返回 True。"""
+    shapes = _conv_shapes_from_weights()
+    if not shapes:
+        return False
+    dims, kernels = shapes
+    cfg_path = HUBERT_MODEL_PATH / "config.json"
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if cfg.get("conv_dim") == dims and cfg.get("conv_kernel") == kernels:
+        return False
+    try:
+        cfg_path.with_suffix(".json.bak").write_text(
+            cfg_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    except Exception:
+        pass
+    cfg["conv_dim"] = dims
+    cfg["conv_kernel"] = kernels
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.warning(
+        "hubert config.json 与权重不一致，已自动修正 conv_dim=%s conv_kernel=%s",
+        dims,
+        kernels,
+    )
+    return True
+
+
 def load_hubert_model(device, is_half=False):
     """Load the local Transformers HuBERT/ContentVec model for RVC."""
     if not (HUBERT_MODEL_PATH / "config.json").is_file():
@@ -50,9 +121,17 @@ def load_hubert_model(device, is_half=False):
         dtype,
         device,
     )
-    model = HubertModelWithFinalProj.from_pretrained(
-        str(HUBERT_MODEL_PATH), **load_options
-    )
+    try:
+        model = HubertModelWithFinalProj.from_pretrained(
+            str(HUBERT_MODEL_PATH), **load_options
+        )
+    except RuntimeError as e:
+        # 只处理「配置写错」这一类，别的错误（显存、文件损坏）原样抛出
+        if "size mismatch" not in str(e) or not repair_config_from_weights():
+            raise
+        model = HubertModelWithFinalProj.from_pretrained(
+            str(HUBERT_MODEL_PATH), **load_options
+        )
     model = model.to(device)
     return model.eval()
 

@@ -22,6 +22,44 @@ models=[]
 index=[]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RVC_API_BASE = "http://127.0.0.1:7865"
+# 兄弟目录里的 WebUI（E:\RVC-Data\RVCSVC\RVCSVC-API → E:\RVC-Data\RVC-WebUI）
+_RVC_WEBUI_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "RVC-WebUI"))
+_WEBUI_LOG = os.path.join(_RVC_WEBUI_DIR, "logs", "webui_service.log")
+
+
+def _webui_tail_error(max_bytes=131072):
+  """从 WebUI 日志尾部捞出最后一条异常，让报错能落地而不是只有「推理失败」。
+
+  gradio 的 /run/infer_convert 出错时返回 HTTP 500 + {"error": null}，
+  真实堆栈只写在这个日志里；不抓出来用户根本不知道该改什么。
+  """
+  try:
+    if not os.path.isfile(_WEBUI_LOG):
+      return ""
+    with open(_WEBUI_LOG, "rb") as f:
+      f.seek(0, os.SEEK_END)
+      size = f.tell()
+      f.seek(max(0, size - max_bytes))
+      tail = f.read().decode("utf-8", "ignore")
+  except Exception:
+    return ""
+
+  lines = tail.splitlines()
+  # 异常行形如 "RuntimeError: Error(s) in loading ..."，排除 Traceback 里 "File ..." 之类
+  for i in range(len(lines) - 1, -1, -1):
+    s = lines[i].strip()
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception|Interrupt):\s*\S", s):
+      detail = [s]
+      # 带上紧随其后的尺寸不符明细，这类信息对用户最有价值
+      for nxt in lines[i + 1:i + 4]:
+        n = nxt.strip()
+        if not n or n.startswith("Traceback") or re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception):", n):
+          break
+        detail.append(n)
+      msg = " ".join(detail)
+      return msg[:400] + ("…" if len(msg) > 400 else "")
+  return ""
+
 
 # ========== 新增：音高优化函数 ==========
 def optimize_pitch_shift(key_shift):
@@ -528,7 +566,7 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
   switch_model(model_dropdown)
   _f0 = (str(f0_method or "rmvpe")).strip() or "rmvpe"
   print(f"⚙️ f0={_f0} 索引比例={index_rate} 保护={protect} 响度混合={rms_mix_rate}")
-  response = requests.post(f"{RVC_API_BASE}/run/infer_convert", json={
+  _resp = requests.post(f"{RVC_API_BASE}/run/infer_convert", json={
     "data": [
       0,
       None,
@@ -540,7 +578,23 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
       int(resample_sr or 0),
       float(rms_mix_rate),
       float(protect),
-  ]}).json()
+  ]})
+
+  # gradio 推理出错时 HTTP 500 + {"error": null}，真实原因只在 WebUI 日志里。
+  # 以前直接 response["data"] 会抛 KeyError，用户只看到一段听不懂的堆栈。
+  try:
+    response = _resp.json()
+  except ValueError:
+    raise gr.Error("RVC WebUI 返回了非 JSON（HTTP %s），它可能已经崩溃。\n日志：%s"
+                   % (_resp.status_code, _WEBUI_LOG))
+
+  if not isinstance(response, dict) or not response.get("data"):
+    hint = _webui_tail_error()
+    raise gr.Error("RVC 推理失败%s\n\n日志：%s\n常见原因：\n"
+                   "  1. 基础模型配置不匹配（hubert 配置与权重卷积核不一致，重跑一键安装.bat 可修）\n"
+                   "  2. 显卡显存不足（换短一点的歌，或关掉其它占显存的程序）\n"
+                   "  3. 声线与当前 RVC 版本不兼容（换一个模型试试）"
+                   % (("：" + hint) if hint else "（WebUI 没给出具体原因）", _WEBUI_LOG))
 
   data = response["data"][1]["name"]
   print(response["data"][0])

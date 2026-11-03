@@ -44,6 +44,7 @@ set "PYRT=%STACK%\runtime\python312\python.exe"
 rem 已完整装过的（重跑本安装器）只补模型，不再重装
 if exist "%STACK%\RVC-WebUI\.venv\Scripts\python.exe" if exist "%STACK%\RVCSVC\apienv\Scripts\python.exe" goto :models
 
+md "%INSTALL%" 2>nul
 echo [1/6] 下载程序代码（约 3MB）...
 curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if errorlevel 1 goto :dl_fail

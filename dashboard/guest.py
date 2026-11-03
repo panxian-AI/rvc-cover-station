@@ -758,7 +758,10 @@ def wl_check(gid, fp, ip, dv=""):
 
 
 def wl_consume(w):
-    """真正开跑一单时才记额度（只查不记，避免「刷查询把额度刷掉」）。"""
+    """真正开跑一单时才记额度（只查不记，避免「刷查询把额度刷掉」）。
+
+    活跃度（hits / last_seen）在 wl_check 命中时已经记过了，这里只加额度，别重复计数。
+    """
     if not w:
         return
     with _lock:
@@ -766,8 +769,6 @@ def wl_consume(w):
         uses = [float(t) for t in (w.get("uses") or []) if now - float(t) < 86400]
         uses.append(now)
         w["uses"] = uses
-        w["hits"] = int(w.get("hits", 0)) + 1
-        w["last_seen"] = now
         _save(soft=True)
 
 

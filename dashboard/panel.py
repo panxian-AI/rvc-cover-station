@@ -775,7 +775,12 @@ MAX_CONN = 96
 
 class PanelServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # 必须独占端口。Windows 的 SO_REUSEADDR 语义不是「快速重启」，而是「允许抢占
+    # 已被别的进程占用的端口」——设成 True 时，重复双击启动脚本会静默叠出好几个
+    # 实例，全都 accept 同一个 8899，请求随机落到其中某一个。旧实例跑的是改代码
+    # 之前的路由，于是同一个地址一会儿 200 一会儿 404（新增页面「看不见」就是这么
+    # 来的）。设成 False 后第二个实例会 bind 失败，走 main() 的「已在运行」分支。
+    allow_reuse_address = False
     request_queue_size = 128
 
     def __init__(self, *a, **kw):
@@ -1686,7 +1691,25 @@ def main():
     try:
         httpd = PanelServer(("0.0.0.0", PORT), Handler)
     except OSError as e:
-        print("端口 %d 启动失败（可能已被占用）: %s" % (PORT, e))
+        busy = getattr(e, "winerror", None) == 10048 or getattr(e, "errno", None) in (48, 98, 10048)
+        if busy:
+            # 多半是重复双击了启动脚本。不要静默退出——直接把已经在跑的那个打开，
+            # 否则用户会以为「启动了但页面上没有新功能」，其实是打到了更早的实例。
+            print("=" * 56)
+            print("  面板已经在运行了（端口 %d 被占用）" % PORT)
+            print("  不会再起第二个实例，正为你打开已在运行的面板…")
+            print()
+            print("  要让它加载最新的代码：")
+            print("    1. 关掉那个面板黑窗口")
+            print("    2. 再双击一次启动脚本")
+            print("=" * 56)
+            try:
+                webbrowser.open("http://127.0.0.1:%d/" % PORT)
+            except Exception:
+                pass
+            time.sleep(3)
+            return
+        print("端口 %d 启动失败（可能已被其它程序占用）: %s" % (PORT, e))
         input("按回车退出…")
         return
     ips = lan_ips()

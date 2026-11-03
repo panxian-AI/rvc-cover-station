@@ -309,6 +309,20 @@ def main():
         chk("访客页会上报设备密钥", "deviceKey" in txt and "rvc_dv" in txt)
         chk("访客页有被暂停的提示分支", "suspended" in txt)
 
+        print("\n== 11. 端口独占（防重复启动静默叠加） ==")
+        # 曾经踩过：allow_reuse_address=True 时 Windows 允许抢占已在用的端口，
+        # 重复双击启动脚本会叠出多个实例，请求随机落到旧实例上，
+        # 表现为同一个地址一会儿 200 一会儿 404（新增页面「看不见」）。
+        s_a = panel.PanelServer(("127.0.0.1", 8892), panel.Handler)
+        try:
+            s_b = panel.PanelServer(("127.0.0.1", 8892), panel.Handler)
+            chk("重复启动被拒绝", False, "第二个实例也绑上了 8892")
+            s_b.server_close()
+        except OSError as e:
+            chk("重复启动被拒绝", getattr(e, "winerror", 0) == 10048 or "addr" in str(e).lower(), e)
+        finally:
+            s_a.server_close()
+
     finally:
         try:
             srv.shutdown()

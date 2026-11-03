@@ -1,5 +1,17 @@
 @echo off
 chcp 936 >nul
+rem ============ 防闪退外壳 ============
+rem 双击时把自己用 cmd 重新拉起：安装器中途崩了窗口也不会一闪而过，
+rem 报错会停在窗口里，截图就能定位；关键步骤同时写进同目录 _安装日志.txt。
+rem AI/脚本（RVC_UNATTENDED=1）不转这一层，直接跑完拿退出码。
+if "%~1"=="__rvc_inner" goto :__rvc_inner
+if /i "%RVC_UNATTENDED%"=="1" goto :__rvc_inner
+>> "%~dp0_安装日志.txt" echo [%DATE% %TIME%] ===== 安装器启动（外层）=====
+start "RVC 安装" /wait cmd /k ""%~f0" __rvc_inner"
+exit /b
+:__rvc_inner
+set "RVC_INNER=1"
+>> "%~dp0_安装日志.txt" echo [%DATE% %TIME%] ===== 安装器启动 =====  bat=%~f0
 setlocal
 title RVC 翻唱站 一键安装（长效版）
 
@@ -145,6 +157,7 @@ set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
 
 set "RVC_STAGE=download"
 echo [1/6] 下载程序代码（约 3MB）...
+call :log 阶段1 开始下载源码
 curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if not errorlevel 1 goto :dl_ok
 if "%TAG%"=="" goto :dl_fail
@@ -156,6 +169,7 @@ if errorlevel 1 goto :dl_fail
 :dl_ok
 
 echo [2/6] 解压并整理目录...
+call :log 阶段2 解压
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%INSTALL%\_repo.zip' -DestinationPath '%INSTALL%\_repo' -Force"
 if errorlevel 1 goto :dl_fail
 set "SRC="
@@ -179,6 +193,7 @@ if not exist "%STACK%\RVC-WebUI\webui.py" goto :dl_fail
 if exist "%PYRT%" goto :py_ok
 set "RVC_STAGE=python"
 echo [3/6] 下载并安装 Python 3.12.10（装在安装目录内，不改系统设置）...
+call :log 阶段3 下载安装 Python
 set "PY_IDX=1"
 :py_dl
 if "%PY_IDX%"=="1" set "PY_TRY=%PY_URL%"
@@ -224,6 +239,7 @@ echo   已选择：%MODE%
 
 set "RVC_STAGE=deps"
 echo [5/6] 安装运行依赖（体积大，十几分钟到半小时都正常，别关窗口）...
+call :log 阶段5 安装依赖开始
 "%PYRT%" -m venv "%STACK%\RVCSVC\apienv"
 if errorlevel 1 goto :dep_fail
 "%PYRT%" -m venv "%STACK%\RVC-WebUI\.venv"
@@ -251,6 +267,7 @@ set "PYTHONUTF8=1"
 set "RVC_GH_PREFIX=%GH_PREFIX%"
 set "RVC_STAGE=models"
 echo [6/6] 下载基础模型与工具（rmvpe + 小肥鱼声线 + ffmpeg，约 270MB）...
+call :log 阶段6 下载基础模型
 "%PYRT%" "%STACK%\RVCSVC\setup\下载基础模型.py"
 if errorlevel 1 echo   （模型下载有失败也不影响安装完成，可重跑本安装器只补模型）
 copy /y "%STACK%\RVCSVC\setup\fix_paths.py" "%STACK%\runtime\fix_paths.py" >nul 2>nul
@@ -329,12 +346,22 @@ if defined INSTALL if exist "%STACK%\RVC-WebUI\webui.py" (
   >> "%INSTALL%\_install_ok.txt" echo Time=%DATE% %TIME%
   if exist "%INSTALL%\_install_failed.txt" del /q "%INSTALL%\_install_failed.txt" 2>nul
 )
+call :log 安装完成
+if defined RVC_INNER (
+  endlocal
+  exit 0
+)
 endlocal
 exit /b 0
+
+:log
+>> "%~dp0_安装日志.txt" echo [%DATE% %TIME%] %*
+exit /b
 
 :hold
 echo.
 echo AI_RESULT fail stage=%RVC_STAGE%
+call :log 安装失败 stage=%RVC_STAGE%
 if defined INSTALL if not exist "%INSTALL%" md "%INSTALL%" 2>nul
 if defined INSTALL > "%INSTALL%\_install_failed.txt" echo Stage=%RVC_STAGE%
 if defined INSTALL >> "%INSTALL%\_install_failed.txt" echo Time=%DATE% %TIME%

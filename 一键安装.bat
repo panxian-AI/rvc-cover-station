@@ -27,7 +27,7 @@ rem  PIP_INDEX = Python 包国内镜像源（一般不用改）
 rem  TORCH_INDEX = 显卡版 torch 下载源（一般不用改）
 rem ================================================================
 set "REPO=panxian-AI/rvc-cover-station"
-rem  AI/脚本无人值守：RVC_UNATTENDED=1 RVC_DEFDIR=安装目录 RVC_GPU=gpu|cpu RVC_NO_START=1
+rem  AI/脚本无人值守：RVC_UNATTENDED=1 RVC_DEFDIR=安装目录 RVC_GPU=gpu|cpu RVC_NO_START=1 RVC_NO_PICK=1
 set "RVC_STAGE=start"
 rem  RVC_TAG   = 要安装的版本（空 = 长效模式：装 main 分支最新代码，推荐）
 rem              以后程序更新，重跑本安装器自动拿到新版，无需重新下载安装包
@@ -62,16 +62,44 @@ rem  外部传了 RVC_DEFDIR 就不弹选择窗口（AI / 批处理调用）
 if defined RVC_DEFDIR goto :dir_given
 set "RVC_DEFDIR=%INSTALL%"
 set "RVC_PICK="
-echo    正在打开「文件夹选择」窗口，请在窗口里选安装位置
-echo    （窗口若被挡住请看任务栏；直接关掉窗口则改为手动输入路径）。
-for /f "delims=" %i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Add-Type -AssemblyName System.Windows.Forms; $f=New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description='选择 RVC 翻唱站的安装位置（建议新建一个空文件夹，别选 C 盘根目录）'; $f.ShowNewFolderButton=$true; if($env:RVC_DEFDIR){ $f.SelectedPath=$env:RVC_DEFDIR }; $top=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; if($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK){ Write-Output $f.SelectedPath }"') do set "RVC_PICK=%%i"
+echo    默认安装位置：%INSTALL%
+echo.
+echo    [1/2] 正在弹出「文件夹选择」窗口，出现后选一个位置点「确定」
+echo          第一次弹可能要 5~15 秒；被挡住时看任务栏
+echo          一直弹不出来？别等，看下面 [2/2] 手动填路径，一样能装
+if defined RVC_NO_PICK (
+  call :log 跳过文件夹选择窗口（RVC_NO_PICK=1）
+  goto :dir_manual
+)
+call :log 弹出文件夹选择窗口
+rem  先花两秒确认这台电脑弹得动窗（精简系统/被禁用会失败），别让人干等
+set "PS_OK="
+for /f "delims=" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "try{Add-Type -AssemblyName System.Windows.Forms;Write-Output OK}catch{Write-Output NO}" 2^>nul') do set "PS_OK=%%i"
+if /i not "%PS_OK%"=="OK" (
+  call :log 文件夹选择窗口不可用（WinForms 加载失败）
+  goto :dir_manual
+)
+for /f "delims=" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Add-Type -AssemblyName System.Windows.Forms; $f=New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description='选择 RVC 翻唱站的安装位置（建议新建一个空文件夹，别选 C 盘根目录）'; $f.ShowNewFolderButton=$true; if($env:RVC_DEFDIR){ $f.SelectedPath=$env:RVC_DEFDIR }; $top=New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; if($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK){ Write-Output $f.SelectedPath }"') do set "RVC_PICK=%%i"
 set "RVC_DEFDIR="
-if "%RVC_PICK%"=="" goto :dir_manual
+if not "%RVC_PICK%"=="" goto :dir_picked
+:dir_manual
+set "RVC_DEFDIR="
+call :log 走手动输入安装路径
+echo.
+echo  ==================================================
+echo    [2/2] 选择窗口打不开也不影响安装，手动填一个就行：
+echo      在下面粘贴（或输入）安装文件夹的完整路径后回车
+echo      例：  D:\RVC      直接回车 = 装到上面那行默认位置
+echo  ==================================================
+echo.
+set "RVC_IN="
+set /p "RVC_IN=安装路径（粘贴后回车，直接回车=默认）："
+if defined RVC_IN set "INSTALL=%RVC_IN%"
+goto :dir_ready
+:dir_picked
 echo    已从窗口选择：%RVC_PICK%
 set "INSTALL=%RVC_PICK%"
 goto :dir_ready
-:dir_manual
-set /p "INSTALL=安装到哪个文件夹？直接回车=默认（%INSTALL%）："
 :dir_given
 if not defined RVC_DEFDIR goto :dir_ready
 set "INSTALL=%RVC_DEFDIR%"

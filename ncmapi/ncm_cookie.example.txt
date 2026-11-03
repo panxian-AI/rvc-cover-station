@@ -1,0 +1,10 @@
+# 示例：把你的网易云登录 Cookie 写进 ncm_cookie.txt（不要把真实值提交到 git）
+# 最简单的方式：双击 设置网易云Cookie.bat，在窗口里粘贴。
+#
+# 文件格式（两种都认）：
+#   1) 浏览器复制的整段 Cookie，如：
+#      MUSIC_U=00B7B...; NMTID=00O...; os=pc; appver=2.9.7
+#   2) 只有 MUSIC_U 的值：
+#      MUSIC_U=00B7Bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#
+# 有 MUSIC_U 才算登录态（VIP / 独家曲目可搜）；没有这个文件就走匿名模式。

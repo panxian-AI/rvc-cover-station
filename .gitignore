@@ -1,0 +1,40 @@
+# ============ 凭据 / 私人数据（绝不能提交） ============
+ncmapi/ncm_cookie.txt
+dashboard/guest_db.json
+dashboard/auth.json
+dashboard/auth.py.disabled
+dashboard/security.log
+dashboard/tunnel.log
+dashboard/panel*.log
+ncmapi/access.log
+ncmapi/ncm.log
+covers/
+公网链接.txt
+
+# ============ 运行环境 / 大文件（模型与 WebUI 请自行安装） ============
+apienv/
+RVCSVC-API/venv/
+RVCSVC-API/uvr5/
+RVCSVC-API/output/
+RVCSVC-API/temp/
+RVCSVC-API/gradio_tmp/
+RVCSVC-API/ffmpeg.exe
+RVCSVC-API/ffprobe.exe
+RVC-WebUI/
+runtime/
+tools/
+_tts_work/
+tmp/
+_probe/
+__pycache__/
+*.pyc
+*.exe
+*.wav
+*.mp3
+*.pth
+*.index
+*.log
+
+# ============ 本机专用 ============
+*.bak
+*.tmp

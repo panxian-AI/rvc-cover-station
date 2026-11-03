@@ -1,0 +1,7 @@
+# 面板层（dashboard/ + ncmapi/）依赖 —— 很少几个，标准库为主
+# 翻唱后端（RVCSVC-API/）的依赖与 RVC-WebUI 环境一致：
+#   torch / librosa / gradio / fairseq / numpy 等，建议直接复用 WebUI 的 venv
+edge-tts>=7.0
+gradio-client>=1.13
+pillow>=10.0
+requests

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>翻唱 · RVC 控制台</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#182031; --card2:#1e283c; --line:#2a3550;
+    --txt:#e8eefc; --dim:#8d9bb8; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --acc:#5b9dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);padding:16px;max-width:1000px;margin:0 auto;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+  h1{font-size:19px;margin:0;font-weight:650;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+  .card h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:600;letter-spacing:.6px;text-transform:uppercase}
+  .btn{background:var(--acc);color:#04121f;border:0;border-radius:8px;padding:8px 14px;font-size:12.5px;
+    font-weight:650;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.ghost{background:transparent;color:var(--txt);border:1px solid var(--line);font-weight:500}
+  .btn.red{background:#3a1d24;color:#ff9aa8;border:1px solid #5c2b36}
+  .btn.sm{padding:5px 10px;font-size:11.5px}
+  input[type=text],select,input[type=number]{
+    background:#0e1524;border:1px solid var(--line);border-radius:8px;color:var(--txt);
+    padding:9px 11px;font-size:13.5px;outline:none;font-family:inherit}
+  input[type=text]:focus,select:focus,input[type=number]:focus{border-color:#3b6fd4}
+  .searchbar{display:flex;gap:8px;flex-wrap:wrap}
+  .searchbar input[type=text]{flex:1;min-width:180px}
+  .song{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #212b40}
+  .song:last-child{border-bottom:0}
+  .song .t{flex:1;min-width:0}
+  .song .t b{font-size:13.5px;font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .song .t span{font-size:11.5px;color:var(--dim);display:block;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dur{font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);
+    background:#101827;border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap}
+  .params{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end}
+  .field label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:6px}
+  .field select,.field input{width:100%}
+  .picked{background:var(--card2);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px}
+  .picked b{font-weight:600}
+  .picked .none{color:var(--dim)}
+  .chk{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--txt);padding-bottom:9px}
+  .chk input{width:16px;height:16px;accent-color:var(--acc)}
+  .prog{display:none}
+  .prog.on{display:block}
+  .bar{height:6px;background:#0e1524;border-radius:99px;overflow:hidden;margin-top:8px}
+  .bar i{display:block;height:100%;width:35%;border-radius:99px;
+    background:linear-gradient(90deg,#3b82f6,#22d3ee);animation:slide 1.3s infinite}
+  @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+  .cover{padding:11px 0;border-bottom:1px solid #212b40}
+  .cover:last-child{border-bottom:0}
+  .cover .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .cover .head .t{flex:1;min-width:150px}
+  .cover .head b{font-size:13px;font-weight:600;word-break:break-all}
+  .cover .head span{display:block;font-size:11px;color:var(--dim);margin-top:3px}
+  audio{width:100%;height:34px;margin-top:8px}
+  .cacherow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #212b40;flex-wrap:wrap}
+  .cacherow:last-child{border-bottom:0}
+  .cacherow .n{flex:1;min-width:160px;font-size:13px}
+  .cacherow .n small{display:block;color:var(--dim);font-size:11px;margin-top:2px;word-break:break-all}
+  .sz{font-family:ui-monospace,monospace;font-size:12px;color:#9fb3d1}
+  .flash{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#20304d;
+    border:1px solid #3a5077;color:var(--txt);padding:10px 18px;border-radius:10px;font-size:13px;
+    opacity:0;transition:.25s;pointer-events:none;z-index:9;max-width:88vw;text-align:center}
+  .flash.show{opacity:1}
+  .empty{color:var(--dim);font-size:12.5px;padding:8px 0}
+  a{color:#8ec5ff;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="top">
+  <div>
+    <h1>翻唱</h1>
+    <div class="sub">搜歌 → 选声音模型 → 出成品，成品自动入库</div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <a class="btn ghost" href="/">← 控制台</a>
+    <button class="btn ghost" onclick="refreshAll()">刷新</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>1 · 搜索歌曲</h2>
+  <div class="searchbar">
+    <input type="text" id="kw" placeholder="歌名或歌手，例如「春日影」" onkeydown="if(event.key==='Enter')doSearch()">
+    <button class="btn" id="searchBtn" onclick="doSearch()">搜索</button>
+  </div>
+  <div id="results"></div>
+</div>
+
+<div class="card">
+  <h2>2 · 选声音模型并开始</h2>
+  <div class="picked" id="picked"><span class="none">还没选歌 —— 先在上面搜一首</span></div>
+  <div class="sub" id="have" style="margin:-6px 0 12px"></div>
+  <div class="params">
+    <div class="field">
+      <label>声音模型</label>
+      <select id="model"></select>
+    </div>
+    <div class="field">
+      <label>升降调（半音，负数=降调）</label>
+      <input type="number" id="key" value="-6" min="-24" max="24" step="1">
+    </div>
+    <div class="field">
+      <label class="chk"><input type="checkbox" id="acapella"> 清唱（不要伴奏）</label>
+    </div>
+    <div class="field">
+      <button class="btn" id="goBtn" onclick="startCover()" disabled>开始翻唱</button>
+    </div>
+  </div>
+  <div class="prog" id="prog">
+    <div class="sub" id="progText" style="margin-top:12px">准备中…</div>
+    <div class="bar"><i></i></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>3 · 我的翻唱（成品库）</h2>
+  <div class="sub" id="coverMeta"></div>
+  <div id="covers"></div>
+</div>
+
+<div class="card">
+  <h2>4 · 系统缓存</h2>
+  <div class="sub" style="margin-bottom:10px">分离结果和临时文件可随手清；成品库不会被这里清掉。</div>
+  <div id="cache"></div>
+  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+    <button class="btn ghost" onclick="clearCache('temp')">清后端临时文件</button>
+    <button class="btn ghost" onclick="clearCache('output')">清分离结果</button>
+    <button class="btn ghost" onclick="clearCache('gradio')">清 Gradio 临时目录</button>
+    <button class="btn red" onclick="clearCache('all')">全部清理</button>
+  </div>
+</div>
+
+<div class="flash" id="flash"></div>
+
+<script>
+let SONGS = {}, PICKED = null, JOB = null, TIMER = null;
+
+function toast(msg, ms=2600){
+  const f = document.getElementById('flash');
+  f.textContent = msg; f.classList.add('show');
+  clearTimeout(f._t); f._t = setTimeout(()=>f.classList.remove('show'), ms);
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDur(s){ if(!s) return '--:--'; return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+
+async function api(path, body){
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(()=>({ok:false,msg:'返回不是 JSON'}));
+  return j;
+}
+
+async function loadModels(){
+  const j = await api('/api/cover/models');
+  const sel = document.getElementById('model');
+  if(!j.ok || !j.models || !j.models.length){
+    sel.innerHTML = '<option value="">（没有找到模型，检查 E 盘是否插好）</option>';
+    return;
+  }
+  sel.innerHTML = j.models.map(m=>`<option value="${esc(m.name)}">${esc(m.name)} · ${m.mb} MB</option>`).join('');
+}
+
+async function doSearch(){
+  const kw = document.getElementById('kw').value.trim();
+  if(!kw) return toast('先输入歌名');
+  const box = document.getElementById('results');
+  box.innerHTML = '<div class="empty">搜索中…（网易云接口较慢，约 10~20 秒）</div>';
+  const btn = document.getElementById('searchBtn'); btn.disabled = true;
+  try{
+    const j = await api('/api/cover/search?kw='+encodeURIComponent(kw)+'&limit=12');
+    if(!j.ok){ box.innerHTML = '<div class="empty">'+esc(j.msg||'搜索失败')+'</div>'; return; }
+    if(!j.songs.length){ box.innerHTML = '<div class="empty">没搜到，换个关键词试试</div>'; return; }
+    SONGS = {}; j.songs.forEach(s=>SONGS[s.id]=s);
+    box.innerHTML = j.songs.map(s=>`
+      <div class="song">
+        <div class="t"><b>${esc(s.name)}</b><span>${esc(s.artist)}${s.album?' · '+esc(s.album):''}</span></div>
+        <span class="dur">${fmtDur(s.duration)}</span>
+        <button class="btn sm" onclick="pick('${esc(s.id)}')">选这首</button>
+      </div>`).join('');
+  } finally { btn.disabled = false; }
+}
+
+function pick(id){
+  PICKED = SONGS[id];
+  if(!PICKED) return;
+  document.getElementById('picked').innerHTML =
+    `已选：<b>${esc(PICKED.name)}</b> <span class="sub">${esc(PICKED.artist)} · ${fmtDur(PICKED.duration)} · ID ${esc(PICKED.id)}</span>`;
+  document.getElementById('goBtn').disabled = false;
+  checkHave();
+}
+
+// 选完歌/换模型/改调/改清唱，先问后端「这个组合是不是已经做过」
+async function checkHave(){
+  const box = document.getElementById('have');
+  if(!PICKED){ box.textContent = ''; return; }
+  const model = document.getElementById('model').value;
+  const acapella = document.getElementById('acapella').checked;
+  let j;
+  try{
+    j = await api('/api/cover/exists?song_id='+encodeURIComponent(PICKED.id)
+                  +'&model='+encodeURIComponent(model)+'&acapella='+(acapella?1:0));
+  }catch(e){ return; }
+  if(!j.ok){ box.textContent = ''; return; }
+  const labels = (j.variants||[]).map(v=>v.text);
+  if(j.exact){
+    box.innerHTML = '<span style="color:var(--ok)">✓ 这个组合已有成品，点「开始翻唱」会直接复用，不再跑一遍</span>'
+      + (labels.length>1 ? '　<span class="sub">其它已有：'+esc(labels.join('、'))+'</span>' : '');
+  }else if(labels.length){
+    box.innerHTML = '<span class="sub">这首歌已有成品：'+esc(labels.join('、'))
+      + '　（换成上面的声线/清唱一致时可直接复用）</span>';
+  }else{
+    box.textContent = '';
+  }
+}
+
+async function startCover(){
+  if(!PICKED) return toast('先选一首歌');
+  const model = document.getElementById('model').value;
+  if(!model) return toast('没有可用模型');
+  const body = {
+    song_id: PICKED.id, title: PICKED.name, artist: PICKED.artist,
+    model: model, key_shift: parseInt(document.getElementById('key').value||'0',10),
+    acapella: document.getElementById('acapella').checked
+  };
+  const btn = document.getElementById('goBtn'); btn.disabled = true;
+  const j = await api('/api/cover/start', body);
+  if(!j.ok){ btn.disabled = false; return toast(j.msg||'启动失败'); }
+  JOB = j.job;
+  document.getElementById('prog').classList.add('on');
+  document.getElementById('progText').textContent = j.cached ? '直接复用已有成品…' : '已排队…';
+  toast(j.cached ? ('已有成品，直接复用：' + (j.file||'')) : '已开始，约 2~4 分钟', j.cached?5000:2600);
+  if(TIMER) clearInterval(TIMER);
+  TIMER = setInterval(pollJob, 2000);
+  pollJob();
+}
+
+async function pollJob(){
+  if(!JOB) return;
+  const j = await api('/api/cover/job?id='+encodeURIComponent(JOB));
+  if(!j.ok){ clearInterval(TIMER); return; }
+  const st = j.job;
+  const txt = document.getElementById('progText');
+  txt.textContent = `${st.stage||''}　已用 ${st.elapsed||0} 秒`;
+  if(st.state === 'done'){
+    clearInterval(TIMER); TIMER = null;
+    document.getElementById('prog').classList.remove('on');
+    document.getElementById('goBtn').disabled = false;
+    toast('完成：' + (st.file||''));
+    loadCovers(); loadCache();
+  } else if(st.state === 'error'){
+    clearInterval(TIMER); TIMER = null;
+    document.getElementById('prog').classList.remove('on');
+    document.getElementById('goBtn').disabled = false;
+    toast('失败：' + (st.error||'未知错误'), 6000);
+  }
+}
+
+async function loadCovers(){
+  const j = await api('/api/cover/covers');
+  const box = document.getElementById('covers');
+  document.getElementById('coverMeta').textContent =
+    j.ok ? `共 ${j.covers.length} 首 · 占用 ${j.total_text} · 目录 ${j.dir}` : '读取失败';
+  if(!j.ok || !j.covers.length){ box.innerHTML = '<div class="empty">还没有成品</div>'; return; }
+  box.innerHTML = j.covers.map(c=>{
+    const tags = [];
+    if(c.model) tags.push(c.model.replace(/\.pth$/i,''));
+    if(c.key_shift) tags.push((c.key_shift>0?'升':'降')+Math.abs(c.key_shift));
+    else tags.push('原调');
+    if(c.acapella) tags.push('清唱');
+    return `
+    <div class="cover">
+      <div class="head">
+        <div class="t"><b>${esc(c.title||c.name)}</b>
+          <span>${esc(c.artist||'')} ${tags.join(' · ')} · ${esc(c.mtime||'')} · ${c.size_text||''}</span></div>
+        <a class="btn sm ghost" href="/api/cover/file?name=${encodeURIComponent(c.name)}" download="${esc(c.name)}">下载</a>
+        <button class="btn sm red" onclick="delCover('${esc(c.name)}')">删除</button>
+      </div>
+      <audio controls preload="none" src="/api/cover/file?name=${encodeURIComponent(c.name)}"></audio>
+    </div>`;
+  }).join('');
+}
+
+async function delCover(name){
+  if(!confirm('删除这个成品？\n' + name)) return;
+  const j = await api('/api/cover/delete', {name});
+  toast(j.msg||'');
+  loadCovers(); loadCache();
+}
+
+async function loadCache(){
+  const j = await api('/api/cover/cache');
+  const box = document.getElementById('cache');
+  if(!j.ok){ box.innerHTML = '<div class="empty">读取失败</div>'; return; }
+  box.innerHTML = j.areas.map(a=>`
+    <div class="cacherow">
+      <div class="n">${esc(a.label)} <small>${esc(a.path)}</small></div>
+      <span class="sz">${a.files} 个 / ${a.text}</span>
+    </div>`).join('') +
+    `<div class="cacherow"><div class="n"><b>合计</b></div><span class="sz">${j.total_files} 个 / ${j.total_text}</span></div>`;
+}
+
+async function clearCache(scope){
+  if(scope==='all' && !confirm('清理全部系统缓存？\n（成品库不受影响，但分离缓存清了下次要重新分离）')) return;
+  const j = await api('/api/cover/clear', {scope});
+  toast(j.msg||'');
+  loadCache();
+}
+
+async function refreshAll(){ await Promise.all([loadModels(), loadCovers(), loadCache()]); }
+
+// 参数一变就重新问「是不是已经做过」，避免白等几分钟
+['model','key','acapella'].forEach(id=>{
+  const el = document.getElementById(id);
+  if(el) el.addEventListener('change', checkHave);
+});
+
+refreshAll();
+</script>
+</body>
+</html>

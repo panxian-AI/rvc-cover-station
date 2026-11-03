@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>控制台 · AI 翻唱</title>
+<style>
+:root{color-scheme:dark;--line:#253049;--dim:#8b9bb8}
+*{box-sizing:border-box}
+body{margin:0;background:#0b1019;color:#e7eefb;
+font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:5;background:#0e1524ee;backdrop-filter:blur(8px);
+border-bottom:1px solid #1e2a40;padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;letter-spacing:.5px}
+.nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.nav a{padding:6px 13px;border-radius:20px;border:1px solid var(--line);background:#141c2c;
+color:#9fb2cc;text-decoration:none;font-size:13px}
+.nav a:hover{border-color:#3b82f6;color:#dce9ff}
+.nav a.on{background:#1d2b45;border-color:#3b82f6;color:#dce9ff}
+main{max-width:980px;margin:0 auto;padding:18px}
+.card{background:#141c2c;border:1px solid var(--line);border-radius:14px;padding:15px 17px;margin-bottom:13px}
+.card h2{font-size:13px;margin:0 0 11px;color:#8fa3c2;font-weight:600;letter-spacing:.6px}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.sp{flex:1}
+.svc{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:13px}
+.svc .s{display:flex;align-items:center;gap:7px;font-size:13px;color:#b7c6dd}
+.dot{width:9px;height:9px;border-radius:50%;background:#475569;display:inline-block}
+.dot.on{background:#22c55e;box-shadow:0 0 8px #22c55e88}
+.dot.off{background:#64748b}
+button{border:0;border-radius:9px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+.green{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff}
+.red{background:#2a1618;border:1px solid #5a2a2a;color:#ff9b9b}
+.gray{background:#1b2537;border:1px solid #2b3a57;color:#c8d6ea;font-weight:500}
+.hint{font-size:12px;color:#6f8099;margin-top:9px;line-height:1.7}
+.url{font-family:ui-monospace,Consolas,monospace;font-size:13.5px;color:#cfe3ff;
+background:#0c1220;border:1px solid #1e2a40;border-radius:9px;padding:10px 12px;word-break:break-all}
+.tag{font-size:11px;padding:2px 9px;border-radius:20px;border:1px solid}
+.t-on{color:#6fd39a;border-color:#1f5340;background:#10291f}
+.t-off{color:#f0c674;border-color:#5c4a1f;background:#2a2313}
+.req{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid #1c283c}
+.req:last-child{border-bottom:0}
+.req .t{flex:1;min-width:0}
+.req .n{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.req .m{font-size:12px;color:#75869f;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini{padding:6px 12px;font-size:12px}
+.empty{color:#6f8099;font-size:13px;padding:14px 2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.tile{display:block;text-decoration:none;background:#141c2c;border:1px solid var(--line);
+border-radius:12px;padding:14px;color:#e7eefb;transition:.15s}
+.tile:hover{border-color:#3b82f6;background:#16233a}
+.tile b{display:block;font-size:14px}
+.tile span{font-size:11.5px;color:#75869f}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);opacity:0;
+background:#1b2740;border:1px solid #2f4260;padding:10px 18px;border-radius:22px;font-size:13px;
+transition:.25s;pointer-events:none;max-width:88vw;text-align:center}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+/* 队列 */
+.qbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#131b2b;border:1px solid var(--line);
+border-radius:11px;padding:9px 13px;margin-bottom:10px;font-size:13px;color:#9fb2cc}
+.qbar b{color:#dce9ff}
+.qrow{display:flex;align-items:center;gap:9px;background:#131b2b;border:1px solid var(--line);
+border-radius:11px;padding:9px 12px;margin-bottom:7px;flex-wrap:wrap}
+.qrow .pos{font-family:ui-monospace,monospace;font-size:12px;color:#c4b5fd;background:#221a35;
+border:1px solid #4c3a7a;border-radius:7px;padding:2px 8px;min-width:32px;text-align:center}
+.qrow .t{flex:1;min-width:140px;overflow:hidden}
+.qrow .t b{font-size:13.5px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qrow .t span{font-size:11.5px;color:#75869f}
+.qrow button{padding:5px 10px;font-size:12px;font-weight:500}
+.qrun{border-color:#22406e;background:#12213a}
+.qrun .pos{color:#7fb4ff;background:#12213a;border-color:#22406e}
+/* 记录表 */
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:8px 9px;border-bottom:1px solid #1c283c;vertical-align:top}
+th{color:#7f90ac;font-weight:500;font-size:11.5px}
+tr:hover td{background:#121a29}
+.badge{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid;white-space:nowrap}
+.b-wait{color:#f0c674;border-color:#5c4a1f;background:#2a2313}
+.b-q{color:#c4b5fd;border-color:#4c3a7a;background:#221a35}
+.b-run{color:#7fb4ff;border-color:#22406e;background:#12213a}
+.b-done{color:#6fd39a;border-color:#1f5340;background:#10291f}
+.b-no{color:#ff8f8f;border-color:#5c2626;background:#2a1414}
+.link{color:#7fb4ff;text-decoration:none;font-size:12px}
+.link:hover{text-decoration:underline}
+details{margin-top:4px}
+summary{cursor:pointer;font-size:12.5px;color:#8fa3c2;outline:none}
+summary:hover{color:#dce9ff}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙ RVC 控制台</h1>
+  <div class="nav">
+    <a href="/" class="on">控制台</a>
+    <a href="/panel">监控面板</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/guest" target="_blank">访客页预览</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>服务状态</h2>
+    <div class="svc" id="svc"></div>
+    <div class="row">
+      <button class="green" id="btnStart" onclick="act('start_all')">⚡ 一键开启服务</button>
+      <button class="red" id="btnStop" onclick="act('stop_all')">⏹ 全部停止（面板留着）</button>
+      <span class="sp"></span>
+      <button class="gray" onclick="refresh()">刷新</button>
+    </div>
+    <div class="hint">开启后要等 1~2 分钟（后端要 20 秒以上才监听）。要连面板一起退出，去「监控面板」用一键退出。</div>
+  </div>
+
+  <div class="card">
+    <h2>公网地址（发给朋友的就是这个）</h2>
+    <div class="row" style="margin-bottom:9px">
+      <span id="pubState" class="tag t-off">未开启</span>
+      <span class="sp"></span>
+      <button class="gray mini" onclick="copyUrl()">复制地址</button>
+      <button class="gray mini" onclick="openUrl()">打开</button>
+    </div>
+    <div class="url" id="pubUrl">—</div>
+    <div class="hint">这个地址打开就是<b>访客点歌页</b>。外面只能看到访客页，管理功能只在这台电脑上可用；隧道每次重启会变，要开就双击 <code>E:\启动RVC-公网.bat</code>。</div>
+  </div>
+
+  <div class="card">
+    <h2>制作队列 <span id="qSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="queue"><div class="empty">读取中…</div></div>
+    <div class="hint">GPU 一次只跑一单，做完自动接力下一单。默认先到先来，可以手动置顶 / 上移 / 下移；「移出」等于拒绝。</div>
+  </div>
+
+  <div class="card">
+    <h2>待审批 <span id="pendN" style="color:#f0c674"></span></h2>
+    <div id="pend"><div class="empty">读取中…</div></div>
+    <div class="hint">批准即入队，不会因为「还有一单在做」被挡。命中成品库的单批准后立刻发成品，不占队列。</div>
+  </div>
+
+  <div class="card">
+    <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="reqs"><div class="empty">读取中…</div></div>
+    <details id="visitBox">
+      <summary>访客记录 <span id="visitN" style="color:#75869f"></span></summary>
+      <div id="visits" style="margin-top:10px"><div class="empty">读取中…</div></div>
+    </details>
+  </div>
+
+  <div class="grid">
+    <a class="tile" href="/panel"><b>📊 监控面板</b><span>端口、GPU、日志、缓存</span></a>
+    <a class="tile" href="/cover"><b>🎤 自助翻唱</b><span>自己用，不用审批</span></a>
+    <a class="tile" href="/guest" target="_blank"><b>👀 访客页预览</b><span>朋友看到的样子</span></a>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(window._t);window._t=setTimeout(()=>t.classList.remove('on'),2400);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+const SVC_NAME = {api:'后端 3333', webui:'WebUI 7865', ncm:'网易云 3002', panel:'面板 8899'};
+const ST = {pending:'等批准', queued:'排队中', running:'制作中', done:'已完成', rejected:'已拒绝', error:'失败'};
+const SC = {pending:'b-wait', queued:'b-q', running:'b-run', done:'b-done', rejected:'b-no', error:'b-no'};
+let PUB = '';
+let ALL = [];
+
+async function loadStatus(){
+  try{
+    const d = await (await fetch('/api/status', {cache:'no-store'})).json();
+    $('#svc').innerHTML = (d.ports||[]).map(p =>
+      `<div class="s"><span class="dot ${p.open?'on':'off'}"></span>${esc(SVC_NAME[p.key]||p.key)}</div>`).join('');
+    const all = (d.ports||[]).filter(p=>p.key!=='panel').every(p=>p.open);
+    $('#btnStart').disabled = all;
+  }catch(e){ $('#svc').innerHTML = '<div class="s">状态读取失败</div>'; }
+}
+
+async function loadPublic(){
+  try{
+    const d = await (await fetch('/api/public', {cache:'no-store'})).json();
+    PUB = d.url || '';
+    $('#pubUrl').textContent = PUB || '—（还没开隧道）';
+    const on = !!PUB && d.alive;
+    const el = $('#pubState');
+    el.className = 'tag ' + (on ? 't-on' : 't-off');
+    el.textContent = on ? '隧道运行中' : (PUB ? '上次的地址（隧道已断）' : '未开启');
+  }catch(e){}
+}
+
+/* ---------- 队列 ---------- */
+async function loadQueue(){
+  let d;
+  try{ d = await (await fetch('/api/admin/queue', {cache:'no-store'})).json(); }
+  catch(e){ $('#queue').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#queue').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
+  const n = d.total || 0;
+  $('#qSum').textContent = (n ? ('· 排队 ' + n + ' 单') : '') + (d.running ? ' · 正在做' : '');
+  let html = `<div class="qbar">正在做：<b>${d.running ? esc(d.running) : '（空闲）'}</b>
+    · 排队 ${n} 单${d.cooldown ? `　<span style="color:#f0c674">冷却 ${d.cooldown}s</span>` : ''}
+    <button class="gray mini" style="margin-left:auto" onclick="pumpNow()">▶ 立即开始下一单</button></div>`;
+  if(!n){
+    html += '<div class="empty">队列是空的 · 批准后会自动排到这里</div>';
+  }else{
+    html += d.queue.map(q => `<div class="qrow ${q.pos===1?'qrun':''}">
+      <span class="pos">#${q.pos}</span>
+      <div class="t"><b>${q.type==='tts'?'🗣':'🎤'} ${esc(q.title)}</b>
+        <span>${esc(q.artist)||'-'}${q.acapella?' · 清唱':''} · 提交 ${esc(q.created)}</span></div>
+      <button class="gray" onclick="moveQ('${esc(q.id)}','top')" ${q.pos===1?'disabled':''}>⤒</button>
+      <button class="gray" onclick="moveQ('${esc(q.id)}','up')" ${q.pos===1?'disabled':''}>↑</button>
+      <button class="gray" onclick="moveQ('${esc(q.id)}','down')" ${q.pos===d.total?'disabled':''}>↓</button>
+      <button class="red" onclick="decide('reject','${esc(q.id)}')">移出</button>
+    </div>`).join('');
+  }
+  $('#queue').innerHTML = html;
+}
+
+async function moveQ(id, dir){
+  const r = await fetch('/api/admin/move', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, dir})});
+  const d = await r.json();
+  toast(d.msg || (d.ok ? '已调整' : '调整失败'));
+  refresh();
+}
+
+async function pumpNow(){
+  const r = await fetch('/api/admin/pump', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: '{}'});
+  const d = await r.json();
+  toast(d.msg || (d.ok ? '已推进队列' : '推进失败'));
+  refresh();
+}
+
+/* ---------- 待审批 ---------- */
+async function loadPend(){
+  let d;
+  try{ d = await (await fetch('/api/admin/requests?state=pending', {cache:'no-store'})).json(); }
+  catch(e){ $('#pend').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#pend').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
+  const list = d.requests || [];
+  $('#pendN').textContent = list.length ? ('· ' + list.length) : '';
+  if(!list.length){ $('#pend').innerHTML = '<div class="empty">暂时没有待批的单子</div>'; return; }
+  $('#pend').innerHTML = list.slice(0,8).map(r => `<div class="req">
+      <div class="t">
+        <div class="n">${r.type==='tts'?'🗣':'🎤'} ${esc(r.title)}</div>
+        <div class="m">${esc(r.artist||'-')} · ${r.type==='tts'?esc(r.voice_label || (r.voice||'').replace(/Neural$/,'')):esc((r.model||'').replace(/\.pth$/i,''))}${r.acapella?' · 清唱':''}${r.reuse?' · 复用成品':''} · ${esc(r.ip||'')}${r.country?'·'+esc(r.country):''} · ${esc(r.created)}</div>
+      </div>
+      <button class="green mini" onclick="decide('approve','${esc(r.id)}')">✓ 批准入队</button>
+      <button class="red mini" onclick="decide('reject','${esc(r.id)}')">拒绝</button>
+    </div>`).join('');
+}
+
+/* ---------- 申请记录 ---------- */
+async function loadReqs(){
+  let d;
+  try{ d = await (await fetch('/api/admin/requests?state=all', {cache:'no-store'})).json(); }
+  catch(e){ $('#reqs').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#reqs').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
+  ALL = d.requests || [];
+  const c = d.counts || {};
+  $('#reqN').textContent = ALL.length ? ('· 共 ' + ALL.length + ' 条 · 待批 ' + (c.pending||0)) : '';
+  if(!ALL.length){ $('#reqs').innerHTML = '<div class="empty">还没有人提交过申请</div>'; return; }
+  $('#reqs').innerHTML = `<table><tr><th>时间</th><th>内容</th><th>声线 / 音色</th><th>状态</th><th>操作</th></tr>` +
+    ALL.slice(0, 20).map(r => {
+      const isTts = r.type === 'tts';
+      const cls = SC[r.state] || 'b-wait', st = ST[r.state] || r.state;
+      const sub = isTts
+        ? esc(r.voice_label || (r.voice||'').replace(/Neural$/,''))
+        : (r.acapella?'清唱 · ':'') + esc((r.model||'').replace(/\.pth$/i,''));
+      let op = '';
+      if(r.state === 'done' && r.file)
+        op = `<a class="link" href="/api/cover/file?name=${encodeURIComponent(r.file)}" target="_blank">▶ 试听</a>`;
+      else if(r.state === 'error' || r.state === 'rejected')
+        op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">重试</a>`;
+      else if(r.state === 'pending')
+        op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">批准</a>`;
+      return `<tr>
+        <td style="color:#75869f;white-space:nowrap">${esc(r.created)}</td>
+        <td><b>${isTts?'🗣':'🎤'} ${esc(String(r.title||'').replace(/^朗读：/,''))}</b>
+          ${r.artist?'<div style="color:#75869f;font-size:11.5px">'+esc(r.artist)+'</div>':''}</td>
+        <td>${sub}${r.reuse?'<div style="color:#22c55e;font-size:11.5px">复用成品</div>':''}</td>
+        <td><span class="badge ${cls}">${esc(st)}</span></td>
+        <td>${op}</td></tr>`;
+    }).join('') + `</table>`;
+}
+
+async function loadVisits(){
+  let d;
+  try{ d = await (await fetch('/api/admin/visits', {cache:'no-store'})).json(); }
+  catch(e){ $('#visits').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#visits').innerHTML = '<div class="empty">只能在本机查看</div>'; return; }
+  $('#visitN').textContent = d.total ? ('· ' + d.total + ' 位') : '';
+  if(!d.visits.length){ $('#visits').innerHTML = '<div class="empty">还没有人来过</div>'; return; }
+  $('#visits').innerHTML = `<table><tr><th>最近来访</th><th>来源 IP</th><th>地区</th>
+    <th>设备</th><th>访问</th><th>搜索</th><th>申请</th></tr>` + d.visits.slice(0, 40).map(v => `<tr>
+      <td style="white-space:nowrap;color:#75869f">${esc(v.last)}</td><td>${esc(v.ip)}</td>
+      <td>${esc(v.country)||'-'}</td><td style="color:#75869f">${esc(v.ua)||'-'}</td>
+      <td>${v.count}</td><td>${v.searches||0}</td><td>${v.requests}</td></tr>`).join('') + `</table>`;
+}
+
+/* ---------- 操作 ---------- */
+async function decide(kind, id){
+  if(kind==='reject' && !confirm('确定拒绝这条申请？')) return;
+  const r = await fetch('/api/admin/' + kind, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+  const d = await r.json();
+  toast(d.msg || (d.ok ? '已处理' : '失败'));
+  refresh();
+}
+
+async function act(action){
+  if(action==='stop_all' && !confirm('停掉后端 / 网易云 / WebUI？')) return;
+  const btn = action==='start_all' ? $('#btnStart') : $('#btnStop');
+  btn.disabled = true; btn.textContent = action==='start_all' ? '启动中…（约 1~2 分钟）' : '停止中…';
+  try{
+    const d = await (await fetch('/api/action', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})})).json();
+    toast(d.msg || (d.ok ? '完成' : '失败'));
+  }catch(e){ toast('请求失败：' + e.message); }
+  btn.textContent = action==='start_all' ? '⚡ 一键开启服务' : '⏹ 全部停止（面板留着）';
+  btn.disabled = false;
+  loadStatus();
+}
+
+function copyUrl(){
+  if(!PUB){ toast('还没有公网地址'); return; }
+  navigator.clipboard?.writeText(PUB).then(()=>toast('已复制，发给朋友即可'),()=>toast(PUB));
+}
+function openUrl(){ if(PUB) window.open(PUB, '_blank'); else toast('还没有公网地址'); }
+
+function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); }
+refresh(); setInterval(refresh, 8000);
+</script>
+</body>
+</html>

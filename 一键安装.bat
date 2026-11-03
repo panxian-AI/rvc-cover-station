@@ -179,12 +179,32 @@ if not exist "%STACK%\RVC-WebUI\webui.py" goto :dl_fail
 if exist "%PYRT%" goto :py_ok
 set "RVC_STAGE=python"
 echo [3/6] 下载并安装 Python 3.12.10（装在安装目录内，不改系统设置）...
-curl.exe -L -o "%INSTALL%\_py.exe" "%PY_URL%"
-if errorlevel 1 goto :dl_fail
+set "PY_IDX=1"
+:py_dl
+if "%PY_IDX%"=="1" set "PY_TRY=%PY_URL%"
+if "%PY_IDX%"=="2" set "PY_TRY=%PY_URL2%"
+if "%PY_IDX%"=="3" set "PY_TRY=%PY_URL3%"
+if "%PY_IDX%"=="4" goto :py_fail
+echo   镜像 %PY_IDX%/3: %PY_TRY%
+curl.exe -L -o "%INSTALL%\_py.exe" "%PY_TRY%"
+if errorlevel 1 goto :py_retry
+rem 下到的必须是真安装包（10MB 以上）。CDN/代理出错时会给回一段 HTML，
+rem 只有几十 KB——拿去运行就会弹「此应用无法在你的电脑上运行」。
+for %%A in ("%INSTALL%\_py.exe") do set "PYSZ=%%~zA"
+if %PYSZ% LSS 10000000 (
+  echo   [!] 下到的文件只有 %PYSZ% 字节，不是安装包（多半是错误页），换镜像重试
+  goto :py_retry
+)
 "%INSTALL%\_py.exe" /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 AssociateFiles=0 Shortcuts=0 TargetDir="%STACK%\runtime\python312"
-if errorlevel 1 goto :py_fail
+if errorlevel 1 goto :py_retry
 del /q "%INSTALL%\_py.exe" 2>nul
 if not exist "%PYRT%" goto :py_fail
+goto :py_ok
+
+:py_retry
+del /q "%INSTALL%\_py.exe" 2>nul
+set /a PY_IDX+=1
+goto :py_dl
 
 :py_ok
 echo [4/6] 选择显卡模式...

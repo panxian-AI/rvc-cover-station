@@ -23,8 +23,20 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-WEBUI = os.path.join(ROOT, "RVC-WebUI")
-API = os.path.join(ROOT, "RVCSVC-API")
+
+# 布局自适应：
+#   仓库布局  RVC-WebUI/ 与 setup/ 同级（git clone / zip 解压后）
+#   运行布局  RVC-WebUI/ 在 RVCSVC 的上级旁（一键安装.bat 装出来的样子）
+_W1 = os.path.join(ROOT, "RVC-WebUI")
+if os.path.isdir(_W1):
+    WEBUI = _W1
+else:
+    WEBUI = os.path.join(os.path.dirname(ROOT), "RVC-WebUI")
+API = os.path.join(os.path.dirname(WEBUI), "RVCSVC-API") if os.path.isdir(
+    os.path.join(ROOT, "RVC-WebUI")) else os.path.join(ROOT, "RVCSVC-API")
+
+# GitHub 加速前缀（可自定义下载地址）：set RVC_GH_PREFIX=https://ghfast.top/
+GH_PREFIX = os.environ.get("RVC_GH_PREFIX", "").strip()
 
 # 已验证可用的镜像（2026-11-03 实测 200 + 字节数一致）
 ITEMS = {
@@ -48,7 +60,7 @@ ITEMS = {
     },
 }
 
-FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+FFMPEG_URL = GH_PREFIX + "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
 
 # hubert 的 transformers 配置直接内置（本体 pytorch_model.bin 见 MANUAL）
 HUBERT_CONFIG = {
@@ -233,8 +245,16 @@ def main():
     if os.path.isfile(binf) and os.path.getsize(binf) == MANUAL["hubert"]["size"]:
         print("✓ hubert 本体已就位")
     else:
-        print("== hubert 本体需要手动获取 ==")
-        print("  " + MANUAL["hubert"]["hint"])
+        hub_url = overrides.get("hubert")
+        if hub_url:
+            print("== hubert 本体（使用 --url 覆盖地址）==")
+            if fetch(hub_url, binf, MANUAL["hubert"]["size"], "hubert"):
+                ok += 1
+            else:
+                bad += 1
+        else:
+            print("== hubert 本体需要手动获取 ==")
+            print("  " + MANUAL["hubert"]["hint"])
 
     if not a.only or "ffmpeg" in a.only.split(","):
         if ensure_ffmpeg():

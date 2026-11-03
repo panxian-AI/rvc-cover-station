@@ -56,6 +56,19 @@ QQ群/AstrBot 插件 ──► 8899 面板(访客页/控制台) ──► 3333 �
 - **声线模型不入库**：`assets/weights/*.pth` + `assets/indices/*.index` 由使用者自行训练或获取，
   小肥鱼声线可用脚本一键拉取。
 
+## 一键安装（推荐给完全不懂代码的人）
+
+到 [Releases](https://github.com/panxian-AI/rvc-cover-station/releases) 下载
+**一键安装包**（zip），解压后双击 `一键安装.bat`，剩下的全自动：
+下载本仓库 → 安装内置 Python 3.12（只装在安装目录里，不动系统）→
+按显卡选装 CUDA/CPU 版依赖 → 拉取基础模型与 ffmpeg → 生成启动入口。
+装完双击 `启动RVC.bat` 即用。
+
+安装器顶部有「下载地址配置区」：GitHub 加速前缀、Python 安装包地址、
+pip 镜像源等都可以自行定义；所有下载按字节数校验。
+
+> Windows 10 1803+（自带 curl）即可；卸载 = 删除安装文件夹。
+
 ## 快速开始
 
 1. **准备模型**：运行 `setup/下载基础模型.bat` 拉取基础模型与 ffmpeg；声线模型（.pth/.index）

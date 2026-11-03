@@ -15,6 +15,9 @@ rem  PIP_INDEX = Python 包国内镜像源（一般不用改）
 rem  TORCH_INDEX = 显卡版 torch 下载源（一般不用改）
 rem ================================================================
 set "REPO=panxian-AI/rvc-cover-station"
+rem  RVC_TAG   = 要安装的版本。留空 = 自动装当前最新发布版本（推荐）
+rem              也可以填死某个版本，例如: set "RVC_TAG=v1.0.2"
+set "RVC_TAG="
 set "GH_PREFIX="
 set "GH_LINE1="
 set "GH_LINE2=https://ghfast.top/"
@@ -90,26 +93,53 @@ goto :gh_done
 :gh_manual
 echo   使用手动指定的线路：%GH_PREFIX%
 :gh_done
-set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/heads/main"
 echo.
+echo [0/6] 查询当前最新发布版本...
+set "TAG=%RVC_TAG%"
+if not "%TAG%"=="" goto :tag_ready
+set "RVC_GP=%GH_PREFIX%"
+for /f "tokens=1,2 delims==" %%i in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ls=@('https://api.github.com/repos/%REPO%/releases/latest'); if($env:RVC_GP){ $ls+=$env:RVC_GP+'https://api.github.com/repos/%REPO%/releases/latest' }; $t=''; foreach($u in $ls){ try{ $r=Invoke-RestMethod -Uri $u -Headers @{'User-Agent'='rvc-installer'} -TimeoutSec 6; if($r.tag_name){ $t=$r.tag_name; break } }catch{} }; Write-Output ('TAG='+$t)"') do (
+  if /i "%%i"=="TAG" set "TAG=%%j"
+)
+set "RVC_GP="
+:tag_ready
+if "%TAG%"=="" goto :use_main
+set "VER=%TAG%"
+echo   最新发布版本：%TAG%
+set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
+goto :zip_ready
+:use_main
+set "VER=main 分支最新代码"
+echo   没取到发布版本号，改用 main 分支最新代码。
+set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/heads/main"
+:zip_ready
 
 echo [1/6] 下载程序代码（约 3MB）...
 curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
+if not errorlevel 1 goto :dl_ok
+if "%TAG%"=="" goto :dl_fail
+echo   该版本包下载失败，改用 main 分支最新代码重试...
+set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/heads/main"
+set "VER=main 分支最新代码"
+curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if errorlevel 1 goto :dl_fail
+:dl_ok
 
 echo [2/6] 解压并整理目录...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%INSTALL%\_repo.zip' -DestinationPath '%INSTALL%\_repo' -Force"
 if errorlevel 1 goto :dl_fail
-if not exist "%INSTALL%\_repo\rvc-cover-station-main\RVC-WebUI" goto :dl_fail
+set "SRC="
+for /d %%d in ("%INSTALL%\_repo\*") do if exist "%%d\RVC-WebUI\webui.py" set "SRC=%%d"
+if "%SRC%"=="" goto :dl_fail
 md "%STACK%\RVCSVC" 2>nul
-move "%INSTALL%\_repo\rvc-cover-station-main\RVC-WebUI" "%STACK%\RVC-WebUI" >nul
-move "%INSTALL%\_repo\rvc-cover-station-main\dashboard" "%STACK%\RVCSVC\dashboard" >nul
-move "%INSTALL%\_repo\rvc-cover-station-main\RVCSVC-API" "%STACK%\RVCSVC\RVCSVC-API" >nul
-move "%INSTALL%\_repo\rvc-cover-station-main\ncmapi" "%STACK%\RVCSVC\ncmapi" >nul
-move "%INSTALL%\_repo\rvc-cover-station-main\setup" "%STACK%\RVCSVC\setup" >nul
-copy /y "%INSTALL%\_repo\rvc-cover-station-main\启动RVC.bat" "%INSTALL%\" >nul
-copy /y "%INSTALL%\_repo\rvc-cover-station-main\卸载程序.bat" "%INSTALL%\" >nul
-copy /y "%INSTALL%\_repo\rvc-cover-station-main\README.md" "%INSTALL%\" >nul 2>nul
+move "%SRC%\RVC-WebUI" "%STACK%\RVC-WebUI" >nul
+move "%SRC%\dashboard" "%STACK%\RVCSVC\dashboard" >nul
+move "%SRC%\RVCSVC-API" "%STACK%\RVCSVC\RVCSVC-API" >nul
+move "%SRC%\ncmapi" "%STACK%\RVCSVC\ncmapi" >nul
+move "%SRC%\setup" "%STACK%\RVCSVC\setup" >nul
+copy /y "%SRC%\启动RVC.bat" "%INSTALL%\" >nul
+copy /y "%SRC%\卸载程序.bat" "%INSTALL%\" >nul
+copy /y "%SRC%\README.md" "%INSTALL%\" >nul 2>nul
 rd /s /q "%INSTALL%\_repo" 2>nul
 del /q "%INSTALL%\_repo.zip" 2>nul
 if not exist "%STACK%\RVC-WebUI\webui.py" goto :dl_fail
@@ -152,7 +182,9 @@ if errorlevel 1 goto :dep_fail
 "%STACK%\RVC-WebUI\.venv\Scripts\python.exe" -m pip install -r "%STACK%\RVC-WebUI\requirments_cu128_py312.txt" -i %PIP_INDEX% --no-warn-script-location
 if errorlevel 1 goto :dep_fail
 :dep_api
-"%STACK%\RVCSVC\apienv\Scripts\python.exe" -m pip install -r "%STACK%\RVCSVC\RVCSVC-API\requirements-freeze.txt" -i %PIP_INDEX% --no-warn-script-location
+set "API_REQ=%STACK%\RVCSVC\RVCSVC-API\requirements-freeze.txt"
+if not exist "%API_REQ%" set "API_REQ=%STACK%\RVCSVC\RVCSVC-API\requirements.txt"
+"%STACK%\RVCSVC\apienv\Scripts\python.exe" -m pip install -r "%API_REQ%" -i %PIP_INDEX% --no-warn-script-location
 if errorlevel 1 goto :dep_fail
 
 :models
@@ -167,6 +199,8 @@ copy /y "%STACK%\RVCSVC\setup\fix_paths.py" "%STACK%\runtime\fix_paths.py" >nul 
 echo.
 echo ==================================================
 echo    安装完成！
+echo.
+echo    本次安装版本：%VER%
 echo.
 echo    以后使用：双击  %INSTALL%\启动RVC.bat
 echo    会自动打开监控面板 http://127.0.0.1:8899

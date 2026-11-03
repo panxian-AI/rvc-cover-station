@@ -198,7 +198,7 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
       <span class="sp"></span>
       <span style="font-size:12.5px;color:#8fa3c2" id="mkLine">线路检测中…</span>
     </div>
-    <div class="hint">在公开免费模型站里搜声线（角色 / 歌手 / 合集包），点开看文件清单，选 <b>.pth</b> 和配套 <b>.index</b> 就能一键下载。下载前自动给各条线路测速挑最快的，下完核验大小 + SHA-256 + torch 结构，全过才装进 WebUI。<b>装完要重启 3333 后端</b>。</div>
+    <div class="hint">在公开免费模型站里搜声线（角色 / 歌手 / 合集包），点开看文件清单，选 <b>.pth</b> 和配套 <b>.index</b> 就能一键下载。下载前自动给各条线路测速挑最快的，下完核验大小 + SHA-256 + torch 结构，全过才装进 WebUI。装完回模型市场页点右上 <b>🔄 更新声线</b>（一键重启 3333），新声线立刻可用。</div>
   </div>
 
   <div class="card">
@@ -206,7 +206,7 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
     <button class="green" onclick="importPick()">📥 导入模型（弹出文件选择窗口）</button>
     <span style="margin-left:8px"><input type="checkbox" id="impReplace"> 允许覆盖同名文件</span>
     <div id="impBox" style="margin-top:10px"><div class="empty">还没有导入过模型</div></div>
-    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。<b>装完重启 3333 后端</b>（上方服务开关）新声线才会出现在点歌列表。</div>
+    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。装完去 <b>模型市场</b> 页点右上 <b>🔄 更新声线</b>，或在这里用服务开关重启 3333，新声线才会出现在点歌列表。</div>
   </div>
 
   <div class="card">
@@ -619,7 +619,7 @@ async function importInstall(i){
     const d = await impPost('/api/admin/import_install',
                             {pth: it.path, index: it.match_index || null, replace: rep});
     if(d.ok){
-      toast(d.msg + ' —— 记得重启 3333 后端');
+      toast(d.msg + ' —— 去模型市场点「🔄 更新声线」重启后端即可生效');
       it.installed = true; impRender(); loadStatus();
     }else if(d.exists){
       if(confirm(d.msg + '\n\n要覆盖吗？')){ $('#impReplace').checked = true; importInstall(i); }

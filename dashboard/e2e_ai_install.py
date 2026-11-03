@@ -162,6 +162,7 @@ def main():
         chk("声明参数 %s" % a, a in src)
     chk("无人值守时不让 bat 自己启动面板", "RVC_NO_START" in src)
     chk("把探到的线路传给 bat（省一次测速失败）", "RVC_GH_PREFIX" in src)
+    chk("会把 LF 版安装器修成 CRLF", "function Repair-Bat" in src)
     r = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                         "$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile("
                         "'" + ps1.replace("'", "''") + "',[ref]$null,[ref]$e);"

@@ -45,6 +45,17 @@ $script:UsedPrefix = ''
 
 function Say($m) { Write-Host ('[AI] ' + $m) -ForegroundColor Cyan }
 
+# GitHub 上拿到的 .bat 偶尔是 LF（仓库 core.autocrlf 归一过），cmd 里 goto/括号块会出怪事
+# （实测报 "'AI' 不是内部或外部命令"）。落盘前统一按 GBK 读、CRLF 写，稳定。
+function Repair-Bat([string]$path) {
+    $enc = [Text.Encoding]::GetEncoding(936)
+    $t = [IO.File]::ReadAllText($path, $enc)
+    if ($t -match "`r`n") { return }
+    $t = $t -replace "`r?`n", "`r`n"
+    [IO.File]::WriteAllText($path, $t, $enc)
+    Say '安装器原来是 LF 换行，已修正为 CRLF'
+}
+
 # 输出纯 ASCII 的 JSON：控制台代码页是 GBK 时，中文直接打印会被 AI/日志吃成乱码；
 # 转成 \uXXXX 转义后，任何解析器都能还原中文。
 function To-AsciiJson($obj) {
@@ -63,7 +74,12 @@ function Get-Installer([string]$dest) {
         $name = if ($p) { $p } else { 'direct' }
         try {
             Invoke-WebRequest -Uri ($p + $RawBase + $BatLeaf) -OutFile $dest -UseBasicParsing -TimeoutSec 25
-            if ((Get-Item $dest).Length -gt 3000) { $script:UsedPrefix = $p; Say ('安装器来自线路 ' + $name); return $true }
+            if ((Get-Item $dest).Length -gt 3000) {
+                Repair-Bat $dest
+                $script:UsedPrefix = $p
+                Say ('安装器来自线路 ' + $name)
+                return $true
+            }
             $errs += ($name + ': 内容不完整')
         } catch { $errs += ($name + ': ' + $_.Exception.Message) }
     }
@@ -79,7 +95,11 @@ function Get-Installer([string]$dest) {
                 $hit = $z.Entries | Where-Object { $_.FullName -like '*/一键安装.bat' } | Select-Object -First 1
                 if ($hit) {
                     [IO.Compression.ZipFileExtensions]::ExtractToFile($hit, $dest, $true)
-                    if ((Get-Item $dest).Length -gt 3000) { Say ('安装器来自源码包（' + $name + '）'); return $true }
+                    if ((Get-Item $dest).Length -gt 3000) {
+                        Repair-Bat $dest
+                        Say ('安装器来自源码包（' + $name + '）')
+                        return $true
+                    }
                 }
             } finally { $z.Dispose() }
         } catch { $errs += ('zip ' + $name + ': ' + $_.Exception.Message) }
@@ -117,8 +137,11 @@ try {
     # ---- 3. 下载安装器 ----
     if ($Installer) {
         if (-not (Test-Path $Installer)) { throw ('指定的安装器不存在：' + $Installer) }
-        $bat = (Resolve-Path $Installer).Path
-        Say ('用本地安装器：' + $bat)
+        New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+        $bat = Join-Path $Stage 'local.bat'
+        Copy-Item -LiteralPath $Installer -Destination $bat -Force
+        Repair-Bat $bat
+        Say ('用本地安装器：' + $Installer)
     } else {
         New-Item -ItemType Directory -Force -Path $Stage | Out-Null
         $bat = Join-Path $Stage 'setup.bat'

@@ -3,7 +3,6 @@ import math
 import gc
 import requests
 import json
-import torch
 import shutil
 import argparse
 from difflib import SequenceMatcher
@@ -14,7 +13,25 @@ parser.add_argument(
 )
 a = parser.parse_args()
 is_half=not a.is_nohalf
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# ============ torch 延迟导入 ============
+# import torch 要 10 秒以上，而启动阶段其实一处都用不到：
+# 设备检测只在「分离模型现场加载」时需要，清显存只在任务结束后需要。
+# 推迟到第一次真正用到再导，3333 从双击到就绪能快一大截。
+_torch = None
+
+
+def _get_torch():
+    global _torch
+    if _torch is None:
+        import torch as _t
+        _torch = _t
+    return _torch
+
+
+def _detect_device():
+    return "cuda" if _get_torch().cuda.is_available() else "cpu"
+
 headers = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 }
@@ -292,14 +309,14 @@ def find_index(model):
     return best_match
     
 
-from uvr5.vr import AudioPre
 weight_uvr5_root = "uvr5/uvr_model"
 uvr5_names = []
 for name in os.listdir(weight_uvr5_root):
     if name.endswith(".pth") or "onnx" in name:
         uvr5_names.append(name.replace(".pth", ""))
 
-func = AudioPre
+# 注：AudioPre（uvr5.vr 里）原来在模块顶层导入 —— 这一句会连带把 torch、
+# librosa 整条链拖进来，白白拖慢启动。已并入 _load_pre_fun 用时再导。
 
 # ============ 分离模型改为「用时才加载」 ============
 # 以前进程一起来就把 5_HP-Karaoke 分离器装进内存（几百 MB 级），声线越装越多、
@@ -326,7 +343,8 @@ def _load_pre_fun(model_name):
     path = _uvr5_path(model_name)
     print(f"⏳ 按需加载人声分离模型: {os.path.basename(path)}（这一步完成后才开始分离）")
     t0 = time.time()
-    f = func(agg=10, model_path=path, device=device, is_half=is_half)
+    from uvr5.vr import AudioPre  # 用时才导：会连带 torch/librosa，启动阶段不付这笔钱
+    f = AudioPre(agg=10, model_path=path, device=_detect_device(), is_half=is_half)
     print(f"✅ 分离模型就绪（{time.time() - t0:.1f} 秒）")
     return f
 
@@ -348,8 +366,9 @@ def release_pre_fun(reason=""):
         _uvr5["fun"] = None
         gc.collect()
         try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            t = _get_torch()
+            if t.cuda.is_available():
+                t.cuda.empty_cache()
         except Exception:
             pass
     print(f"🧹 已释放人声分离模型，腾出内存（{reason}）")
@@ -1199,6 +1218,9 @@ with app:
 
   # 绑定事件
   refresh_btn.click(refresh_models, outputs=model_dropdown,api_name=None)
+  # 打开页面时自动拉一次模型列表：面板现在是 WebUI/后端并行启动，
+  # 3333 可能比 WebUI 先就绪，靠这个保证 WebUI 晚到后一开页面就能看到声线列表。
+  app.load(refresh_models, outputs=model_dropdown, api_name=None)
   switch_btn.click(switch_model, inputs=model_dropdown, outputs=model_status)
   btn.click(convert, [inp1, inp5, inp6, inp7,model_dropdown, inp_reverb, inp_delay], out, api_name="None")
   api_model_name = gr.Textbox(visible=False)

@@ -657,7 +657,11 @@ def start(target):
 
 
 def start_all():
-    """先起 WebUI 等它就绪，再起后端 —— 顺序反了 3333 会拿不到模型列表。
+    """WebUI / 后端 / 网易云三路并行拉起，再等端口逐个就绪。
+
+    v1.2.1 起后端启动不再依赖 WebUI 先就绪：3333 打开页面时会自动刷新
+    模型列表（app.load），晚到的 WebUI 不影响它，并行能把「一键开启」
+    的总耗时从「WebUI + 后端」压成「最慢的那一个」。
     已经在跑的服务会跳过，不会重复开局端口冲突。"""
     notes = []
 
@@ -670,14 +674,35 @@ def start_all():
             return False, "WebUI 启动失败: %s" % m1
         notes.append("WebUI 启动中")
 
-    # 2) 网易云搜索，和 WebUI 加载并行，不冲突
+    # 2) 后端：与 WebUI 并行启动（后端页面打开时会自动拉模型列表，
+    #    不再需要「先等 WebUI 就绪再起后端」的串行等待）
+    if port_open(3333):
+        notes.append("后端已在运行")
+    else:
+        ok2, m2 = start("api")
+        if not ok2:
+            return False, "后端启动失败: %s" % m2
+        notes.append("后端启动中")
+
+    # 3) 网易云搜索，同样并行
     if port_open(3002):
         notes.append("网易云已在运行")
     else:
         ok_n, m_n = start("ncm")
         notes.append("网易云已启动" if ok_n else "网易云启动失败: %s" % m_n)
 
-    # 3) 等 WebUI 端口就绪
+    # 4) 等后端真正监听再返回（后端轻量，一般先就绪）
+    if not port_open(3333):
+        t0 = time.time()
+        while time.time() - t0 < 90:
+            if port_open(3333):
+                break
+            time.sleep(1.5)
+        else:
+            return False, "后端进程已启动，但 90 秒内 3333 没就绪，请到「后端日志」看报错"
+        notes.append("后端已就绪")
+
+    # 5) 等 WebUI 端口就绪
     if not port_open(7865):
         for _ in range(60):  # 最多等 120 秒
             if port_open(7865):
@@ -686,23 +711,9 @@ def start_all():
         else:
             return False, "WebUI 120 秒内没起来，请到 RVC 窗口看报错"
         time.sleep(2)
+        notes.append("WebUI 已就绪")
 
-    # 4) 后端
-    if port_open(3333):
-        notes.append("后端已在运行")
-        return True, "；".join(notes)
-
-    ok2, m2 = start("api")
-    if not ok2:
-        return False, "WebUI 已就绪，但后端启动失败: %s" % m2
-    # 等后端真正监听再返回，否则用户以为开好了其实还没好
-    t0 = time.time()
-    while time.time() - t0 < 90:
-        if port_open(3333):
-            notes.append("后端已就绪")
-            return True, "；".join(notes)
-        time.sleep(1.5)
-    return False, "后端进程已启动，但 90 秒内 3333 没就绪，请到「后端日志」看报错"
+    return True, "；".join(notes)
 
 
 # 停止顺序：先后端，再网易云，最后 WebUI
@@ -1414,12 +1425,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         act, target = body.get("do") or body.get("action"), body.get("target")
         force = bool(body.get("force"))
         if act == "start":
-            if target == "api" and not port_open(7865) and not force:
-                self._send(200, json.dumps({
-                    "ok": False,
-                    "msg": "RVC WebUI(7865) 还没就绪，此时启动 3333 会拿不到模型列表。"
-                           "请点「⚡ 一键开启服务」，它会先起 WebUI 等就绪再起后端。"}, ensure_ascii=False))
-                return
+            # v1.2.1 起 3333 不再依赖 WebUI 先就绪（打开页面会自动拉模型列表），
+            # 单独「启动后端」不再拦截；WebUI 没起时换声任务会报可读的错误。
             ok, msg = start(target)
         elif act == "start_all":
             ok, msg = start_all()
@@ -1543,7 +1550,7 @@ PAGE = r"""<!DOCTYPE html>
     <span class="sub" id="ctrlState">…</span>
   </div>
   <div class="tip">
-    <b>开启</b>：WebUI(7865) → 后端(3333) → 网易云(3002)，全自动等就绪；已在跑的会跳过。
+    <b>开启</b>：WebUI(7865) / 后端(3333) / 网易云(3002) 三路并行拉起，先就先用；已在跑的会跳过。
     <b>退出</b>：按 后端 → 网易云 → WebUI 的顺序停掉，再关公网隧道和本面板。<br>
     <b>会等端口真的释放再退出</b>：万一有进程停不掉（比如端口被别的东西占着），
     面板不会假装退出，而是把占用的 PID 报给你，你可以再点一次，或双击根目录的
@@ -1574,7 +1581,7 @@ PAGE = r"""<!DOCTYPE html>
   <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
     <button class="btn" onclick="act('start_all')">启动缺失的服务</button>
     <button class="btn ghost" onclick="act('stop_all')">仅停服务（面板留着）</button>
-    <span class="sub">启动顺序：RVC WebUI(7865) 就绪 → 再起后端(3333)</span>
+    <span class="sub">并行启动：WebUI(7865) / 后端(3333) 同时拉起，谁先就绪谁先用</span>
   </div>
   <div id="ports"></div>
 </div>
@@ -1745,7 +1752,7 @@ async function act(doWhat, target){
     if(btnE){ btnE.disabled = true; btnE.textContent = '⏹ 退出中…'; }
     if(btnS) btnS.disabled = true;
   }else{
-    toast(`${label}中…${doWhat==='start_all'?'（WebUI 加载 + 后端就绪，最长 3 分钟，别关页面）':''}`);
+    toast(`${label}中…${doWhat==='start_all'?'（三路并行启动，最长 3 分钟，别关页面）':''}`);
     if(doWhat === 'start_all'){
       if(btnS){ btnS.disabled = true; btnS.textContent = '⚡ 启动中…'; }
       if(btnE) btnE.disabled = true;

@@ -61,14 +61,24 @@ def test_lazy_uvr():
     print("\n== A. UVR 分离模型按需加载（桩，不碰真模型） ==")
     src = open(os.path.join(HERE, "..", "RVCSVC-API", "app_rvc.py"),
                encoding="utf-8").read().replace("\r\n", "\n")
-    a = src.index("func = AudioPre")
+
+    # v1.2.1：重模块不许在模块顶层导入（torch 10 秒级、uvr5.vr 连带 torch/librosa）
+    import re as _re
+    chk("模块顶层不再 import torch",
+        not _re.search(r"^import torch\b", src, _re.M))
+    _lpf = src.index("def _load_pre_fun")
+    chk("AudioPre 导入已移入懒加载函数",
+        "from uvr5.vr import AudioPre" not in src[:_lpf]
+        and "from uvr5.vr import AudioPre" in src[_lpf:])
+    chk("顶层不再有 func = AudioPre", "func = AudioPre" not in src)
+
+    a = src.index("uvr5_names = []")   # 从赋值行之后开始，别把 weight_uvr5_root 覆盖回相对路径
     b = src.index("from pydub import AudioSegment")
     ns = {
         "os": os, "time": time, "gc": __import__("gc"),
-        "AudioPre": None, "func": None, "device": "cpu", "is_half": False,
-        "weight_uvr5_root": tempfile.mkdtemp(prefix="rvc_uvr_root_"),
-        "torch": __import__("types").SimpleNamespace(
-            cuda=__import__("types").SimpleNamespace(is_available=lambda: False)),
+        "AudioPre": None, "weight_uvr5_root": tempfile.mkdtemp(prefix="rvc_uvr_root_"),
+        "is_half": False,
+        "_detect_device": (lambda: "cpu"),   # 桩：真实现要 import torch
     }
 
     class FakePre:
@@ -80,8 +90,18 @@ def test_lazy_uvr():
             FakePre.loads.append(model_path)
 
     ns["AudioPre"] = FakePre
-    ns["func"] = FakePre
     exec(src[a:b], ns)   # 把懒加载那一段原样跑起来
+
+    # _load_pre_fun 里是 from uvr5.vr import AudioPre：桩环境塞一个假模块，
+    # 让「用时才导入」也走 FakePre（跑完还原，不污染其它用例）
+    _types = __import__("types")
+    _fake_uvr5 = _types.ModuleType("uvr5")
+    _fake_vr = _types.ModuleType("uvr5.vr")
+    _fake_vr.AudioPre = FakePre
+    _fake_uvr5.vr = _fake_vr
+    _old_uvr5 = sys.modules.get("uvr5")
+    _old_vr = sys.modules.get("uvr5.vr")
+    sys.modules["uvr5"], sys.modules["uvr5.vr"] = _fake_uvr5, _fake_vr
 
     chk("启动时未加载任何分离模型", len(FakePre.loads) == 0, FakePre.loads)
     f1 = ns["get_pre_fun"]()
@@ -112,6 +132,15 @@ def test_lazy_uvr():
         and ns["_uvr5"]["fun"].data.get("high_end_process") == "mirroring",
         ns["_uvr5"]["fun"].data)
     chk("默认空闲卸载 15 分钟", ns["UVR_IDLE_UNLOAD"] == 900.0, ns["UVR_IDLE_UNLOAD"])
+
+    if _old_uvr5 is not None:
+        sys.modules["uvr5"] = _old_uvr5
+    else:
+        sys.modules.pop("uvr5", None)
+    if _old_vr is not None:
+        sys.modules["uvr5.vr"] = _old_vr
+    else:
+        sys.modules.pop("uvr5.vr", None)
 
 
 # ---------------- 模型管理 HTTP 测试 ----------------

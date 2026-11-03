@@ -2,6 +2,8 @@
 ncmapi/ncm_cookie.txt
 dashboard/guest_db.json
 dashboard/advanced_settings.json
+dashboard/update_cache.json
+_update_backup/
 dashboard/auth.json
 dashboard/auth.py.disabled
 dashboard/security.log

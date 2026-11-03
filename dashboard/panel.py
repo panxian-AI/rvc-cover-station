@@ -55,6 +55,13 @@ except Exception as _e:
     settings_mod = None
     print("⚠️ 高级设置未加载（settings.py 导入失败）: %s" % _e)
 
+# 版本检测 / 在线更新（控制台打开时提示有新版本，可一键更新代码）
+try:
+    import updater
+except Exception as _e:
+    updater = None
+    print("⚠️ 版本检测未加载（updater.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -884,6 +891,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif guest_mod and path.startswith("/api/admin/"):
             code, obj = guest_mod.handle_get(path, q, gid, True, ip)
             self._send(code, json.dumps(obj, ensure_ascii=False))
+        elif path == "/api/update/check":
+            force = str((q.get("force") or ["0"])[0]).lower() in ("1", "true", "yes")
+            try:
+                obj = updater.check(force=force) if updater else {
+                    "ok": False, "current": "?", "has_update": False,
+                    "error": "版本检测模块未加载"}
+            except Exception as e:
+                obj = {"ok": False, "current": "?", "has_update": False,
+                       "error": "%s: %s" % (type(e).__name__, e)}
+            self._send(200, json.dumps(obj, ensure_ascii=False))
         elif path == "/api/status":
             try:
                 self._send(200, json.dumps(collect(), ensure_ascii=False))
@@ -992,6 +1009,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
             self._send(200 if obj.get("ok") else 400,
                        json.dumps(obj, ensure_ascii=False))
+            return
+        # 版本更新：下载最新 tag 的源码覆盖代码目录（不碰数据与模型）
+        if path == "/api/update/apply":
+            try:
+                obj = updater.apply() if updater else {"ok": False, "msg": "版本检测模块未加载"}
+            except Exception as e:
+                obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+            self._send(200 if obj.get("ok") else 400, json.dumps(obj, ensure_ascii=False))
             return
         # 管理员：审批
         if guest_mod and path.startswith("/api/admin/"):

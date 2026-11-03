@@ -146,6 +146,14 @@ summary:hover{color:#dce9ff}
   </div>
 
   <div class="card">
+    <h2>模型导入</h2>
+    <button class="green" onclick="importPick()">📥 导入模型（弹出文件选择窗口）</button>
+    <span style="margin-left:8px"><input type="checkbox" id="impReplace"> 允许覆盖同名文件</span>
+    <div id="impBox" style="margin-top:10px"><div class="empty">还没有导入过模型</div></div>
+    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。<b>装完重启 3333 后端</b>（上方服务开关）新声线才会出现在点歌列表。</div>
+  </div>
+
+  <div class="card">
     <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="reqs"><div class="empty">读取中…</div></div>
     <details id="visitBox">
@@ -395,6 +403,80 @@ function copyUrl(){
   navigator.clipboard?.writeText(PUB).then(()=>toast('已复制，发给朋友即可'),()=>toast(PUB));
 }
 function openUrl(){ if(PUB) window.open(PUB, '_blank'); else toast('还没有公网地址'); }
+
+/* ---------- 模型导入 ---------- */
+let IMP = null;
+async function impPost(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                               body: JSON.stringify(body||{})});
+  return await r.json();
+}
+function impRender(){
+  const box = $('#impBox');
+  if(!IMP){ box.innerHTML = '<div class="empty">还没有导入过模型</div>'; return; }
+  box.innerHTML = IMP.items.map((it,i)=>{
+    const icon = it.type==='pth' ? '🎙' : (it.type==='index' ? '🗂' : '❓');
+    const head = icon + ' ' + esc(it.name) + (it.mb!=null ? ' · ' + it.mb + 'MB' : '');
+    let detail = '';
+    if(it.ok && it.type==='pth'){
+      const bits = [];
+      bits.push('采样率 ' + (it.sr || '?'));
+      bits.push(it.version || '版本未知');
+      bits.push(it.f0 === true ? 'f0 变调' : (it.f0 === false ? '非 f0' : 'f0 ?'));
+      if(it.epoch) bits.push(it.epoch + ' 轮');
+      if(it.params) bits.push(it.params + ' 个参数张量');
+      detail = '<div style="color:#8fa3c2;font-size:12px;margin-top:2px">' + esc(bits.join(' · '))
+             + (it.note ? ' · ' + esc(it.note) : '')
+             + (it.author ? ' · by ' + esc(it.author) : '') + '</div>';
+      if(it.match_index) detail += '<div style="color:#7fbf7f;font-size:12px">已自动配对索引：'
+                                    + esc(it.match_index.split(/[\\/]/).pop()) + '</div>';
+      else detail += '<div style="color:#f0c674;font-size:12px">这次没选到配套索引（音质会略差，可以之后单独导入 .index）</div>';
+      if(it.warns && it.warns.length) detail += '<div style="color:#f0c674;font-size:12px">注意：' + esc(it.warns.join('；')) + '</div>';
+    }
+    const state = it.installed
+      ? '<span style="color:#7fbf7f">✓ 已导入</span>'
+      : (it.ok
+          ? (it.type==='pth' ? '<button onclick="importInstall('+i+')">导入</button>'
+                             : '<span style="color:#7fbf7f">✓ 索引有效</span>')
+          : '<span style="color:#ff8f8f">✗ ' + esc(it.msg) + '</span>');
+    return '<div style="border-bottom:1px solid #223;padding:8px 0">'
+         + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
+         + '<b style="word-break:break-all">' + head + '</b><span style="white-space:nowrap">' + state + '</span></div>'
+         + (!it.ok && it.msg ? '<div style="color:#ff8f8f;font-size:12px;margin-top:2px">' + esc(it.msg) + '</div>' : detail)
+         + '</div>';
+  }).join('');
+}
+async function importPick(){
+  const box = $('#impBox');
+  box.innerHTML = '<div class="empty">已弹出文件选择窗口…（选完自动开始识别）</div>';
+  let p;
+  try{ p = await impPost('/api/admin/import_pick'); }
+  catch(e){ box.innerHTML = '<div class="empty">请求失败：' + esc(e.message) + '</div>'; return; }
+  if(!p.ok){ box.innerHTML = '<div class="empty">' + esc(p.msg || '打开文件选择框失败') + '</div>'; return; }
+  if(p.cancelled){ box.innerHTML = '<div class="empty">已取消，没有选择文件</div>'; return; }
+  box.innerHTML = '<div class="empty">识别中…（大模型要读几秒钟）</div>';
+  let c;
+  try{ c = await impPost('/api/admin/import_check', {paths: p.paths}); }
+  catch(e){ box.innerHTML = '<div class="empty">识别请求失败：' + esc(e.message) + '</div>'; return; }
+  if(!c.ok){ box.innerHTML = '<div class="empty">' + esc(c.msg || '识别失败') + '</div>'; return; }
+  IMP = c; impRender();
+}
+async function importInstall(i){
+  const it = IMP.items[i];
+  const rep = !!($('#impReplace') && $('#impReplace').checked);
+  try{
+    const d = await impPost('/api/admin/import_install',
+                            {pth: it.path, index: it.match_index || null, replace: rep});
+    if(d.ok){
+      toast(d.msg + ' —— 记得重启 3333 后端');
+      it.installed = true; impRender(); loadStatus();
+    }else if(d.exists){
+      if(confirm(d.msg + '\n\n要覆盖吗？')){ $('#impReplace').checked = true; importInstall(i); }
+    }else{
+      toast(d.msg || '导入失败');
+    }
+  }catch(e){ toast('请求失败：' + e.message); }
+}
 
 function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); }
 refresh(); setInterval(refresh, 8000);

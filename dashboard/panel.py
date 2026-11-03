@@ -41,6 +41,13 @@ except Exception as _e:      # 缺文件时面板照常可用，只是没有翻�
     cover_mod = None
     print("⚠️ 翻唱页未加载（cover.py 导入失败）: %s" % _e)
 
+# 模型导入（本机控制台选 Windows 文件 → 识别 RVC 声线 → 装进 WebUI）
+try:
+    import model_import
+except Exception as _e:
+    model_import = None
+    print("⚠️ 模型导入未加载（model_import.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -948,6 +955,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         body = self._read_json()
         if self._too_big():
+            return
+        # 模型导入：选文件 / 识别 / 安装（必须排在 guest 的 /api/admin/ 通配之前）
+        if model_import and path.startswith("/api/admin/import_"):
+            try:
+                code, obj = model_import.handle_post(path, body)
+            except Exception as e:
+                code, obj = 500, {"ok": False, "msg": str(e)}
+            self._send(code, json.dumps(obj, ensure_ascii=False))
             return
         # 管理员：审批
         if guest_mod and path.startswith("/api/admin/"):

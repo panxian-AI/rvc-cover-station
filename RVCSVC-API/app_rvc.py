@@ -233,6 +233,20 @@ def _collect_indices():
     return out
 
 
+def _index_key(name):
+    """把 index 文件名归一成「模型名」，方便和 pth 对号入座。
+
+    WebUI 训练出来的 index 长这样：
+        added_IVF966_Flat_nprobe_1_mygf-tf_v2.index
+    前面那串 added_IVF<数字>_Flat_nprobe_<数字>_ 和结尾的 _v2 都只是生成参数，
+    真正和模型对应的是中间那段。以前直接拿整串和模型名比相似度，0.32 就判成
+    「没找到」，明明配套的 index 就在旁边，index_rate 白白不起作用。
+    """
+    n = re.sub(r"^added_IVF\d+_Flat_nprobe_\d+_", "", name, flags=re.I)
+    n = re.sub(r"(_v\d+)?(_index)?$", "", n, flags=re.I)
+    return n or name
+
+
 def find_index(model):
     candidates = _collect_indices()
     if not candidates:
@@ -251,8 +265,18 @@ def find_index(model):
         # 提取 index 文件名（去掉路径和扩展名）
         index_name = os.path.splitext(os.path.basename(index_path))[0].lower()
 
-        # 计算相似度
-        score = SequenceMatcher(None, model_name, index_name).ratio()
+        # 去掉训练参数前缀再比；整串完全对上就直接算 1.0，
+        # 名字里包含模型名（如 mygf 与 mygf-tf）给 0.9，避免被前缀拉低
+        key = _index_key(index_name)
+        if key == model_name:
+            score = 1.0
+        else:
+            score = max(
+                SequenceMatcher(None, model_name, key).ratio(),
+                SequenceMatcher(None, model_name, index_name).ratio(),
+            )
+            if model_name and model_name in index_name:
+                score = max(score, 0.9)
 
         if score > best_score:
             best_score = score

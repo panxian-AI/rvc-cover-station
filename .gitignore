@@ -21,9 +21,8 @@ RVCSVC-API/temp/
 RVCSVC-API/gradio_tmp/
 RVCSVC-API/ffmpeg.exe
 RVCSVC-API/ffprobe.exe
-RVC-WebUI/
-runtime/
-tools/
+RVCSVC-API/*.wav
+/tools/
 _tts_work/
 tmp/
 _probe/
@@ -35,6 +34,21 @@ __pycache__/
 *.pth
 *.index
 *.log
+
+# ============ RVC-WebUI（代码已收，模型/环境不入库） ============
+RVC-WebUI/.venv/
+RVC-WebUI/TEMP/
+RVC-WebUI/logs/
+RVC-WebUI/dataset/
+RVC-WebUI/.model-downloads/
+RVC-WebUI/assets/hubert_base/pytorch_model.bin
+RVC-WebUI/assets/rmvpe/
+RVC-WebUI/assets/pymss_weights/*.ckpt
+RVC-WebUI/assets/weights/*.pth
+RVC-WebUI/assets/weights/_*/
+RVC-WebUI/assets/indices/
+RVC-WebUI/ffmpeg.exe
+RVC-WebUI/ffprobe.exe
 
 # ============ 本机专用 ============
 *.bak

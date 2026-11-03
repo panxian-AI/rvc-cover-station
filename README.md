@@ -39,12 +39,27 @@ QQ群/AstrBot 插件 ──► 8899 面板(访客页/控制台) ──► 3333 �
 | 8899 | dashboard/panel.py | 面板：本机=控制台，公网=访客点歌页 |
 | 3333 | RVCSVC-API/app_rvc.py | 翻唱推理后端（人声分离 + RVC 换声），与 matsuko 插件接口兼容 |
 | 3002 | ncmapi/ncm_proxy.py | 本地网易云搜索代理（标准库实现，兼容 NeteaseCloudMusicApi 常用端点） |
-| 7865 | RVC-WebUI | **需自行安装**（RVC 项目官方 WebUI） |
+| 7865 | RVC-WebUI/ | RVC 官方 WebUI（**代码随仓库附带，为上游原版 MIT 代码**） |
+
+## RVC-WebUI 与模型说明
+
+- `RVC-WebUI/` 收录的是 [RVC-Project/Retrieval-based-Voice-Conversion-WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+  的原版代码（MIT 许可，见其 LICENSE），便于一次克隆全套跑起来；上游更新可自行覆盖同步。
+- **大文件不入库**（GitHub 单文件 100MB 上限）：基础模型与 ffmpeg 用一键脚本补齐——
+  ```bash
+  # 双击 setup/下载基础模型.bat，或：
+  python setup/下载基础模型.py
+  ```
+  脚本自动下载已验证镜像的 **rmvpe.pt、ffmpeg/ffprobe、小肥鱼(FeiyuVoice) 公开声线**，
+  并内置 hubert 的 transformers 配置；hubert 本体、roformer 分离模型、UVR5 权重
+  会给出精确的手动获取指引（也支持 `--url 键=直链` 覆盖自动下载，脚本按字节数校验）。
+- **声线模型不入库**：`assets/weights/*.pth` + `assets/indices/*.index` 由使用者自行训练或获取，
+  小肥鱼声线可用脚本一键拉取。
 
 ## 快速开始
 
-1. **准备 RVC-WebUI 与模型**（仓库不含）：按 RVC 项目安装 WebUI，把 `.pth` 声线模型放入
-   `RVC-WebUI/assets/weights/`，对应 `.index` 放入 `assets/indices/`。
+1. **准备模型**：运行 `setup/下载基础模型.bat` 拉取基础模型与 ffmpeg；声线模型（.pth/.index）
+   自己训练或获取后放入 `RVC-WebUI/assets/weights/` 与 `assets/indices/`。
 2. **目录布局**：本仓库放在 `RVCSVC/`，与 `runtime/`（内置 Python 3.12）、`RVC-WebUI/` 平级；
    路径推导见 `dashboard/paths.py`，搬盘不用改代码。
 3. **安装依赖**：

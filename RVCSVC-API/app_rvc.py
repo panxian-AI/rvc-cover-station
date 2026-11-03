@@ -301,42 +301,109 @@ for name in os.listdir(weight_uvr5_root):
 
 func = AudioPre
 
-pre_fun_hp5 = func(
-  agg=int(10),
-  model_path=os.path.join(weight_uvr5_root, "5_HP-Karaoke-UVR.pth"),
-  device=device,
-  is_half=is_half,
-)
+# ============ 分离模型改为「用时才加载」 ============
+# 以前进程一起来就把 5_HP-Karaoke 分离器装进内存（几百 MB 级），声线越装越多、
+# 内存越来越紧的机器上，这份内存从启动一直白占到最后一个任务。
+# 现在：启动不加载，第一次需要分离的任务现场加载（日志会打「按需加载」）；
+# 空闲超过 RVC_UVR_IDLE_UNLOAD 秒（默认 15 分钟，0=从不卸载）自动释放，
+# 下个任务再装回来。加载/释放都在同一把锁后面，并发任务不会撞车。
+import threading as _threading
 
-# 记录当前分离模型，供插件传入不同 uvr5_model / uvr5_agg 时切换
-_uvr5_state = {"model": "5_HP-Karaoke-UVR.pth"}
+_uvr5_lock = _threading.Lock()
+_uvr5 = {
+    "fun": None,                        # AudioPre 实例，None = 未加载
+    "model": "5_HP-Karaoke-UVR.pth",    # 要用的分离模型名（或绝对路径）
+}
+_uvr5_last_used = [0.0]               # 最近一次取用时间（锁内读写）
+UVR_IDLE_UNLOAD = float(os.environ.get("RVC_UVR_IDLE_UNLOAD", "900"))
+
+
+def _uvr5_path(model_name):
+    return model_name if os.path.isabs(model_name) else os.path.join(weight_uvr5_root, model_name)
+
+
+def _load_pre_fun(model_name):
+    path = _uvr5_path(model_name)
+    print(f"⏳ 按需加载人声分离模型: {os.path.basename(path)}（这一步完成后才开始分离）")
+    t0 = time.time()
+    f = func(agg=10, model_path=path, device=device, is_half=is_half)
+    print(f"✅ 分离模型就绪（{time.time() - t0:.1f} 秒）")
+    return f
+
+
+def get_pre_fun():
+    """取当前分离器；没加载就现场加载（线程安全），并记下使用时间。"""
+    with _uvr5_lock:
+        if _uvr5["fun"] is None:
+            _uvr5["fun"] = _load_pre_fun(_uvr5["model"])
+        _uvr5_last_used[0] = time.time()
+        return _uvr5["fun"]
+
+
+def release_pre_fun(reason=""):
+    """释放分离模型腾内存。返回是否真的释放了。"""
+    with _uvr5_lock:
+        if _uvr5["fun"] is None:
+            return False
+        _uvr5["fun"] = None
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+    print(f"🧹 已释放人声分离模型，腾出内存（{reason}）")
+    return True
+
+
+def _uvr5_idle_watcher():
+    """后台线程：空闲太久就把分离模型卸掉，把内存让给后面的任务。"""
+    if UVR_IDLE_UNLOAD <= 0:
+        return
+    while True:
+        time.sleep(60)
+        with _uvr5_lock:
+            if _uvr5["fun"] is None:
+                continue
+            idle = time.time() - _uvr5_last_used[0]
+        if idle >= UVR_IDLE_UNLOAD:
+            release_pre_fun("空闲超过 %.0f 分钟" % (UVR_IDLE_UNLOAD / 60))
+
+
+_threading.Thread(target=_uvr5_idle_watcher, daemon=True,
+                  name="uvr5-idle-unload").start()
 
 
 def ensure_pre_fun(model_name="", agg=10, tta=False, postprocess=False, window_size=512,
                    high_end_process="mirroring"):
-  """按插件传入的分离模型与参数准备 UVR5 分离器（不传就用默认）"""
-  global pre_fun_hp5
+  """按插件传入的分离模型与参数准备 UVR5 分离器（不传就用默认；这里不加载，等用时才装）"""
   name = str(model_name or "").strip()
   if name and not name.endswith(".pth"):
     name += ".pth"
-  path = ""
   if name:
     path = name if os.path.isabs(name) else os.path.join(weight_uvr5_root, name)
     if not os.path.isfile(path):
       print(f"⚠️ 指定的分离模型不存在，沿用默认模型: {name}")
       name = ""
-  if name and name != _uvr5_state["model"]:
-    print(f"🔄 切换人声分离模型: {name}")
-    pre_fun_hp5 = func(agg=int(agg), model_path=path, device=device, is_half=is_half, tta=bool(tta))
-    _uvr5_state["model"] = name
-  # 分离强度、输出文件名都取自 self.data，必须写这里（写 .agg 无效）
+  if name and name != _uvr5["model"]:
+    # 换模型：旧的直接扔掉，下次 get_pre_fun 用新名字现场加载
+    with _uvr5_lock:
+      had = _uvr5["fun"] is not None
+      _uvr5["model"] = name
+      _uvr5["fun"] = None
+    if had:
+      gc.collect()
+      print(f"🔄 分离模型已切换为 {os.path.basename(_uvr5_path(name))}（下个任务按需重新加载）")
+  # 分离强度、输出文件名都取自 self.data，必须写到实例上（只写 .agg 无效）。
+  # 有缓存就直接用；没缓存就现场加载——参数在加载完成后补写，一次到位。
+  f = get_pre_fun()
   try:
-    pre_fun_hp5.data["agg"] = int(agg)
-    pre_fun_hp5.data["tta"] = bool(tta)
-    pre_fun_hp5.data["postprocess"] = bool(postprocess)
-    pre_fun_hp5.data["window_size"] = int(window_size)
-    pre_fun_hp5.data["high_end_process"] = str(high_end_process or "mirroring")
-    pre_fun_hp5.agg = int(agg)
+    f.data["agg"] = int(agg)
+    f.data["tta"] = bool(tta)
+    f.data["postprocess"] = bool(postprocess)
+    f.data["window_size"] = int(window_size)
+    f.data["high_end_process"] = str(high_end_process or "mirroring")
+    f.agg = int(agg)
   except Exception as e:
     print(f"⚠️ 分离参数写入失败: {e}")
   print(f"🎚️ 人声分离参数: agg={int(agg)} tta={bool(tta)} "
@@ -432,7 +499,7 @@ def wwy_downloader(
 
     # 5. 调用UVR，现在它会生成正确的文件名了
     os.makedirs(f"./output/{split_model}/{filename}/", exist_ok=True)
-    pre_fun = pre_fun_hp5
+    pre_fun = get_pre_fun()   # 没加载就现场装（首个任务会多花几秒，之后走缓存）
     print("分离人声伴奏")
     print("   分离前可用内存: %.0f MB" % _avail_mem_mb())
     try:

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模型管理 · AI 翻唱</title>
+<style>
+:root{color-scheme:dark;--line:#253049;--dim:#8b9bb8;--card:#141c2c;--bg:#0b1019}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#e7eefb;
+font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:5;background:#0e1524ee;backdrop-filter:blur(8px);
+border-bottom:1px solid #1e2a40;padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;letter-spacing:.5px}
+.nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.nav a{padding:6px 13px;border-radius:20px;border:1px solid var(--line);background:#141c2c;
+color:#9fb2cc;text-decoration:none;font-size:13px}
+.nav a:hover{border-color:#3b82f6;color:#dce9ff}
+.nav a.on{background:#1d2b45;border-color:#3b82f6;color:#dce9ff}
+main{max-width:1080px;margin:0 auto;padding:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 17px;margin-bottom:13px}
+.card h2{font-size:13px;margin:0 0 11px;color:#8fa3c2;font-weight:600;letter-spacing:.6px}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.sp{flex:1}
+button{border:0;border-radius:9px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer;
+font-family:inherit}
+button:disabled{opacity:.45;cursor:default}
+.green{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff}
+.red{background:#2a1618;border:1px solid #5a2a2a;color:#ff9b9b}
+.gray{background:#1b2537;border:1px solid #2b3a57;color:#c8d6ea;font-weight:500}
+.mini{padding:6px 12px;font-size:12px}
+input[type=search]{background:#0c1220;border:1px solid #22304a;color:#e7eefb;
+border-radius:9px;padding:9px 12px;font-size:13.5px;font-family:inherit;outline:none}
+input[type=search]:focus{border-color:#3b82f6}
+.hint{font-size:12px;color:#6f8099;margin-top:9px;line-height:1.7}
+.tag{font-size:11px;padding:2px 9px;border-radius:20px;border:1px solid;white-space:nowrap}
+.t-on{color:#6fd39a;border-color:#1f5340;background:#10291f}
+.t-off{color:#f0c674;border-color:#5c4a1f;background:#2a2313}
+.t-blue{color:#7fb4ff;border-color:#22406e;background:#12213a}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:8px 9px;border-bottom:1px solid #1c283c;vertical-align:middle}
+th{color:#7f90ac;font-weight:500;font-size:11.5px}
+tr:hover td{background:#121a29}
+td .n{font-weight:600;word-break:break-all;color:#dce9ff}
+td .idx{color:#75869f;font-size:11.5px;word-break:break-all}
+.empty{color:#6f8099;font-size:13px;padding:16px 2px}
+.rst{display:none;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 11px;padding:10px 13px;
+border-radius:11px;border:1px solid #5c4a1f;background:#2a2313;color:#f0c674;font-size:12.5px;line-height:1.65}
+.rst.on{display:flex}
+.rst.ok{border-color:#1f5340;background:#10291f;color:#6fd39a}
+.rst.bad{border-color:#5c2626;background:#2a1414;color:#ff9b9b}
+.rst b{color:#fff}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);opacity:0;
+background:#1b2740;border:1px solid #2f4260;padding:10px 18px;border-radius:22px;font-size:13px;
+transition:.25s;pointer-events:none;max-width:88vw;text-align:center;z-index:99}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+/* 确认框 */
+.modal{position:fixed;inset:0;background:#05080fd9;backdrop-filter:blur(3px);display:none;
+align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal.on{display:flex}
+.modal .box{background:#121a29;border:1px solid #2b3a57;border-radius:16px;max-width:520px;width:100%;
+max-height:86vh;display:flex;flex-direction:column;box-shadow:0 24px 60px #0009}
+.modal .hd{padding:15px 20px 11px;border-bottom:1px solid #1e2a40}
+.modal .hd b{font-size:15px}
+.modal .bd{padding:13px 20px;overflow:auto;font-size:13px;color:#c8d6ea;flex:1}
+.modal .ft{padding:12px 20px 16px;border-top:1px solid #1e2a40;display:flex;gap:9px;
+flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.flist{border:1px solid #1e2a40;border-radius:10px;max-height:220px;overflow:auto;background:#0c1220;
+margin:9px 0}
+.flist div{padding:7px 11px;border-bottom:1px solid #16202f;font-family:ui-monospace,Consolas,monospace;
+font-size:12px;word-break:break-all}
+.flist div:last-child{border-bottom:0}
+label.chk{display:flex;gap:7px;align-items:center;cursor:pointer;font-size:12.5px}
+label.chk input{accent-color:#3b82f6;margin:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗂 模型管理</h1>
+  <div class="nav">
+    <a href="/">控制台</a>
+    <a href="/market">模型市场</a>
+    <a href="/models" class="on">模型管理</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/panel">监控面板</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>已装声线 <span id="sum" style="color:#8fa3c2;font-weight:400"></span>
+      <span style="float:right;display:flex;gap:8px">
+        <input type="search" id="q" placeholder="按名字过滤…" style="padding:5px 10px;font-size:12px;width:170px" oninput="render()">
+        <button class="gray mini" onclick="load()">🔄 刷新</button>
+      </span></h2>
+    <div id="box"><div class="empty">读取中…</div></div>
+    <div class="hint">这里是 WebUI 实际使用的声线目录（<span id="dir" style="font-family:ui-monospace,Consolas,monospace"></span>）。
+      「🗂」表示这个声线有配套的相似度索引（音色更准）；删除会先弹确认框，可连配套索引一起删。
+      删除不会影响点歌页缓存里的成品文件。装新声线去 <a href="/market" style="color:#7fb4ff">模型市场</a>
+      或控制台的「📥 导入模型」。装完记得在导入区或市场页点 <b>🔄 更新声线</b> 让它进点歌列表。</div>
+  </div>
+
+  <div class="card" id="orphanCard" style="display:none">
+    <h2>孤立索引（没有配套声线）<span style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="orphanBox"></div>
+    <div class="hint">这些 <b>.index</b> 找不到对应声线，多半是声线已删过、只留下了索引。留着不碍事，缺空间可以删。</div>
+  </div>
+
+  <div class="rst" id="rstBox"></div>
+</main>
+
+<div class="modal" id="modal">
+  <div class="box">
+    <div class="hd"><b>⚠️ 确认删除</b></div>
+    <div class="bd" id="modalBody"></div>
+    <div class="ft">
+      <button class="gray" onclick="modalClose()">取消</button>
+      <button class="red" id="delBtn" onclick="doDelete()">🗑 确认删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let DATA = null, PEND = null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),2600)}
+function rstShow(kind,html){const b=$('#rstBox');b.className='rst on'+(kind?' '+kind:'');b.innerHTML=html}
+async function api(p){const r=await fetch(p);return r.json().catch(()=>({ok:false}))}
+async function post(p,b){const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return r.json().catch(()=>({ok:false}))}
+
+async function load(){
+  DATA = await api('/api/models/list');
+  if(!DATA.ok){ $('#box').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  $('#dir').textContent = DATA.dir || '';
+  $('#sum').textContent = DATA.count ? ('共 ' + DATA.count + ' 个 · 合计 ' + DATA.total_mb + ' MB') : '';
+  render();
+  renderOrphans();
+}
+
+function render(){
+  const box = $('#box');
+  if(!DATA || !DATA.count){ box.innerHTML = '<div class="empty">还没有装任何声线 —— 去 <a href="/market" style="color:#7fb4ff">模型市场</a> 下载，或在控制台「📥 导入模型」。</div>'; return; }
+  const q = ($('#q').value||'').trim().toLowerCase();
+  const ms = DATA.models.filter(m => !q || m.name.toLowerCase().includes(q));
+  if(!ms.length){ box.innerHTML = '<div class="empty">没有匹配「'+esc(q)+'」的声线</div>'; return; }
+  box.innerHTML = '<table><tr><th style="width:44%">声线（.pth）</th><th>大小</th><th>导入时间</th><th>配套索引</th><th style="width:70px"></th></tr>'
+    + ms.map(m => '<tr>'
+      + '<td><div class="n">🎙 ' + esc(m.name.replace(/\.pth$/i,'')) + '</div></td>'
+      + '<td style="white-space:nowrap">' + m.mb + ' MB</td>'
+      + '<td style="white-space:nowrap;color:#75869f">' + m.date + '</td>'
+      + '<td>' + (m.indices.length
+          ? '<span class="tag t-on">✓ ' + m.indices.length + ' 个</span><div class="idx">' + m.indices.map(esc).join('<br>') + '</div>'
+          : '<span class="tag t-off">无（音色略偏）</span>') + '</td>'
+      + '<td><button class="red mini" onclick="askDelete(\'' + encodeURIComponent(m.name) + '\')">删除</button></td>'
+      + '</tr>').join('')
+    + '</table>'
+    + (ms.length < DATA.count ? '<div class="hint">已按「'+esc(q)+'」过滤：显示 '+ms.length+' / '+DATA.count+' 个</div>' : '');
+}
+
+function renderOrphans(){
+  const card = $('#orphanCard'), box = $('#orphanBox');
+  if(!DATA || !DATA.orphans || !DATA.orphans.length){ card.style.display='none'; return; }
+  card.style.display='';
+  box.innerHTML = '<table><tr><th style="width:44%">索引文件</th><th>大小</th><th>时间</th><th style="width:70px"></th></tr>'
+    + DATA.orphans.map(o => '<tr>'
+      + '<td><div class="n">🗂 ' + esc(o.name) + '</div></td>'
+      + '<td style="white-space:nowrap">' + o.mb + ' MB</td>'
+      + '<td style="white-space:nowrap;color:#75869f">' + o.date + '</td>'
+      + '<td><button class="red mini" onclick="askDelete(\'' + encodeURIComponent(o.name) + '\')">删除</button></td>'
+      + '</tr>').join('') + '</table>';
+}
+
+function askDelete(enc){
+  const name = decodeURIComponent(enc);
+  post('/api/models/delete', {name: name}).then(r=>{
+    if(!r.ok){ toast(r.msg || '预览失败'); return; }
+    PEND = name;
+    $('#modalBody').innerHTML = '确定要删除 <b style="color:#ff9b9b">' + esc(name) + '</b> 吗？将删除以下 '
+      + r.count + ' 个文件，腾出 <b>' + r.mb + ' MB</b>：'
+      + '<div class="flist">' + r.files.map(esc).join('') + '</div>'
+      + '<label class="chk">删除声线后它不会出现在点歌列表里（不影响已生成的成品）</label>';
+    $('#modal').classList.add('on');
+  });
+}
+function modalClose(){ $('#modal').classList.remove('on'); PEND = null; }
+async function doDelete(){
+  if(!PEND) return;
+  const btn = $('#delBtn'); btn.disabled = true;
+  const r = await post('/api/models/delete', {name: PEND, confirm: true});
+  btn.disabled = false; modalClose();
+  if(r.ok){ rstShow('ok', '✅ ' + esc(r.msg) + '（' + esc((r.deleted||[]).join('、')) + '）'); await load(); }
+  else rstShow('bad', '❌ ' + esc(r.msg || '删除失败'));
+}
+$('#modal').addEventListener('click', e=>{ if(e.target.id==='modal') modalClose(); });
+load();
+</script>
+</body>
+</html>

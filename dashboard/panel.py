@@ -69,6 +69,13 @@ except Exception as _e:
     market = None
     print("⚠️ 模型市场未加载（market.py 导入失败）: %s" % _e)
 
+# 模型管理：盘点已装声线 / 删除（本机 /models 页）
+try:
+    import models_mgr
+except Exception as _e:
+    models_mgr = None
+    print("⚠️ 模型管理未加载（models_mgr.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -1184,6 +1191,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(code, json.dumps(obj, ensure_ascii=False))
         elif path == "/market":
             self._send(200, _read_page("market_page.html", MARKET_PAGE), "text/html; charset=utf-8")
+        elif path == "/models":
+            if models_mgr:
+                self._send(200, models_mgr.page(), "text/html; charset=utf-8")
+            else:
+                self._send(500, "模型管理未加载：models_mgr.py 导入失败", "text/plain; charset=utf-8")
+        elif models_mgr and path == "/api/models/list":
+            try:
+                self._send(200, json.dumps(models_mgr.list_models(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({"ok": False, "msg": str(e)}, ensure_ascii=False))
         elif market and path.startswith("/api/market/"):
             code, obj = market.handle_get(path, q)
             self._send(code, json.dumps(obj, ensure_ascii=False))
@@ -1321,6 +1338,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if model_import and path.startswith("/api/admin/import_"):
             try:
                 code, obj = model_import.handle_post(path, body)
+            except Exception as e:
+                code, obj = 500, {"ok": False, "msg": str(e)}
+            self._send(code, json.dumps(obj, ensure_ascii=False))
+            return
+        # 模型管理：删除声线/索引（两段式，先预览再 confirm）
+        if models_mgr and path.startswith("/api/models/"):
+            try:
+                code, obj = models_mgr.handle_post(path, body)
             except Exception as e:
                 code, obj = 500, {"ok": False, "msg": str(e)}
             self._send(code, json.dumps(obj, ensure_ascii=False))

@@ -114,6 +114,7 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
   <div class="nav">
     <a href="/" class="on">控制台</a>
     <a href="/market">模型市场</a>
+    <a href="/models">模型管理</a>
     <a href="/panel">监控面板</a>
     <a href="/cover">自助翻唱</a>
     <a href="/guest" target="_blank">访客页预览</a>
@@ -198,15 +199,17 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
       <span class="sp"></span>
       <span style="font-size:12.5px;color:#8fa3c2" id="mkLine">线路检测中…</span>
     </div>
-    <div class="hint">在公开免费模型站里搜声线（角色 / 歌手 / 合集包），点开看文件清单，选 <b>.pth</b> 和配套 <b>.index</b> 就能一键下载。下载前自动给各条线路测速挑最快的，下完核验大小 + SHA-256 + torch 结构，全过才装进 WebUI。装完回模型市场页点右上 <b>🔄 更新声线</b>（一键重启 3333），新声线立刻可用。</div>
+    <div class="hint">在公开免费模型站里搜声线（角色 / 歌手 / 合集包），点开看文件清单，选 <b>.pth</b> 和配套 <b>.index</b> 就能一键下载。下载前自动给各条线路测速挑最快的，下完核验大小 + SHA-256 + torch 结构，全过才装进 WebUI。装完在下面对应的下载卡片上点「🔄 更新声线」（一键重启 3333），新声线立刻可用。</div>
   </div>
 
   <div class="card">
     <h2>模型导入</h2>
     <button class="green" onclick="importPick()">📥 导入模型（弹出文件选择窗口）</button>
     <span style="margin-left:8px"><input type="checkbox" id="impReplace"> 允许覆盖同名文件</span>
+    <button class="gray" id="impUpdBtn" style="margin-left:8px" onclick="impRestartApi()">🔄 更新声线（重启后端）</button>
     <div id="impBox" style="margin-top:10px"><div class="empty">还没有导入过模型</div></div>
-    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。装完去 <b>模型市场</b> 页点右上 <b>🔄 更新声线</b>，或在这里用服务开关重启 3333，新声线才会出现在点歌列表。</div>
+    <div id="impRst" style="display:none;margin-top:10px;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.65"></div>
+    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。装完<b>直接点上面的 <span style="color:#f0c674">🔄 更新声线</span></b>（一键重启 3333，约 30~90 秒），新声线就会出现在点歌列表——不用再去模型市场。管理/删除已装声线去 <a href="/models" style="color:#7fb4ff">模型管理</a> 页。</div>
   </div>
 
   <div class="card">
@@ -619,14 +622,85 @@ async function importInstall(i){
     const d = await impPost('/api/admin/import_install',
                             {pth: it.path, index: it.match_index || null, replace: rep});
     if(d.ok){
-      toast(d.msg + ' —— 去模型市场点「🔄 更新声线」重启后端即可生效');
+      toast(d.msg + ' —— 直接点「🔄 更新声线」重启后端即可生效');
       it.installed = true; impRender(); loadStatus();
+      try{ localStorage.setItem('rvcNeedRestart', it.name || ''); }catch(e){}
     }else if(d.exists){
       if(confirm(d.msg + '\n\n要覆盖吗？')){ $('#impReplace').checked = true; importInstall(i); }
     }else{
       toast(d.msg || '导入失败');
     }
   }catch(e){ toast('请求失败：' + e.message); }
+}
+
+/* ---------- 更新声线：就地重启 3333 后端（不用去模型市场） ---------- */
+/* 3333 的模型列表是启动时读一次的，新装的声线要重启它才进点歌列表。
+   判定标准与市场页一致：端口必须「先关后开」才算重启成功。 */
+let IMPUPD = {running:false};
+function impRstShow(kind, html){
+  const b = $('#impRst');
+  b.style.display = 'block';
+  const bg = kind==='ok' ? '#10291f' : (kind==='bad' ? '#2a1414' : '#2a2313');
+  const bd = kind==='ok' ? '#1f5340' : (kind==='bad' ? '#5c2626' : '#5c4a1f');
+  const fg = kind==='ok' ? '#6fd39a' : (kind==='bad' ? '#ff9b9b' : '#f0c674');
+  b.style.background = bg; b.style.border = '1px solid ' + bd; b.style.color = fg;
+  b.innerHTML = html;
+}
+async function impRestartApi(){
+  if(IMPUPD.running) return;
+  const btn = $('#impUpdBtn');
+  IMPUPD.running = true; btn.disabled = true;
+
+  let wasOpen = null, webui = null;
+  try{
+    const s = await (await fetch('/api/status', {cache:'no-store'})).json();
+    const p3333 = (s.ports||[]).find(x=>x.port===3333);
+    wasOpen = p3333 ? !!p3333.open : null;
+    webui = !!((s.ports||[]).find(x=>x.port===7865)||{}).open;
+  }catch(e){}
+  if(webui === false){
+    impRstShow('bad', 'RVC WebUI(7865) 没在跑，此时重启 3333 也读不到声线列表。先点「⚡ 一键开启服务」，再回来点这里。');
+    IMPUPD.running = false; btn.disabled = false; return;
+  }
+
+  const t0 = Date.now();
+  const el = () => ((Date.now() - t0) / 1000).toFixed(0);
+  impRstShow('', '正在重启 3333 后端…先停掉旧进程，再重新读模型列表（约 30~90 秒；正在生成的会被中断）');
+
+  let r;
+  try{
+    r = await (await fetch('/api/action', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({do:'restart', target:'api'})})).json();
+  }catch(e){ r = {ok:false, msg:e.message}; }
+  if(!r || !r.ok){
+    impRstShow('bad', '重启失败：' + esc((r && r.msg) || '面板没有响应') + '。可以用上面的服务开关手动重启 3333。');
+    IMPUPD.running = false; btn.disabled = false; return;
+  }
+
+  let sawClosed = !wasOpen;   // 本来就没开，等它第一次出现即可
+  for(let i = 0; i < 80; i++){
+    await new Promise(rs => setTimeout(rs, 1500));
+    let open = null;
+    try{
+      const s = await (await fetch('/api/status', {cache:'no-store'})).json();
+      open = !!((s.ports||[]).find(x=>x.port===3333)||{}).open;
+    }catch(e){ continue; }
+    if(!open){
+      if(!sawClosed){ sawClosed = true; impRstShow('', '旧进程已停止，正在重新启动并读取声线列表…（' + el() + ' 秒）'); }
+      continue;
+    }
+    if(open && sawClosed){
+      impRstShow('ok', '✅ 已更新（' + el() + ' 秒）：3333 后端重启完成，新声线现在就能点了。');
+      try{ localStorage.removeItem('rvcNeedRestart'); }catch(e){}
+      IMPUPD.running = false; btn.disabled = false;
+      return;
+    }
+  }
+  impRstShow('bad', sawClosed
+    ? '等了 2 分钟 3333 还没起来。看服务开关旁的日志，或双击 停止RVC.bat 清干净后重新开启。'
+    : '3333 一直没断过，旧进程可能没停掉。双击 停止RVC.bat 清干净，再「⚡ 一键开启服务」。');
+  IMPUPD.running = false; btn.disabled = false;
 }
 
 /* ---------- 高级设置 ---------- */

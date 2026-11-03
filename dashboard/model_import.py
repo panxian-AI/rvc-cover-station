@@ -313,8 +313,12 @@ def check(paths):
     return {"ok": True, "items": items, "pairs": pairs}
 
 
-def install(pth, index=None, replace=False):
-    """把选好的模型装进 WebUI。目标位置固定，文件名净化后落盘。"""
+def install(pth, index=None, replace=False, name=None, index_name=None):
+    """把选好的模型装进 WebUI。目标位置固定，文件名净化后落盘。
+
+    name / index_name 可选：指定装进去的文件名（模型市场下载的缓存文件带仓库前缀，
+    装的时候要用仓库里的原始文件名，不然声线列表里全是 u1__repo__xxx.pth）。
+    """
     out = {"ok": False, "pth": "", "index": "", "replace": bool(replace)}
     if not isinstance(pth, str) or not pth.strip():
         out["msg"] = "缺少 .pth 文件路径"
@@ -339,7 +343,7 @@ def install(pth, index=None, replace=False):
             out["msg"] = "index 校验未通过: %s" % inspect_index(src_index).get("msg")
             return out
 
-    name_pth = _clean_name(info["name"]) or "model.pth"
+    name_pth = _clean_name(name or info["name"]) or "model.pth"
     dest_pth = os.path.join(WEIGHTS_DIR, name_pth)
     if os.path.abspath(dest_pth) != os.path.abspath(src_pth) and \
             os.path.exists(dest_pth) and not replace:
@@ -351,7 +355,7 @@ def install(pth, index=None, replace=False):
     dest_ix = None
     if src_index:
         base = os.path.splitext(name_pth)[0].lower()
-        raw = _clean_name(os.path.basename(src_index))
+        raw = _clean_name(index_name or os.path.basename(src_index))
         if base not in os.path.splitext(raw)[0].lower():
             # 索引名和模型名对不上就按模型名重命名，保证换声时能自动配对
             raw = "%s_added_v2.index" % base

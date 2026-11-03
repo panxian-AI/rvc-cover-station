@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模型市场 · AI 翻唱</title>
+<style>
+:root{color-scheme:dark;--line:#253049;--dim:#8b9bb8;--card:#141c2c;--bg:#0b1019}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#e7eefb;
+font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:5;background:#0e1524ee;backdrop-filter:blur(8px);
+border-bottom:1px solid #1e2a40;padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;letter-spacing:.5px}
+.nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.nav a{padding:6px 13px;border-radius:20px;border:1px solid var(--line);background:#141c2c;
+color:#9fb2cc;text-decoration:none;font-size:13px}
+.nav a:hover{border-color:#3b82f6;color:#dce9ff}
+.nav a.on{background:#1d2b45;border-color:#3b82f6;color:#dce9ff}
+main{max-width:1080px;margin:0 auto;padding:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 17px;margin-bottom:13px}
+.card h2{font-size:13px;margin:0 0 11px;color:#8fa3c2;font-weight:600;letter-spacing:.6px}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.sp{flex:1}
+button{border:0;border-radius:9px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer;
+font-family:inherit}
+button:disabled{opacity:.45;cursor:default}
+.green{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff}
+.red{background:#2a1618;border:1px solid #5a2a2a;color:#ff9b9b}
+.gray{background:#1b2537;border:1px solid #2b3a57;color:#c8d6ea;font-weight:500}
+.mini{padding:6px 12px;font-size:12px}
+input[type=text],input[type=search],select{background:#0c1220;border:1px solid #22304a;color:#e7eefb;
+border-radius:9px;padding:9px 12px;font-size:13.5px;font-family:inherit;outline:none}
+input[type=text]:focus,input[type=search]:focus{border-color:#3b82f6}
+.hint{font-size:12px;color:#6f8099;margin-top:9px;line-height:1.7}
+.tag{font-size:11px;padding:2px 9px;border-radius:20px;border:1px solid;white-space:nowrap}
+.t-on{color:#6fd39a;border-color:#1f5340;background:#10291f}
+.t-off{color:#f0c674;border-color:#5c4a1f;background:#2a2313}
+.t-bad{color:#ff8f8f;border-color:#5c2626;background:#2a1414}
+.t-blue{color:#7fb4ff;border-color:#22406e;background:#12213a}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.chip{font-size:12px;padding:4px 11px;border-radius:20px;background:#131d2f;border:1px solid #22304a;
+color:#9fb2cc;cursor:pointer}
+.chip:hover{border-color:#3b82f6;color:#dce9ff}
+/* 结果卡片 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:11px}
+.m{background:#131b2b;border:1px solid var(--line);border-radius:12px;padding:13px 14px;
+display:flex;flex-direction:column;gap:6px;transition:.15s}
+.m:hover{border-color:#3b82f6;background:#16233a}
+.m .n{font-size:13.5px;font-weight:600;line-height:1.4;word-break:break-all;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.m .a{font-size:11.5px;color:#75869f;word-break:break-all}
+.m .b{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+.m .f{margin-top:auto;display:flex;align-items:center;gap:8px;padding-top:6px}
+.m .f span{font-size:11.5px;color:#75869f}
+.m .f button{padding:5px 11px;font-size:12px}
+.empty{color:#6f8099;font-size:13px;padding:16px 2px}
+/* 文件选择 */
+.modal{position:fixed;inset:0;background:#05080fd9;backdrop-filter:blur(3px);display:none;
+align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal.on{display:flex}
+.modal .box{background:#121a29;border:1px solid #2b3a57;border-radius:16px;max-width:760px;width:100%;
+max-height:88vh;display:flex;flex-direction:column;box-shadow:0 24px 60px #0009}
+.modal .hd{padding:15px 20px 11px;border-bottom:1px solid #1e2a40}
+.modal .hd b{font-size:15px;word-break:break-all}
+.modal .bd{padding:13px 20px;overflow:auto;font-size:13px;color:#c8d6ea;flex:1}
+.modal .ft{padding:12px 20px 16px;border-top:1px solid #1e2a40;display:flex;gap:9px;
+flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.flist{border:1px solid #1e2a40;border-radius:10px;max-height:270px;overflow:auto;background:#0c1220}
+.frow{display:flex;gap:9px;align-items:center;padding:8px 11px;border-bottom:1px solid #16202f;
+cursor:pointer;font-size:12.5px}
+.frow:last-child{border-bottom:0}
+.frow:hover{background:#111a2a}
+.frow input{margin:0;accent-color:#3b82f6}
+.frow .p{flex:1;min-width:0;word-break:break-all;color:#cfe3ff;font-family:ui-monospace,Consolas,monospace;
+font-size:12px}
+.frow .s{color:#75869f;font-size:11.5px;white-space:nowrap}
+.frow.sel{background:#132441}
+/* 任务 */
+.job{background:#131b2b;border:1px solid var(--line);border-radius:11px;padding:10px 13px;margin-bottom:8px}
+.job .t{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.job .t b{font-size:13px;word-break:break-all}
+.job .t .sp{flex:1}
+.bar{height:6px;background:#0c1220;border-radius:6px;overflow:hidden;margin-top:8px;border:1px solid #1e2a40}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#38bdf8);
+width:0;transition:width .3s}
+.bar.run i{background:linear-gradient(90deg,#2563eb,#38bdf8,#a78bfa);background-size:200% 100%;
+animation:flow 1.4s linear infinite}
+@keyframes flow{from{background-position:0 0}to{background-position:200% 0}}
+.job .m{font-size:11.5px;color:#75869f;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);opacity:0;
+background:#1b2740;border:1px solid #2f4260;padding:10px 18px;border-radius:22px;font-size:13px;
+transition:.25s;pointer-events:none;max-width:88vw;text-align:center;z-index:99}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.srcline{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#8fa3c2;align-items:center}
+.srcline b{color:#dce9ff;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #1c283c}
+th{color:#7f90ac;font-weight:500;font-size:11.5px}
+tr:hover td{background:#121a29}
+details summary{cursor:pointer;font-size:12.5px;color:#8fa3c2;outline:none}
+details summary:hover{color:#dce9ff}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧩 模型市场</h1>
+  <div class="nav">
+    <a href="/">控制台</a>
+    <a href="/market" class="on">模型市场</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/panel">监控面板</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>找声线</h2>
+    <div class="row">
+      <select id="kind" onchange="switchKind()">
+        <option value="models">模型库（单个声线）</option>
+        <option value="datasets">合集包（一个包里很多声线）</option>
+      </select>
+      <input type="search" id="q" placeholder="搜角色 / 歌手 / 关键词，例如 miku、genshin、丁真" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')doSearch(1)">
+      <select id="sort" onchange="doSearch(1)">
+        <option value="downloads">按下载量</option>
+        <option value="likes">按喜欢</option>
+        <option value="recent">按更新时间</option>
+      </select>
+      <button class="green" onclick="doSearch(1)">🔍 搜索</button>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="srcline" id="lines" style="margin-top:11px">线路检测中…</div>
+    <div class="hint">数据来自公开的免费 RVC 模型托管站（HuggingFace 模型库 / 数据集合集），只列真正带 <b>.pth</b> 的仓库。
+      下载前会对每条线路实测速度、自动选最快的那条；下完先比对大小和 SHA-256，再用 torch 确认是 RVC 声线，全过才装进 WebUI。</div>
+  </div>
+
+  <div class="card">
+    <h2>结果 <span id="resSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="results" class="grid"></div>
+    <div class="row" style="margin-top:12px;justify-content:center">
+      <button class="gray mini" id="moreBtn" style="display:none" onclick="loadMore()">加载更多</button>
+    </div>
+    <div class="hint">喜欢某个声线就先看文件清单：一个 <b>.pth</b> 是必须的，配套 <b>.index</b> 会让相似度明显更好（没有也能用，但音色会偏）。</div>
+  </div>
+
+  <div class="card">
+    <h2>下载 / 安装 <span id="jobSum" style="color:#8fa3c2;font-weight:400"></span>
+      <button class="gray mini" style="float:right;font-weight:500" onclick="clearJobs()">清空已完成</button></h2>
+    <div id="jobs"><div class="empty">还没有下载任务</div></div>
+    <div class="hint">下载中的任务可以取消；已下好的文件会留在缓存里，重装同一个模型不用再传一遍。装完 <b>必须重启 3333 后端</b>，新声线才会出现在点歌/翻唱列表里。</div>
+  </div>
+
+  <div class="card">
+    <h2>本机已装声线 <span id="instSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="installed"><div class="empty">读取中…</div></div>
+    <div class="hint" id="instPath"></div>
+  </div>
+
+  <div class="card">
+    <h2>缓存 <span id="cacheSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div class="row">
+      <button class="gray mini" onclick="loadCache()">刷新</button>
+      <button class="red mini" onclick="clearCache()">清空缓存</button>
+    </div>
+  </div>
+</main>
+
+<div class="modal" id="detail">
+  <div class="box">
+    <div class="hd">
+      <b id="dRepo">—</b>
+      <div style="color:#75869f;font-size:12px;margin-top:4px" id="dMeta"></div>
+    </div>
+    <div class="bd">
+      <div class="row" style="margin-bottom:8px">
+        <input type="search" id="dFilter" placeholder="在文件里过滤，例如 miku / .index" style="flex:1" oninput="renderFiles()">
+        <label style="font-size:12px;color:#8fa3c2;display:flex;align-items:center;gap:5px">
+          <input type="checkbox" id="dOnlyPth" onchange="renderFiles()" checked> 只看 .pth/.index
+        </label>
+      </div>
+      <div style="font-size:12px;color:#8fa3c2;margin-bottom:5px">① 选声线（.pth，必选）</div>
+      <div class="flist" id="dPth"></div>
+      <div style="font-size:12px;color:#8fa3c2;margin:12px 0 5px">② 选索引（.index，可选）</div>
+      <div class="flist" id="dIdx"></div>
+      <label style="display:flex;gap:7px;align-items:center;font-size:12px;color:#9fb2cc;margin-top:12px">
+        <input type="checkbox" id="dReplace"> 允许覆盖 weights 里的同名文件
+      </label>
+    </div>
+    <div class="ft">
+      <span id="dSel" style="margin-right:auto;font-size:12px;color:#8fa3c2">—</span>
+      <button class="gray" onclick="closeDetail()">关闭</button>
+      <button class="green" onclick="doInstall()">⬇ 下载并安装</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('on'),2600);}
+const fmtMB = mb => mb >= 1024 ? (mb/1024).toFixed(2)+' GB' : (mb||0).toFixed(1)+' MB';
+const fmtKB = k => k >= 1024 ? (k/1024).toFixed(1)+' MB/s' : Math.round(k||0)+' KB/s';
+
+const HOT = [['RVC','rvc'],['初音 / Miku','miku'],['原神 / Genshin','genshin'],['星穹铁道','star rail'],
+  ['明日方舟','arknights'],['蔚蓝档案','blue archive'],['中文女声','chinese female'],['男声','male'],
+  ['日语','japanese'],['v2','v2']];
+$('#chips').innerHTML = HOT.map(([label,q]) => `<span class="chip" data-q="${esc(q)}">${esc(label)}</span>`).join('');
+$('#chips').addEventListener('click', e => {
+  const c = e.target.closest('.chip'); if(!c) return;
+  $('#q').value = c.dataset.q; doSearch(1);
+});
+
+let STATE = {kind:'models', q:'', page:1, items:[], more:false, detail:null, selPth:'', selIdx:'', timer:null};
+
+async function api(url, opt){
+  const r = await fetch(url, Object.assign({cache:'no-store'}, opt||{}));
+  try { return await r.json(); } catch(e){ return {ok:false, msg:'返回内容无法解析（HTTP '+r.status+'）'}; }
+}
+async function post(url, body){
+  return api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})});
+}
+
+function switchKind(){
+  STATE.kind = $('#kind').value;
+  doSearch(1);
+}
+
+async function doSearch(page){
+  page = page || 1;
+  STATE.q = $('#q').value.trim();
+  STATE.page = page;
+  if(page === 1){
+    $('#results').innerHTML = '<div class="empty">搜索中…（模型站有时会比较慢，等几秒）</div>';
+  }
+  const u = '/api/market/search?kind=' + encodeURIComponent(STATE.kind)
+    + '&q=' + encodeURIComponent(STATE.q) + '&sort=' + encodeURIComponent($('#sort').value)
+    + '&page=' + page + '&per=18';
+  const d = await api(u);
+  if(!d.ok){
+    $('#results').innerHTML = '<div class="empty">' + esc(d.msg || '搜索失败') + '</div>';
+    $('#resSum').textContent = '';
+    $('#moreBtn').style.display = 'none';
+    return;
+  }
+  if(page === 1) STATE.items = d.items || []; else STATE.items = STATE.items.concat(d.items || []);
+  STATE.more = !!d.more;
+  renderResults();
+  $('#resSum').textContent = '共 ' + (d.total||0) + ' 个' + (d.line ? ' · 线路 ' + d.line : '');
+  $('#moreBtn').style.display = STATE.more ? '' : 'none';
+}
+function loadMore(){ doSearch(STATE.page + 1); }
+
+function renderResults(){
+  if(!STATE.items.length){
+    $('#results').innerHTML = '<div class="empty">没找到带 .pth 的仓库，换个关键词试试（合集包里模型更多，切到「合集包」看看）</div>';
+    return;
+  }
+  $('#results').innerHTML = STATE.items.map((m,i) => `
+    <div class="m">
+      <div class="n" title="${esc(m.repo)}">${esc(m.name)}</div>
+      <div class="a">${esc(m.author)} · ${esc(m.updated || '')}</div>
+      <div class="b">
+        <span class="tag t-blue">⬇ ${m.downloads}</span>
+        <span class="tag t-off">❤ ${m.likes}</span>
+        ${m.index_n ? `<span class="tag t-on">带索引 ${m.index_n}</span>` : `<span class="tag t-bad">无索引</span>`}
+      </div>
+      <div class="f">
+        <span>${m.pth_n} 个声线 / ${m.files} 个文件</span>
+        <span class="sp" style="flex:1"></span>
+        <button class="gray mini" data-i="${i}">查看文件</button>
+      </div>
+    </div>`).join('');
+  $('#results').querySelectorAll('button[data-i]').forEach(b => {
+    b.onclick = () => openDetail(STATE.items[+b.dataset.i]);
+  });
+}
+
+function baseName(p){
+  return String(p||'').split('/').pop().replace(/\.(pth|index)$/i,'')
+    .toLowerCase().replace(/added|ivf\d+|flat|nprobe_?\d+|v[12]/g,' ')
+    .replace(/[^0-9a-z\u4e00-\u9fff]+/g,'');
+}
+
+async function openDetail(m){
+  STATE.detail = {item:m, files:[], pth:[], idx:[]};
+  STATE.selPth = ''; STATE.selIdx = '';
+  $('#dRepo').textContent = m.repo;
+  $('#dMeta').textContent = '读取文件清单…';
+  $('#dPth').innerHTML = '<div class="empty">读取中…</div>';
+  $('#dIdx').innerHTML = '<div class="empty">读取中…</div>';
+  $('#dSel').textContent = '—';
+  $('#dReplace').checked = false;
+  $('#detail').classList.add('on');
+  const d = await api('/api/market/detail?kind=' + encodeURIComponent(m.kind || STATE.kind)
+    + '&repo=' + encodeURIComponent(m.repo));
+  if(!d.ok){
+    $('#dMeta').textContent = d.msg || '读取失败';
+    $('#dPth').innerHTML = '<div class="empty">没有读到文件清单</div>';
+    $('#dIdx').innerHTML = '';
+    return;
+  }
+  STATE.detail.files = d.files || [];
+  STATE.detail.pth = STATE.detail.files.filter(f => f.type === 'pth');
+  STATE.detail.idx = STATE.detail.files.filter(f => f.type === 'index');
+  const meta = d.meta || {};
+  $('#dMeta').textContent = `${d.pth_n} 个声线 · ${d.index_n} 个索引 · 共 ${fmtMB(d.total_mb)}`
+    + (meta.downloads ? ` · ⬇ ${meta.downloads}` : '') + (d.truncated ? '（文件太多，只列前 600 个）' : '');
+  STATE.selPth = (STATE.detail.pth[0] || {}).path || '';
+  autoPickIndex();
+  renderFiles();
+}
+
+function autoPickIndex(){
+  const p = baseName(STATE.selPth);
+  let best = '', score = 0;
+  for(const f of STATE.detail.idx){
+    const b = baseName(f.path);
+    let s = 0;
+    if(b && p && (b.includes(p) || p.includes(b))) s = 1;
+    else {
+      const A = new Set(b.match(/.{1,2}/g) || []), B = new Set(p.match(/.{1,2}/g) || []);
+      let inter = 0; A.forEach(x => { if(B.has(x)) inter++; });
+      s = (A.size + B.size) ? (2*inter)/(A.size+B.size) : 0;
+    }
+    if(s > score){ score = s; best = f.path; }
+  }
+  STATE.selIdx = score >= 0.4 ? best : '';
+}
+
+function renderFiles(){
+  if(!STATE.detail) return;
+  const kw = ($('#dFilter').value || '').toLowerCase();
+  const only = $('#dOnlyPth').checked;
+  const pick = (list, sel, kind) => list.filter(f => {
+    if(only && f.type === 'other') return false;
+    return !kw || f.path.toLowerCase().includes(kw);
+  }).map(f => `
+    <label class="frow ${sel === f.path ? 'sel' : ''}">
+      <input type="radio" name="r_${kind}" value="${esc(f.path)}" ${sel === f.path ? 'checked' : ''}>
+      <span class="p">${esc(f.path)}</span>
+      <span class="s">${f.size ? fmtMB(f.mb) : '大小未知'}</span>
+    </label>`).join('') || '<div class="empty">没有匹配的文件</div>';
+
+  const pthHtml = pick(STATE.detail.pth, STATE.selPth, 'pth');
+  const idxHtml = (STATE.detail.idx.length
+      ? `<label class="frow ${STATE.selIdx === '' ? 'sel' : ''}">
+           <input type="radio" name="r_idx" value="" ${STATE.selIdx === '' ? 'checked' : ''}>
+           <span class="p">不装索引（相似度会差一点，但能跑）</span><span class="s">—</span></label>`
+        + pick(STATE.detail.idx, STATE.selIdx, 'idx')
+      : '<div class="empty">这个仓库没有 .index 索引</div>');
+  $('#dPth').innerHTML = pthHtml;
+  $('#dIdx').innerHTML = idxHtml;
+  $('#dPth').querySelectorAll('input[type=radio]').forEach(r => r.onchange = () => {
+    STATE.selPth = r.value; autoPickIndex(); renderFiles();
+  });
+  $('#dIdx').querySelectorAll('input[type=radio]').forEach(r => r.onchange = () => {
+    STATE.selIdx = r.value; renderFiles();
+  });
+
+  const pf = STATE.detail.pth.find(f => f.path === STATE.selPth);
+  const xf = STATE.detail.idx.find(f => f.path === STATE.selIdx);
+  const total = (pf ? pf.mb : 0) + (xf ? xf.mb : 0);
+  $('#dSel').textContent = pf ? ('已选 ' + fmtMB(total) + (xf ? '（含索引）' : '（无索引）')) : '还没选声线';
+}
+
+function closeDetail(){ $('#detail').classList.remove('on'); }
+
+async function doInstall(){
+  if(!STATE.selPth){ toast('先选一个 .pth 声线'); return; }
+  const d = await post('/api/market/install', {
+    kind: STATE.detail.item.kind || STATE.kind,
+    repo: STATE.detail.item.repo,
+    pth: STATE.selPth, index: STATE.selIdx,
+    replace: $('#dReplace').checked
+  });
+  toast(d.msg || (d.ok ? '已加入队列' : '提交失败'));
+  if(d.ok){ closeDetail(); loadJobs(true); }
+}
+
+/* ---------- 任务 ---------- */
+let JOBS = [], POLL = null;
+async function loadJobs(once){
+  const d = await api('/api/market/jobs');
+  JOBS = (d && d.items) || [];
+  const active = JOBS.filter(j => j.state === 'running' || j.state === 'queued').length;
+  $('#jobSum').textContent = JOBS.length ? ('共 ' + JOBS.length + ' 个任务' + (active ? ' · 进行中 ' + active : '')) : '';
+  if(!JOBS.length){
+    $('#jobs').innerHTML = '<div class="empty">还没有下载任务</div>';
+  } else {
+    $('#jobs').innerHTML = JOBS.map(j => {
+      const pct = j.total ? Math.min(100, Math.round(j.done / j.total * 100)) : (j.state === 'done' ? 100 : 0);
+      const st = {queued:'等排队', running:'进行中', done:'已完成', error:'失败', cancelled:'已取消'}[j.state] || j.state;
+      const cls = j.state === 'done' ? 't-on' : j.state === 'error' ? 't-bad'
+        : j.state === 'running' ? 't-blue' : 't-off';
+      return `<div class="job">
+        <div class="t">
+          <b>${esc(j.pth.split('/').pop())}</b>
+          <span class="tag ${cls}">${esc(st)}</span>
+          <span class="sp"></span>
+          ${(j.state === 'running' || j.state === 'queued')
+            ? `<button class="red mini" data-cancel="${esc(j.id)}">取消</button>` : ''}
+        </div>
+        <div class="bar ${j.state === 'running' ? 'run' : ''}"><i style="width:${pct}%"></i></div>
+        <div class="m">
+          <span>${esc(j.stage || '')}</span>
+          ${j.total ? `<span>${fmtMB(j.done/1048576)} / ${fmtMB(j.total/1048576)} · ${pct}%</span>` : ''}
+          ${j.speed ? `<span>${fmtKB(j.speed)}</span>` : ''}
+          ${j.line ? `<span>线路 ${esc(j.line)}</span>` : ''}
+        </div>
+        ${j.msg ? `<div class="m" style="color:${j.state==='error'?'#ff9b9b':'#8fa3c2'}">${esc(j.msg)}</div>` : ''}
+      </div>`;
+    }).join('');
+    $('#jobs').querySelectorAll('button[data-cancel]').forEach(b => b.onclick = async () => {
+      const r = await post('/api/market/cancel', {id:b.dataset.cancel});
+      toast(r.msg || ''); loadJobs();
+    });
+  }
+  if(active && !POLL){
+    POLL = setInterval(async () => {
+      await loadJobs();
+      if(!JOBS.some(j => j.state === 'running' || j.state === 'queued')){
+        clearInterval(POLL); POLL = null; loadInstalled();
+      }
+    }, 1200);
+  }
+  if(!active && POLL){ clearInterval(POLL); POLL = null; }
+}
+async function clearJobs(){ await post('/api/market/clear', {}); loadJobs(); }
+
+/* ---------- 已装 ---------- */
+async function loadInstalled(){
+  const d = await api('/api/market/installed');
+  if(!d.ok){ $('#installed').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  $('#instSum').textContent = (d.n || 0) + ' 个';
+  $('#instPath').textContent = '声线目录：' + (d.weights || '') + '　索引目录：' + (d.indices || '');
+  if(!d.items || !d.items.length){
+    $('#installed').innerHTML = '<div class="empty">还没有声线模型</div>';
+    return;
+  }
+  $('#installed').innerHTML = `<table><thead><tr><th>声线</th><th>大小</th><th>索引</th><th>时间</th></tr></thead><tbody>`
+    + d.items.map(x => `<tr><td>${esc(x.name)}</td><td>${x.mb} MB</td>
+        <td>${x.has_index ? '<span class="tag t-on">有</span>' : '<span class="tag t-off">无</span>'}</td>
+        <td>${esc(x.at)}</td></tr>`).join('') + '</tbody></table>';
+}
+
+/* ---------- 线路 / 缓存 ---------- */
+async function loadLines(fresh){
+  const d = await api('/api/market/lines' + (fresh ? '?fresh=1' : ''));
+  if(!d.ok){ $('#lines').textContent = '线路检测失败'; return; }
+  $('#lines').innerHTML = '下载线路：' + (d.lines||[]).map(l =>
+    l.ok ? `<b>${esc(l.label)}</b> ${l.ms}ms` : `<b style="color:#ff9b9b">${esc(l.label)}</b> 不通`
+  ).join(' · ') + ` <button class="gray mini" onclick="loadLines(true)">测速</button>`;
+}
+async function loadCache(){
+  const d = await api('/api/market/cache');
+  $('#cacheSum').textContent = d.ok ? (d.mb + ' MB · ' + d.files + ' 个文件') : '';
+}
+async function clearCache(){
+  if(!confirm('清空下载缓存？已安装的声线不受影响。')) return;
+  const d = await post('/api/market/cache_clear', {});
+  toast(d.msg || ''); loadCache();
+}
+
+loadLines(false);
+loadJobs();
+loadInstalled();
+loadCache();
+doSearch(1);
+</script>
+</body>
+</html>

@@ -23,13 +23,16 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
 from paths import DATA, DASH, PROJ, RVC_ROOT
 
+import speed
+
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "1.0.7"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "1.1.0"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")
@@ -207,17 +210,53 @@ def _zip_urls(tag: str) -> list:
     return urls
 
 
+def _line_name(url: str) -> str:
+    """线路的短名字，给界面/日志看（完整 URL 太长）。"""
+    try:
+        host = urllib.parse.urlparse(url).hostname or url
+    except Exception:
+        host = url
+    if host.endswith("codeload.github.com"):
+        return "GitHub 直连"
+    return host
+
+
+_last_download = {"url": "", "lines": [], "speed": 0.0}
+
+
 def _download(tag: str) -> tuple[bytes, str]:
+    """先给所有线路测速，再按实测速度从上到下试。
+
+    为什么不是「按固定顺序逐个试」：加速镜像有的快有的半死，固定顺序要等到
+    超时（每条 60 秒）才换下一条，用户体感就是「点了更新一直转圈」。这里先花
+    一两秒并行探 128KB，直接挑最快的，失败再降级到次快的。
+    """
+    urls = _zip_urls(tag)
+    cands = [{"label": _line_name(u), "url": u} for u in urls]
+    ranked = []
+    try:
+        ranked = speed.rank(cands, nbytes=128 * 1024, timeout=6, workers=4)
+    except Exception:
+        ranked = []
+    order = ranked or cands
+    _last_download["lines"] = [
+        {"label": c["label"], "ok": bool(c.get("ok")), "kbps": c.get("kbps") or 0,
+         "ms": c.get("ms") or 0} for c in order]
+
     last = ""
-    for u in _zip_urls(tag):
+    for i, c in enumerate(order):
+        u = c["url"]
         try:
-            data = _get(u, timeout=60)
+            data = _get(u, timeout=90)
             if len(data) < 1024 or data[:2] != b"PK":
                 last = "返回内容不是 zip"
                 continue
             if len(data) > MAX_ZIP:
                 last = "更新包过大（%d 字节），已放弃" % len(data)
                 continue
+            _last_download["url"] = u
+            _last_download["speed"] = c.get("kbps") or 0
+            _last_download["tries"] = i + 1
             return data, u
         except Exception as e:
             last = _explain(e)
@@ -303,5 +342,8 @@ def apply() -> dict:
     return {"ok": True, "from": info.get("current"), "to": new_ver,
             "written": written, "backed_up": backed, "skipped": skipped,
             "backup": backup if backed else "", "source": used,
+            "lines": _last_download.get("lines") or [],
+            "speed_kbps": _last_download.get("speed") or 0,
+            "tries": _last_download.get("tries") or 1,
             "msg": "已更新到 %s（替换 %d 个文件）。重启面板生效："
                    "关掉这个窗口，重新双击 启动RVC.bat" % (new_ver, written)}

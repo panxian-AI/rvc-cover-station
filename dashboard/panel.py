@@ -62,6 +62,13 @@ except Exception as _e:
     updater = None
     print("⚠️ 版本检测未加载（updater.py 导入失败）: %s" % _e)
 
+# 模型市场：搜公开模型站的免费 RVC 声线 → 多线路下载 → 核验 → 装进 WebUI
+try:
+    import market
+except Exception as _e:
+    market = None
+    print("⚠️ 模型市场未加载（market.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -1079,6 +1086,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 code, obj = 500, {"ok": False, "msg": str(e)}
             self._send(code, json.dumps(obj, ensure_ascii=False))
+        elif path == "/market":
+            self._send(200, MARKET_PAGE, "text/html; charset=utf-8")
+        elif market and path.startswith("/api/market/"):
+            code, obj = market.handle_get(path, q)
+            self._send(code, json.dumps(obj, ensure_ascii=False))
         elif settings_mod and path == "/api/admin/settings":
             # 必须排在 guest 的 /api/admin/ 通配之前，否则会被它截胡成 404
             try:
@@ -1203,6 +1215,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         body = self._read_json()
         if self._too_big():
+            return
+        # 模型市场：下载并安装（必须排在 guest 的 /api/admin/ 通配之前，也不与它同前缀）
+        if market and path.startswith("/api/market/"):
+            code, obj = market.handle_post(path, body)
+            self._send(code, json.dumps(obj, ensure_ascii=False))
             return
         # 模型导入：选文件 / 识别 / 安装（必须排在 guest 的 /api/admin/ 通配之前）
         if model_import and path.startswith("/api/admin/import_"):
@@ -1660,6 +1677,8 @@ def _read_page(name, fallback=""):
 # 控制台首页：本机直连 / 看到的就是这个，服务开关、公网地址、审批与队列都聚在一页
 CONSOLE_PAGE = _read_page("console_page.html",
                           "<h1>控制台页面缺失</h1><p>dashboard/console_page.html 不见了</p>")
+MARKET_PAGE = _read_page("market_page.html",
+                         "<h1>模型市场页面缺失</h1><p>dashboard/market_page.html 不见了</p>")
 
 
 def main():

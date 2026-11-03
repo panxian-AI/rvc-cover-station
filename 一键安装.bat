@@ -169,6 +169,7 @@ move "%SRC%\ncmapi" "%STACK%\RVCSVC\ncmapi" >nul
 move "%SRC%\setup" "%STACK%\RVCSVC\setup" >nul
 copy /y "%SRC%\Æô¶¯RVC.bat" "%INSTALL%\" >nul
 copy /y "%SRC%\Ð¶ÔØ³ÌÐò.bat" "%INSTALL%\" >nul
+copy /y "%SRC%\Í£Ö¹RVC.bat" "%INSTALL%\" >nul
 copy /y "%SRC%\README.md" "%INSTALL%\" >nul 2>nul
 copy /y "%SRC%\VERSION" "%STACK%\RVCSVC\" >nul 2>nul
 rd /s /q "%INSTALL%\_repo" 2>nul

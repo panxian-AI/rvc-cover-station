@@ -283,6 +283,13 @@ _lock = threading.Lock()
 
 
 def listening_map():
+    """{端口: [PID, ...]} —— 同一端口可能有多个监听者。
+
+    为什么不只留一个：Windows 允许两个进程同时监听同一端口（就是 8899
+    叠了 4 个实例那种情况）。以前这里用 setdefault 只记第一个，停止时按
+    端口找 PID 就只杀得掉一个，剩下的继续占着端口——用户看到的现象就是
+    「点了停止，端口还在监听，没法真正退出」。全部收集，才能全部杀掉。
+    """
     now = time.time()
     with _lock:
         ts, mp = _cache["netstat"]
@@ -297,8 +304,11 @@ def listening_map():
             if len(parts) >= 5 and parts[-2] == "LISTENING":
                 local = parts[1]
                 port = local.rsplit(":", 1)[-1]
-                if port.isdigit():
-                    mp.setdefault(int(port), int(parts[-1]))
+                if port.isdigit() and parts[-1].isdigit():
+                    pids = mp.setdefault(int(port), [])
+                    pid = int(parts[-1])
+                    if pid not in pids:
+                        pids.append(pid)
     except Exception:
         pass
     with _lock:
@@ -498,10 +508,13 @@ def collect():
     lm = listening_map()
     ports = []
     for w in WATCH:
-        pid = lm.get(w["port"])
+        pids = list(lm.get(w["port"]) or [])
+        pid = pids[0] if pids else None
         ports.append({
             "port": w["port"], "key": w["key"], "name": w["name"], "desc": w["desc"],
-            "open": port_open(w["port"]), "pid": pid, "proc": proc_name(pid) if pid else "",
+            "open": port_open(w["port"]), "pid": pid, "pids": pids,
+            "multi": len(pids) > 1,
+            "proc": proc_name(pid) if pid else "",
         })
     ips = lan_ips()
     default_ip = next((x["ip"] for x in ips if x.get("default")), (ips[0]["ip"] if ips else ""))
@@ -548,14 +561,22 @@ def pid_alive(pid):
         return False
 
 
-def pids_on_port(port):
-    lm = listening_map()
-    pid = lm.get(port)
-    if not pid:
+def pids_on_port(port, fresh=False):
+    """端口上**所有**监听 PID（可能不止一个，见 listening_map 的说明）
+
+    fresh=True 时强制重读 netstat。停止操作必须用这个：缓存是 4 秒的，
+    刚叠上来的实例会看不见，漏杀就成了「点停止但端口还在监听」。
+    """
+    if fresh:
         with _lock:
             _cache["netstat"] = (0, {})
-        pid = listening_map().get(port)
-    return pid
+    pids = list(listening_map().get(port) or [])
+    if not pids:
+        # 缓存可能是 4 秒前的，端口刚起来会漏；清一次缓存重查
+        with _lock:
+            _cache["netstat"] = (0, {})
+        pids = list(listening_map().get(port) or [])
+    return pids
 
 
 SERVICES = {
@@ -681,9 +702,64 @@ def start_all():
 # （反过来 WebUI 先死，后端拿不到模型列表会刷一屏报错）
 STOP_ORDER = [("api", 3333), ("ncm", 3002), ("webui", 7865)]
 
+# 服务 → 端口。单独抽出来，测试可以直接替换成临时端口，
+# 不用真的去停用户正在跑的后端。
+SERVICE_PORTS = {"api": 3333, "webui": 7865, "ncm": 3002}
 
-def stop_all(wait=10):
-    """停掉三个服务并等端口真正释放。返回 (ok, msg)"""
+
+def _kill_tree(pid):
+    """杀掉进程及其整棵子进程树。
+
+    为什么必须 /T：WebUI 是 gradio，主进程会派生下层进程，只杀父级会留下
+    孤儿继续占着 7865——这正是「停止了但端口还在监听」的来源之一。
+    """
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                   capture_output=True, timeout=10, creationflags=0x08000000)
+
+
+def tunnel_pids():
+    """cloudflared 的 PID 列表。
+
+    它只往外出站、不监听本地端口，所以按端口永远找不到它，只能按进程名找。
+    """
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared.exe",
+                              "/FO", "CSV", "/NH"],
+                             capture_output=True, timeout=8,
+                             creationflags=0x08000000).stdout.decode("gbk", "ignore")
+        pids = []
+        for line in out.splitlines():
+            m = re.match(r'"[^"]*","(\d+)"', line)
+            if m:
+                pids.append(int(m.group(1)))
+        return pids
+    except Exception:
+        return []
+
+
+def stop_tunnel():
+    """关掉公网隧道。返回 (ok, msg)"""
+    pids = tunnel_pids()
+    if not pids:
+        return True, "公网隧道未运行"
+    for pid in pids:
+        _kill_tree(pid)
+    t0 = time.time()
+    while time.time() - t0 < 5 and tunnel_pids():
+        time.sleep(0.3)
+    left = tunnel_pids()
+    if left:
+        return False, "公网隧道没停掉（PID %s）" % "/".join(map(str, left))
+    return True, "已关闭公网隧道"
+
+
+def stop_all(wait=10, include_tunnel=True):
+    """停掉三个服务 + 公网隧道，并等端口真正释放。返回 (ok, msg)
+
+    include_tunnel：以前这里不管隧道，用户点「一键退出」后面板死了、后端也停了，
+    但 cloudflared 还在后台跑，公网地址一直挂着（虽然只会返 502），
+    体感就是「没退干净」。现在一并关掉。
+    """
     parts = []
     all_ok = True
     for name, port in STOP_ORDER:
@@ -697,48 +773,63 @@ def stop_all(wait=10):
         if not ok:
             all_ok = False
         parts.append(m)
-        # 等端口释放，不然后面重启会撞端口
+        # stop() 内部已经复查过端口，这里再等一小会儿兜住 TIME_WAIT
         t0 = time.time()
         while time.time() - t0 < wait and port_open(port):
             time.sleep(0.3)
         if port_open(port):
             parts.append("%s 端口 %d 仍未释放" % (name, port))
             all_ok = False
+    if include_tunnel:
+        ok_t, m_t = stop_tunnel()
+        if not ok_t:
+            all_ok = False
+        parts.append(m_t)
     return all_ok, "；".join(parts)
 
 
 def stop(target):
-    port = {"api": 3333, "webui": 7865, "ncm": 3002}.get(target)
+    port = SERVICE_PORTS.get(target)
     if not port:
         return False, "未知服务: %s" % target
 
-    pid = pids_on_port(port) if port_open(port) else None
+    pids = pids_on_port(port, fresh=True) if port_open(port) else []
     how = "端口 %d" % port
-    if not pid:
+    if not pids:
         # 端口还没起来（刚启动 20 秒内点退出）——用自己拉起的 PID
         with _spawn_lock:
-            pid = _SPAWNED.get(target)
-        if pid and not pid_alive(pid):
-            pid = None
-        if pid:
+            sp = _SPAWNED.get(target)
+        if sp and pid_alive(sp):
+            pids = [sp]
             how = "子进程记录"
-    if not pid:
+    if not pids:
         return False, "%s 未在运行，无需停止" % target
 
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=10, creationflags=0x08000000)
+    killed = []
+    # 两轮：第一轮杀掉当前所有监听者（可能不止一个），第二轮抓「杀的过程中
+    # 又起来的」或者 gradio 那种父死子重启的情况
+    for _round in range(2):
+        for pid in [p for p in pids if pid_alive(p)]:
+            try:
+                _kill_tree(pid)
+                killed.append(pid)
+            except Exception:
+                pass
+        time.sleep(0.5)
         with _lock:
             _cache["netstat"] = (0, {})
-        with _spawn_lock:
-            _SPAWNED.pop(target, None)
-        # 等它真的死掉
-        t0 = time.time()
-        while time.time() - t0 < 6 and pid_alive(pid):
-            time.sleep(0.25)
-        return True, "已停止 %s (PID %d，据%s)" % (target, pid, how)
-    except Exception as e:
-        return False, "停止 %s 失败: %s" % (target, e)
+        pids = pids_on_port(port, fresh=True) if port_open(port) else []
+        if not pids:
+            break
+    with _spawn_lock:
+        _SPAWNED.pop(target, None)
+
+    if pids:
+        names = ", ".join("%d(%s)" % (p, proc_name(p) or "?") for p in pids)
+        return False, "停止 %s 没完全成功：端口 %d 仍被 %s 占着" % (target, port, names)
+    if not killed:
+        return True, "%s 已停止（据%s，进程此前已自行退出）" % (target, how)
+    return True, "已停止 %s (PID %s，据%s)" % (target, "/".join(map(str, killed)), how)
 
 
 # ---------------- 公网隧道信息 ----------------
@@ -1308,10 +1399,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif act == "start_all":
             ok, msg = start_all()
         elif act == "stop_all":
-            ok, msg = stop_all()
+            # 只停服务，不关公网隧道：控制台这个按钮的语义是「面板留着」，
+            # 隧道是通向面板的，一起关掉公网就再也打不开了。
+            ok, msg = stop_all(include_tunnel=False)
         elif act == "shutdown":
             ok, msg = stop_all()
-            msg = (msg + "；面板即将关闭，下次用请双击「启动监控面板.bat」") if ok else msg
+            if not ok:
+                # 关键：没停干净就不要退出面板。以前这里不管成败都 os._exit，
+                # 用户就再也点不到停止，只能去任务管理器——「没法完全退出」。
+                self._send(200, json.dumps({
+                    "ok": False,
+                    "msg": msg + "。还有进程没停掉，面板先不退出，可以再点一次；"
+                                 "仍不行就双击「停止RVC.bat」强制结束。",
+                    "shutdown": False}, ensure_ascii=False))
+                return
+            msg = (msg + "；面板即将关闭，下次用请双击「启动RVC.bat」") if ok else msg
             self._send(200, json.dumps({"ok": ok, "msg": msg, "shutdown": True},
                                        ensure_ascii=False))
             # 先把响应发完再退，否则浏览器拿不到消息
@@ -1417,7 +1519,10 @@ PAGE = r"""<!DOCTYPE html>
   </div>
   <div class="tip">
     <b>开启</b>：WebUI(7865) → 后端(3333) → 网易云(3002)，全自动等就绪；已在跑的会跳过。
-    <b>退出</b>：按 后端 → 网易云 → WebUI 的顺序停掉，并关闭本面板。<br>
+    <b>退出</b>：按 后端 → 网易云 → WebUI 的顺序停掉，再关公网隧道和本面板。<br>
+    <b>会等端口真的释放再退出</b>：万一有进程停不掉（比如端口被别的东西占着），
+    面板不会假装退出，而是把占用的 PID 报给你，你可以再点一次，或双击根目录的
+    <b>停止RVC.bat</b> 强制结束。<br>
     拔移动硬盘、玩游戏、想让显卡空出来时用「一键退出」；只想停服务但留着面板看状态，用下面那张卡片里的「全部停止」。
   </div>
 </div>
@@ -1533,6 +1638,7 @@ function render(){
         <span>${esc(p.desc)}</span></div>
       <span class="tag" style="color:${p.open?'#7ef0a8':'#8d9bb8'}">:${p.port} ${st}</span>
       <span class="tag">${p.pid?('PID '+p.pid+(p.proc?(' · '+esc(p.proc)):'')):'—'}</span>
+      ${p.multi?`<span class="tag" style="color:#fbbf24;border-color:#fbbf24">⚠ ${p.pids.length} 个进程抢这个端口</span>`:''}
       <div>${btns}</div>
     </div>`;
   }).join('');

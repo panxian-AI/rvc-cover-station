@@ -414,6 +414,34 @@ def main():
     chk("GET /market 200", code == 200, code)
     chk("市场页面含标题与关键词", "模型市场" in body and "/api/market/search" in body)
     chk("市场页面有自定义地址入口", "自定义市场地址" in body and "line_add" in body)
+    chk("市场页面有「更新声线」按钮", "更新声线" in body and "restartApi" in body)
+
+    # 页面热更新：改完 HTML 刷新浏览器就生效，不用重启面板
+    tp = os.path.join(HERE, "_tmp_hot_page.html")
+    try:
+        open(tp, "w", encoding="utf-8").write("A")
+        chk("页面首次读取", panel._read_page("_tmp_hot_page.html", "") == "A")
+        open(tp, "w", encoding="utf-8").write("B")
+        os.utime(tp, (time.time() + 5, time.time() + 5))   # 确保 mtime 变化
+        chk("文件改动后按 mtime 重读（热更新）", panel._read_page("_tmp_hot_page.html", "") == "B")
+        os.remove(tp)
+        chk("文件缺失时回落到传入的兜底内容",
+            panel._read_page("_tmp_hot_page.html", "FALLBACK") == "FALLBACK")
+    finally:
+        if os.path.isfile(tp):
+            os.remove(tp)
+        panel._PAGE_CACHE.pop("_tmp_hot_page.html", None)
+
+    # 更新声线走的是 /api/action 的 restart；这里桩掉真实启停，只验路由与返回语义
+    real_stop, real_start = panel.stop, panel.start
+    panel.stop = lambda t: (True, "桩：已停 %s" % t)
+    panel.start = lambda t: (True, "桩：已启 %s" % t)
+    try:
+        code, obj = jpost("/api/action", {"do": "restart", "target": "api"})
+    finally:
+        panel.stop, panel.start = real_stop, real_start
+    chk("POST /api/action restart 能重启 api",
+        code == 200 and obj.get("ok") is True and "已启" in (obj.get("msg") or ""), obj)
 
     code, body = jget("/api/market/jobs")
     chk("GET /api/market/jobs 正常", code == 200 and json.loads(body)["ok"] is True)

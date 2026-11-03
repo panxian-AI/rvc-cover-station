@@ -33,6 +33,14 @@ input[type=text],input[type=search],select{background:#0c1220;border:1px solid #
 border-radius:9px;padding:9px 12px;font-size:13.5px;font-family:inherit;outline:none}
 input[type=text]:focus,input[type=search]:focus{border-color:#3b82f6}
 .hint{font-size:12px;color:#6f8099;margin-top:9px;line-height:1.7}
+/* 更新声线提示条 */
+.rst{display:none;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 11px;padding:10px 13px;
+border-radius:11px;border:1px solid #5c4a1f;background:#2a2313;color:#f0c674;font-size:12.5px;line-height:1.65}
+.rst.on{display:flex}
+.rst.ok{border-color:#1f5340;background:#10291f;color:#6fd39a}
+.rst.bad{border-color:#5c2626;background:#2a1414;color:#ff9b9b}
+.rst b{color:#fff}
+.rst .sp2{flex:1}
 .tag{font-size:11px;padding:2px 9px;border-radius:20px;border:1px solid;white-space:nowrap}
 .t-on{color:#6fd39a;border-color:#1f5340;background:#10291f}
 .t-off{color:#f0c674;border-color:#5c4a1f;background:#2a2313}
@@ -165,13 +173,18 @@ details summary:hover{color:#dce9ff}
     <h2>下载 / 安装 <span id="jobSum" style="color:#8fa3c2;font-weight:400"></span>
       <button class="gray mini" style="float:right;font-weight:500" onclick="clearJobs()">清空已完成</button></h2>
     <div id="jobs"><div class="empty">还没有下载任务</div></div>
-    <div class="hint">下载中的任务可以取消；已下好的文件会留在缓存里，重装同一个模型不用再传一遍。装完 <b>必须重启 3333 后端</b>，新声线才会出现在点歌/翻唱列表里。</div>
+    <div class="hint">下载中的任务可以取消；已下好的文件会留在缓存里，重装同一个模型不用再传一遍。装完到下面对着
+      「🔄 更新声线」点一下，重启 3333 后端，新声线就会出现在点歌/翻唱列表里。</div>
   </div>
 
   <div class="card">
-    <h2>本机已装声线 <span id="instSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <h2>本机已装声线 <span id="instSum" style="color:#8fa3c2;font-weight:400"></span>
+      <button class="gray mini" id="updBtn" style="float:right;font-weight:500" onclick="restartApi()">🔄 更新声线（重启后端）</button></h2>
+    <div id="rstBox" class="rst"></div>
     <div id="installed"><div class="empty">读取中…</div></div>
     <div class="hint" id="instPath"></div>
+    <div class="hint">新装的声线不会自动刷新——3333 后端的模型列表是启动时读的，所以要重启一次。点上面的
+      <b>🔄 更新声线</b> 就行（约 30~90 秒，正在生成的会被中断）；重启失败会给原因，不会静默。</div>
   </div>
 
   <div class="card">
@@ -403,6 +416,7 @@ let JOBS = [], POLL = null;
 async function loadJobs(once){
   const d = await api('/api/market/jobs');
   JOBS = (d && d.items) || [];
+  noteNewDone();
   const active = JOBS.filter(j => j.state === 'running' || j.state === 'queued').length;
   $('#jobSum').textContent = JOBS.length ? ('共 ' + JOBS.length + ' 个任务' + (active ? ' · 进行中 ' + active : '')) : '';
   if(!JOBS.length){
@@ -462,6 +476,100 @@ async function loadInstalled(){
     + d.items.map(x => `<tr><td>${esc(x.name)}</td><td>${x.mb} MB</td>
         <td>${x.has_index ? '<span class="tag t-on">有</span>' : '<span class="tag t-off">无</span>'}</td>
         <td>${esc(x.at)}</td></tr>`).join('') + '</tbody></table>';
+}
+
+/* ---------- 更新声线：重启 3333 后端 ---------- */
+/* 为什么需要按钮：3333 的模型列表是 gradio 启动时读的（app_rvc 里 show_model()
+   在 launch 之前跑一次），进程不重启就一直拿旧列表，新装的声线点了也换不上。
+   以前只能自己关掉窗口重开，或者去控制台点服务开关，容易忘/找不着。 */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let UPD = {running:false};
+
+function rstShow(kind, html){
+  const b = $('#rstBox');
+  b.className = 'rst on' + (kind ? ' ' + kind : '');
+  b.innerHTML = html;
+}
+function rstHide(){ const b = $('#rstBox'); b.className = 'rst'; b.innerHTML = ''; }
+
+async function portOpen(port){
+  const s = await api('/api/status');
+  const p = ((s && s.ports) || []).find(x => x.port === port);
+  return p ? !!p.open : null;
+}
+
+async function restartApi(){
+  if(UPD.running) return;
+  const btn = $('#updBtn');
+  UPD.running = true; btn.disabled = true;
+
+  const wasOpen = await portOpen(3333);
+  const webui = await portOpen(7865);
+  if(!webui){
+    rstShow('bad', 'RVC WebUI(7865) 没在跑，此时重启 3333 也读不到声线列表。'
+      + '先回控制台点「⚡ 一键开启服务」，再回来点这里。');
+    UPD.running = false; btn.disabled = false; return;
+  }
+
+  const t0 = Date.now();
+  const el = () => ((Date.now() - t0) / 1000).toFixed(0);
+  rstShow('', '正在重启 3333 后端…先停掉旧进程，再重新读模型列表（约 30~90 秒；正在生成的会被中断）');
+
+  const r = await post('/api/action', {do:'restart', target:'api'});
+  if(!r || !r.ok){
+    rstShow('bad', '重启失败：' + esc((r && r.msg) || '面板没有响应')
+      + '。可以回控制台用服务开关手动重启 3333。');
+    UPD.running = false; btn.disabled = false; return;
+  }
+
+  // 端口先关后开才算重启完成：只判「开着」会在旧进程还没死时就误判成功
+  let sawClosed = !wasOpen;
+  for(let i = 0; i < 80; i++){
+    await sleep(1500);
+    const open = await portOpen(3333);
+    if(open === false){
+      if(!sawClosed){ sawClosed = true; rstShow('', '旧进程已停止，正在重新启动并读取声线列表…（' + el() + ' 秒）'); }
+      continue;
+    }
+    if(open && sawClosed){
+      rstShow('ok', '✅ 已更新（' + el() + ' 秒）：3333 后端重启完成，新声线现在就能点了。');
+      try { localStorage.removeItem('rvcNeedRestart'); } catch(e){}
+      await loadInstalled();
+      UPD.running = false; btn.disabled = false;
+      return;
+    }
+  }
+  rstShow('bad', sawClosed
+    ? '等了 2 分钟 3333 还没起来。去控制台看后端日志（3333 那行），或双击 停止RVC.bat 清干净后重新开启。'
+    : '3333 一直没断过，旧进程可能没停掉。双击 停止RVC.bat 清干净，再回控制台「⚡ 一键开启服务」。');
+  UPD.running = false; btn.disabled = false;
+}
+
+/* 任务从「进行中」变「已完成」时自动亮提示条，不用用户自己发现 */
+let DONE_KNOWN = null;
+function noteNewDone(){
+  if(DONE_KNOWN === null){                 // 首次加载只登记，不为历史任务弹提示
+    DONE_KNOWN = new Set(JOBS.map(j => j.id));
+    return;
+  }
+  const fresh = JOBS.filter(j => j.state === 'done' && j.installed && !DONE_KNOWN.has(j.id));
+  JOBS.forEach(j => DONE_KNOWN.add(j.id));
+  if(!fresh.length || UPD.running) return;
+  const names = fresh.map(j => (j.installed && j.installed.name) || j.pth.split('/').pop()).filter(Boolean);
+  const txt = '新装好 <b>' + esc(names.join('、')) + '</b>，但它还不在点歌列表里——'
+    + '点右上「🔄 更新声线」重启一次后端就生效（约 30~90 秒）。';
+  // 关掉页面再回来也要记得「还没重启」，否则用户下次进来就看不到这条提醒了
+  try { localStorage.setItem('rvcNeedRestart', names.join('、')); } catch(e){}
+  rstShow('', txt);
+}
+
+/* 上次装完没点更新就离开的，回来先提醒一句 */
+function showPendingRestart(){
+  let names = '';
+  try { names = localStorage.getItem('rvcNeedRestart') || ''; } catch(e){ return; }
+  if(!names || UPD.running) return;
+  rstShow('', '上次装好的 <b>' + esc(names) + '</b> 还没生效——'
+    + '点右上「🔄 更新声线」重启一次后端，它就会出现在点歌列表里。');
 }
 
 /* ---------- 线路 / 自定义地址 ---------- */
@@ -534,6 +642,7 @@ loadLines(false);
 loadJobs();
 loadInstalled();
 loadCache();
+showPendingRestart();
 doSearch(1);
 </script>
 </body>

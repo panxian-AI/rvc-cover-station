@@ -831,7 +831,7 @@ def _run(job: dict) -> None:
          installed={"name": res.get("pth"), "index": res.get("index"),
                     "sr": info.get("sr") or "", "version": info.get("version") or "",
                     "f0": info.get("f0") or "", "mb": info.get("mb") or 0},
-         msg="已安装 %s%s。重启 3333 后端后新声线才会出现在点歌列表。"
+         msg="已安装 %s%s。点市场页右上「🔄 更新声线」重启 3333 后端后，新声线才会出现在点歌列表。"
              % (res.get("pth"), ("（索引 %s）" % res.get("index")) if res.get("index") else ""))
 
 

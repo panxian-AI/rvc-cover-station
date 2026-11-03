@@ -1108,7 +1108,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # ---- 首页：本机是控制台，公网/局域网来客只能看访客页 ----
         if path in ("/", "/index.html", "/console"):
             if local:
-                self._send(200, CONSOLE_PAGE, "text/html; charset=utf-8")
+                self._send(200, _read_page("console_page.html", CONSOLE_PAGE), "text/html; charset=utf-8")
                 return
             if path == "/console":
                 self._redirect("/")           # 外面打开 /console 就回访客页
@@ -1183,7 +1183,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 code, obj = 500, {"ok": False, "msg": str(e)}
             self._send(code, json.dumps(obj, ensure_ascii=False))
         elif path == "/market":
-            self._send(200, MARKET_PAGE, "text/html; charset=utf-8")
+            self._send(200, _read_page("market_page.html", MARKET_PAGE), "text/html; charset=utf-8")
         elif market and path.startswith("/api/market/"):
             code, obj = market.handle_get(path, q)
             self._send(code, json.dumps(obj, ensure_ascii=False))
@@ -1776,13 +1776,31 @@ window._timer = setInterval(()=>{
 """
 
 
+_PAGE_CACHE = {}
+
+
 def _read_page(name, fallback=""):
+    """读 dashboard 下的页面文件，按 mtime 缓存。
+
+    以前只在 import 时读一次，于是改完 HTML 必须重启面板才能看到——
+    实际踩过：新加的「模型市场」入口在旧进程里根本不存在，看起来像功能没做。
+    现在改成每次请求比一下文件时间，改完刷新浏览器就生效，不用重开窗口。
+    """
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
     try:
-        with open(p, "r", encoding="utf-8") as f:
-            return f.read()
+        mt = os.path.getmtime(p)
     except OSError:
         return fallback
+    hit = _PAGE_CACHE.get(name)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except OSError:
+        return fallback
+    _PAGE_CACHE[name] = (mt, txt)
+    return txt
 
 
 # 控制台首页：本机直连 / 看到的就是这个，服务开关、公网地址、审批与队列都聚在一页

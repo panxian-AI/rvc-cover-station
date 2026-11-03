@@ -1,0 +1,22 @@
+# RVCSVC-API（3333 翻唱后端）直接依赖
+# Python 3.12 · 逐条核对过 app_rvc.py 的 import
+#
+# torch 按显卡选型（2.7.x 系列实测可用）：
+#   NVIDIA CUDA 12.8:  pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+#   仅 CPU:            pip install torch==2.7.1
+torch==2.7.1
+gradio==5.49.1
+gradio-client==1.13.3
+librosa==0.11.0
+numpy==1.26.4
+scipy==1.17.1
+soundfile==0.14.0
+pedalboard==0.9.26
+pydub==0.25.1
+requests>=2.31
+
+# 另需 ffmpeg / ffprobe 可执行文件放在本目录：
+#   https://www.gyan.dev/ffmpeg/builds/ 下载 release-full，取 ffmpeg.exe ffprobe.exe
+# 人声分离模型 5_HP-Karaoke-UVR.pth 放到 uvr5/uvr_model/：
+#   https://huggingface.co/Seprizzo/uvr-models/ 或 UVR5 官方发布页
+# 完整环境锁定（含间接依赖）见 requirements-freeze.txt

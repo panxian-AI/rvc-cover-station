@@ -51,8 +51,15 @@ QQ群/AstrBot 插件 ──► 8899 面板(访客页/控制台) ──► 3333 �
    ```bash
    # 面板层（很少几个）
    pip install -r requirements.txt
-   # 翻唱后端依赖与 RVC-WebUI 相同（torch、librosa、gradio、fairseq 等），建议直接复用其环境
+
+   # 翻唱后端（3333）建议独立 venv，Python 3.12
+   python -m venv RVCSVC-API/venv
+   RVCSVC-API/venv/Scripts/pip install -r RVCSVC-API/requirements.txt
+   # torch 按显卡选 CUDA 版本，命令见 requirements.txt 顶部注释
    ```
+   另需把 `ffmpeg.exe` / `ffprobe.exe` 放进 `RVCSVC-API/`（构建页有下载地址），
+   人声分离模型 `5_HP-Karaoke-UVR.pth` 放进 `RVCSVC-API/uvr5/uvr_model/`。
+   完整环境锁定（含全部间接依赖）见 `RVCSVC-API/requirements-freeze.txt`。
 4. **启动**：双击 `启动RVC.bat` → 控制台点「⚡ 一键开启服务」。本机打开 `http://127.0.0.1:8899/`。
 5. **网易云登录态（可选）**：双击 `ncmapi/设置网易云Cookie.bat`，在窗口里粘贴浏览器复制的
    Cookie，自动提取 MUSIC_U 并验证。不配也能用（匿名模式，VIP/独家曲目拿不到）。

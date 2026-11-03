@@ -14,7 +14,8 @@ covers/
 # ============ 运行环境 / 大文件（模型与 WebUI 请自行安装） ============
 apienv/
 RVCSVC-API/venv/
-RVCSVC-API/uvr5/
+RVCSVC-API/uvr5/uvr_model/
+RVCSVC-API/uvr5/lib/__pycache__/
 RVCSVC-API/output/
 RVCSVC-API/temp/
 RVCSVC-API/gradio_tmp/

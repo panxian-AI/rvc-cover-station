@@ -31,6 +31,7 @@ os.environ["RVC_NO_AUTOPUMP"] = "1"
 
 TMP = tempfile.mkdtemp(prefix="rvc_market_")
 os.environ["RVC_MARKET_CACHE"] = os.path.join(TMP, "cache")
+os.environ["RVC_MARKET_LINES_FILE"] = os.path.join(TMP, "market_lines.json")
 os.environ["RVC_SETTINGS_PATH"] = os.path.join(TMP, "advanced_settings.json")
 os.environ["RVC_GUEST_DB"] = os.path.join(TMP, "guest_db.json")
 os.environ["RVC_PUBLIC_STATE"] = os.path.join(TMP, "public_access.json")
@@ -342,7 +343,69 @@ def main():
     market.clear_finished()
     chk("清空完成后任务列表为空", market.jobs() == [])
 
-    print("== 7. HTTP 接口 ==")
+    print("== 7. 自定义市场地址（线路）==")
+    real_probe = market._probe
+    market._probe = lambda base, timeout=8.0: {"ok": True, "ms": 12, "error": ""}
+    # 前面几个小节用 RVC_MARKET_LINES 把线路指到本地站点，这里先摘掉，测完再挂回去
+    saved_env = os.environ.pop("RVC_MARKET_LINES", None)
+    market._clear_line_caches()
+    base_ids = [x["id"] for x in market.all_lines()]
+    chk("默认有两条内置线路", base_ids == ["mirror", "official"], base_ids)
+    chk("缺协议的地址被拒", market.line_add("x", "hf-mirror.com")["ok"] is False)
+    chk("ftp 协议被拒", market.line_add("x", "ftp://a.example.com")["ok"] is False)
+    chk("带账号密码的地址被拒", market.line_add("x", "https://u:p@a.example.com")["ok"] is False)
+    chk("地址太长被拒", market.line_add("x", "https://a.example.com/" + "x" * 300)["ok"] is False)
+    r_add = market.line_add("我的镜像", "https://Mirror.Example.com/hf/")
+    chk("合法地址能加进去", r_add["ok"] is True, r_add.get("msg"))
+    chk("地址被规范化（去尾斜杠、域名小写）", r_add.get("base") == "https://mirror.example.com/hf",
+        r_add.get("base"))
+    chk("重复地址被拒", market.line_add("", "https://mirror.example.com/hf")["ok"] is False)
+    chk("新线路参与选线", any(x["base"] == "https://mirror.example.com/hf" for x in market._lines()))
+    cid = r_add["id"]
+    chk("可以停用线路", market.line_toggle("mirror", False)["ok"] is True)
+    chk("停用后不参与选线", all(x["id"] != "mirror" for x in market._lines()))
+    chk("停用状态在 all_lines 里可见",
+        any(x["id"] == "mirror" and not x["enabled"] for x in market.all_lines()))
+    chk("再停用一条也行", market.line_toggle("official", False)["ok"] is True)
+    chk("不能停用最后一条线路", market.line_toggle(cid, False)["ok"] is False)
+    market.line_toggle("mirror", True)
+    market.line_toggle("official", True)
+    chk("重新启用后两条都在", len(market._lines()) == 3, [x["id"] for x in market._lines()])
+    chk("内置线路不能删", market.line_remove("mirror")["ok"] is False)
+    chk("删除自定义线路", market.line_remove(cid)["ok"] is True)
+    chk("删完就没了", all(x["id"] != cid for x in market.all_lines()))
+
+    cfg_path = os.environ["RVC_MARKET_LINES_FILE"]
+    os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+    with open(cfg_path, "w", encoding="utf-8") as fp:
+        fp.write("{坏掉的 JSON")
+    market._cfg_cache["mtime"] = -1.0
+    market._clear_line_caches()
+    chk("配置文件损坏时回落默认线路",
+        [x["id"] for x in market._lines()] == ["mirror", "official"])
+
+    os.environ["RVC_MARKET_LINES"] = "测试A=https://a.example.com,测试B=https://b.example.com"
+    market._clear_line_caches()
+    chk("环境变量优先于界面配置", [x["label"] for x in market._lines()] == ["测试A", "测试B"],
+        [x["label"] for x in market._lines()])
+    chk("环境变量生效时界面改动被拒", market.line_add("x", "https://c.example.com")["ok"] is False)
+    st = market.lines_status(False)
+    chk("线路状态标出 locked", st.get("locked") is True and len(st["lines"]) == 2, st.get("lines"))
+    del os.environ["RVC_MARKET_LINES"]
+    market._clear_line_caches()
+    chk("去掉环境变量后恢复默认", [x["id"] for x in market._lines()] == ["mirror", "official"])
+
+    market._probe = lambda base, timeout=8.0: {"ok": False, "ms": 5, "error": "连不上"}
+    r_dead = market.line_add("坏线路", "https://dead.example.com")
+    chk("连不上的地址也能先加着（提示不可达）",
+        r_dead["ok"] is True and "连不上" in r_dead.get("msg", ""), r_dead.get("msg"))
+    market.line_remove(r_dead["id"])
+    market._probe = real_probe
+    if saved_env:
+        os.environ["RVC_MARKET_LINES"] = saved_env
+    market._clear_line_caches()
+
+    print("== 8. HTTP 接口 ==")
     srv = panel.http.server.ThreadingHTTPServer(("127.0.0.1", 8895), panel.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     time.sleep(0.3)
@@ -350,6 +413,7 @@ def main():
     code, body = jget("/market")
     chk("GET /market 200", code == 200, code)
     chk("市场页面含标题与关键词", "模型市场" in body and "/api/market/search" in body)
+    chk("市场页面有自定义地址入口", "自定义市场地址" in body and "line_add" in body)
 
     code, body = jget("/api/market/jobs")
     chk("GET /api/market/jobs 正常", code == 200 and json.loads(body)["ok"] is True)
@@ -374,7 +438,34 @@ def main():
                       {"Origin": "http://evil.example"})
     chk("跨站 POST 被 CSRF 拦", code == 403, code)
 
-    print("== 8. 更新器多线路测速 ==")
+    market._probe = lambda base, timeout=8.0: {"ok": True, "ms": 30, "error": ""}
+    saved_env2 = os.environ.pop("RVC_MARKET_LINES", None)
+    market._clear_line_caches()
+    code, body = jget("/api/market/lines")
+    obj = json.loads(body)
+    chk("GET /api/market/lines 带 builtin/enabled", code == 200 and obj.get("ok") is True
+        and all("builtin" in x and "enabled" in x for x in obj["lines"]), obj.get("lines"))
+    chk("线路状态带可自定义上限", obj.get("custom_max", 0) >= 1)
+    code, obj = jpost("/api/market/line_add", {"label": "HTTP线", "base": "https://http.example.com/"})
+    chk("POST line_add 能加线路", obj.get("ok") is True, obj.get("msg"))
+    hid = obj.get("id")
+    code, body = jget("/api/market/lines")
+    chk("页面能查到新线路", "HTTP线" in body)
+    code, obj = jpost("/api/market/line_toggle", {"id": "mirror", "on": False})
+    chk("POST line_toggle 能停用", obj.get("ok") is True, obj.get("msg"))
+    code, body = jget("/api/market/lines?fresh=1")
+    chk("停用的线路标 skipped",
+        any(x["id"] == "mirror" and x.get("skipped") for x in json.loads(body)["lines"]))
+    code, obj = jpost("/api/market/line_remove", {"id": hid})
+    chk("POST line_remove 能删掉", obj.get("ok") is True, obj.get("msg"))
+    code, obj = jpost("/api/market/line_toggle", {"id": "mirror", "on": True})
+    chk("恢复内置线路", obj.get("ok") is True)
+    market._probe = real_probe
+    if saved_env2:
+        os.environ["RVC_MARKET_LINES"] = saved_env2
+    market._clear_line_caches()
+
+    print("== 9. 更新器多线路测速 ==")
     seen = []
 
     def fake_get(url, timeout=12):

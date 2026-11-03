@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-RVC 翻唱站 · 傻瓜式安装包 v1.1.0
+﻿RVC 翻唱站 · 傻瓜式安装包 v1.1.1
 ====================================
 
 只需要三步：
@@ -104,6 +103,35 @@ Python 安装包同样会从官方源 / 华为云 / npmmirror 三个镜像里自
 
 模型版权归原作者，下载前看仓库里的 LICENSE；不要用真人声音模型做
 商业化或公开传播。想手动装本机文件，控制台「模型导入」也还在。
+
+版本 1.1.1 新增
+----------------
+
+1）模型市场可以自己加线路
+
+   控制台 →「模型市场」（http://127.0.0.1:8899/market），页面上有
+   「线路 / 自定义市场地址」卡片：
+
+     · 填一个 HuggingFace 兼容的镜像或反代地址（要能访问 /api/models 和
+       /<作者>/<仓库>/resolve/main/<文件>），点「先测一下」验证；
+     · 点「＋ 添加」后它就跟内置线路一起参与测速，下载自动挑最快的；
+     · 慢的线路点「停用」即可，自定义的还能删掉；
+     · 地址只存本机 RVCSVC\_market_lines.json，不上传任何地方。
+
+2）让 AI 帮你装
+
+   用 WorkBuddy / Cursor / Claude Code 这类能跑命令的助手时，把仓库地址
+   （https://github.com/panxian-AI/rvc-cover-station）发给它就行：
+   它会读仓库里的一页纸 AI-INSTALL.md，跑一条命令装完，不用自己点。
+
+   这条命令也可以自己粘进 PowerShell：
+
+     $dir = "D:\RVC-Cover-Station"
+     powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install/ai_install.ps1' -OutFile $env:TEMP\rvc_ai_install.ps1; & $env:TEMP\rvc_ai_install.ps1 -Dir '$dir' -Gpu auto"
+
+     · 加 -DryRun 只验证线路和参数，不装东西（约 20 秒）
+     · 装完最后一行是 JSON，ok:true 就是成功
+     · 以后升级 = 重跑同一条命令（只换程序，不动模型和成品）
 
 卸载方式：双击安装目录里的「卸载程序.bat」（可选保留个人数据）；
 本安装不会改动系统设置，Python 装在安装目录里。

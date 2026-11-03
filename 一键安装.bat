@@ -15,6 +15,8 @@ rem  PIP_INDEX = Python 包国内镜像源（一般不用改）
 rem  TORCH_INDEX = 显卡版 torch 下载源（一般不用改）
 rem ================================================================
 set "REPO=panxian-AI/rvc-cover-station"
+rem  AI/脚本无人值守：RVC_UNATTENDED=1 RVC_DEFDIR=安装目录 RVC_GPU=gpu|cpu RVC_NO_START=1
+set "RVC_STAGE=start"
 rem  RVC_TAG   = 要安装的版本（空 = 长效模式：装 main 分支最新代码，推荐）
 rem              以后程序更新，重跑本安装器自动拿到新版，无需重新下载安装包
 rem              也可以锁定某个旧版本，例如: set "RVC_TAG=v1.0.3"
@@ -44,6 +46,8 @@ echo ==================================================
 echo.
 
 set "INSTALL=%~dp0RVC-Cover-Station"
+rem  外部传了 RVC_DEFDIR 就不弹选择窗口（AI / 批处理调用）
+if defined RVC_DEFDIR goto :dir_given
 set "RVC_DEFDIR=%INSTALL%"
 set "RVC_PICK="
 echo    正在打开「文件夹选择」窗口，请在窗口里选安装位置
@@ -56,8 +60,16 @@ set "INSTALL=%RVC_PICK%"
 goto :dir_ready
 :dir_manual
 set /p "INSTALL=安装到哪个文件夹？直接回车=默认（%INSTALL%）："
+:dir_given
+if not defined RVC_DEFDIR goto :dir_ready
+set "INSTALL=%RVC_DEFDIR%"
+set "RVC_STAGE=dir"
+echo    无人值守模式：安装位置 %INSTALL%
+if not exist "%INSTALL%" md "%INSTALL%" 2>nul
 :dir_ready
 set "INSTALL=%INSTALL:"=%"
+rem  路径归一化：E:/x 这种写法、多余的结尾斜杠都理干净（%%~fp 会解析成绝对路径）
+for %%p in ("%INSTALL%") do set "INSTALL=%%~fp"
 if "%INSTALL:~-1%"=="\" set "INSTALL=%INSTALL:~0,-1%"
 if "%INSTALL%"=="" goto :bad_dir
 if "%INSTALL:~2%"=="" goto :bad_dir
@@ -91,6 +103,7 @@ if "%GH_AUTO%"=="" goto :no_line
 set "GH_PREFIX=%GH_AUTO%"
 echo.
 echo   已自动选中最快的 GitHub 线路：编号 %GH_BI%
+if /i "%RVC_UNATTENDED%"=="1" goto :gh_done
 set "CH="
 set /p "CH=   直接回车用它，或输入编号 1-8 换一条线路："
 if "%CH%"=="" goto :gh_done
@@ -106,6 +119,15 @@ goto :gh_done
 :gh_manual
 echo   使用手动指定的线路：%GH_PREFIX%
 :gh_done
+if /i "%RVC_DRYRUN%"=="1" (
+  echo.
+  echo [dry-run] 安装位置：%INSTALL%
+  echo [dry-run] 当前线路前缀："%GH_PREFIX%"
+  echo [dry-run] 显卡模式：%RVC_GPU%
+  echo [dry-run] 安装目录已就绪，未下载任何文件。
+  endlocal
+  exit /b 0
+)
 echo.
 echo [0/6] 确定要安装的程序版本...
 set "TAG=%RVC_TAG%"
@@ -121,6 +143,7 @@ echo    锁定安装版本：%TAG%
 set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
 :zip_ready
 
+set "RVC_STAGE=download"
 echo [1/6] 下载程序代码（约 3MB）...
 curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if not errorlevel 1 goto :dl_ok
@@ -153,6 +176,7 @@ del /q "%INSTALL%\_repo.zip" 2>nul
 if not exist "%STACK%\RVC-WebUI\webui.py" goto :dl_fail
 
 if exist "%PYRT%" goto :py_ok
+set "RVC_STAGE=python"
 echo [3/6] 下载并安装 Python 3.12.10（装在安装目录内，不改系统设置）...
 curl.exe -L -o "%INSTALL%\_py.exe" "%PY_URL%"
 if errorlevel 1 goto :dl_fail
@@ -164,6 +188,10 @@ if not exist "%PYRT%" goto :py_fail
 :py_ok
 echo [4/6] 选择显卡模式...
 echo   N 卡（NVIDIA 显卡）速度快；没有或不确定就选 C，能用但慢一些。
+if /i "%RVC_GPU%"=="gpu" set "MODE=gpu"
+if /i "%RVC_GPU%"=="gpu" goto :mode_done
+if /i "%RVC_GPU%"=="cpu" set "MODE=cpu"
+if /i "%RVC_GPU%"=="cpu" goto :mode_done
 choice /C GC /N /M "   有 NVIDIA 显卡吗？按 G=有 / 按 C=没有或不确定："
 if errorlevel 2 goto :mode_cpu
 set "MODE=gpu"
@@ -173,6 +201,7 @@ set "MODE=cpu"
 :mode_done
 echo   已选择：%MODE%
 
+set "RVC_STAGE=deps"
 echo [5/6] 安装运行依赖（体积大，十几分钟到半小时都正常，别关窗口）...
 "%PYRT%" -m venv "%STACK%\RVCSVC\apienv"
 if errorlevel 1 goto :dep_fail
@@ -199,6 +228,7 @@ if errorlevel 1 goto :dep_fail
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUTF8=1"
 set "RVC_GH_PREFIX=%GH_PREFIX%"
+set "RVC_STAGE=models"
 echo [6/6] 下载基础模型与工具（rmvpe + 小肥鱼声线 + ffmpeg，约 270MB）...
 "%PYRT%" "%STACK%\RVCSVC\setup\下载基础模型.py"
 if errorlevel 1 echo   （模型下载有失败也不影响安装完成，可重跑本安装器只补模型）
@@ -223,6 +253,8 @@ echo    · hubert 等个别大模型需手动补一次（脚本上方有指引），
 echo      没有它生成会报错，获取一次后永久可用。
 echo ==================================================
 echo.
+if /i "%RVC_UNATTENDED%"=="1" if not "%RVC_NO_START%"=="0" goto :bye
+if /i "%RVC_NO_START%"=="1" goto :bye
 set "ANS="
 set /p "ANS=现在就启动吗？回车=启动 / 输入 N=退出："
 if /i "%ANS%"=="N" goto :bye
@@ -230,6 +262,12 @@ start "" "%INSTALL%\启动RVC.bat"
 goto :bye
 
 :no_line
+rem  AI / 外部脚本已经探到一条能用的线路时，别因为测速全失败就放弃
+if defined RVC_GH_PREFIX (
+  echo    测速都没通，改用外部指定的线路：%RVC_GH_PREFIX%
+  set "GH_PREFIX=%RVC_GH_PREFIX%"
+  goto :gh_done
+)
 echo.
 echo [X] 所有下载线路都连不上 GitHub。请检查网络后重试；如果公司/校园网
 echo     有限制，用记事本打开本文件，在顶部 GH_PREFIX= 填你自己可用的
@@ -256,10 +294,28 @@ echo [X] 依赖安装失败（多半是网络中断）。直接重新双击本文件即可断点续装。
 goto :hold
 
 :bye
+set "RVC_STAGE=done"
+echo AI_RESULT ok dir=%INSTALL%
+if defined INSTALL if exist "%STACK%\RVC-WebUI\webui.py" (
+  > "%INSTALL%\_install_ok.txt" echo ok
+  >> "%INSTALL%\_install_ok.txt" echo Ver=%VER%
+  >> "%INSTALL%\_install_ok.txt" echo Dir=%INSTALL%
+  >> "%INSTALL%\_install_ok.txt" echo Time=%DATE% %TIME%
+  if exist "%INSTALL%\_install_failed.txt" del /q "%INSTALL%\_install_failed.txt" 2>nul
+)
 endlocal
 exit /b 0
 
 :hold
 echo.
+echo AI_RESULT fail stage=%RVC_STAGE%
+if defined INSTALL if not exist "%INSTALL%" md "%INSTALL%" 2>nul
+if defined INSTALL > "%INSTALL%\_install_failed.txt" echo Stage=%RVC_STAGE%
+if defined INSTALL >> "%INSTALL%\_install_failed.txt" echo Time=%DATE% %TIME%
+if defined INSTALL >> "%INSTALL%\_install_failed.txt" echo Dir=%INSTALL%
+if /i "%RVC_UNATTENDED%"=="1" (
+  endlocal
+  exit /b 1
+)
 pause
 endlocal

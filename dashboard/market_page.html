@@ -135,6 +135,23 @@ details summary:hover{color:#dce9ff}
       下载前会对每条线路实测速度、自动选最快的那条；下完先比对大小和 SHA-256，再用 torch 确认是 RVC 声线，全过才装进 WebUI。</div>
   </div>
 
+  <div class="card" id="lineCard">
+    <h2>线路 / 自定义市场地址 <span id="lineSum" style="color:#8fa3c2;font-weight:400"></span>
+      <button class="gray mini" style="float:right;font-weight:500" onclick="loadLines(true)">全部测速</button></h2>
+    <div id="lineList"><div class="empty">线路检测中…</div></div>
+    <div class="row" style="margin-top:11px">
+      <input type="text" id="lnName" placeholder="名称（可留空）" style="width:140px" maxlength="40">
+      <input type="text" id="lnBase" placeholder="https://你的镜像地址（HuggingFace 兼容的镜像 / 反代）"
+             style="flex:1;min-width:240px" maxlength="240" onkeydown="if(event.key==='Enter')addLine()">
+      <button class="green mini" onclick="addLine()">＋ 添加</button>
+      <button class="gray mini" onclick="testLine()">先测一下</button>
+    </div>
+    <div class="hint">填一个 <b>HuggingFace 兼容</b>的镜像/反代地址就够了（它要有 <code>/api/models</code> 和
+      <code>/&lt;仓库&gt;/resolve/main/&lt;文件&gt;</code>）。添加后会和内置线路一起参与测速，下载时会自动挑最快的那条；
+      被墙或很慢的线路可以停用，不必删除。地址只存在本机 <code>_market_lines.json</code>，
+      不会上传；也可以在环境变量里用 <code>RVC_MARKET_LINES="名字A=https://a,名字B=https://b"</code> 一次性指定（此时界面改成只读）。</div>
+  </div>
+
   <div class="card">
     <h2>结果 <span id="resSum" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="results" class="grid"></div>
@@ -447,13 +464,61 @@ async function loadInstalled(){
         <td>${esc(x.at)}</td></tr>`).join('') + '</tbody></table>';
 }
 
-/* ---------- 线路 / 缓存 ---------- */
+/* ---------- 线路 / 自定义地址 ---------- */
+let LINES = [], LINES_LOCKED = false;
 async function loadLines(fresh){
   const d = await api('/api/market/lines' + (fresh ? '?fresh=1' : ''));
-  if(!d.ok){ $('#lines').textContent = '线路检测失败'; return; }
-  $('#lines').innerHTML = '下载线路：' + (d.lines||[]).map(l =>
+  if(!d.ok){ $('#lines').textContent = '线路检测失败'; $('#lineList').innerHTML = '<div class="empty">线路检测失败</div>'; return; }
+  LINES = d.lines || [];
+  LINES_LOCKED = !!d.locked;
+  renderLines(d);
+}
+function renderLines(d){
+  const on = LINES.filter(l => l.enabled);
+  const html = LINES.map(l => {
+    const ms = l.skipped ? '<span style="color:#75869f">已停用</span>'
+      : (l.ok ? l.ms + ' ms' : '<span style="color:#ff8f8f">不通</span>');
+    return `<tr>
+      <td>${esc(l.label)} ${l.builtin ? '<span class="tag t-blue">内置</span>' : '<span class="tag t-on">自定义</span>'}</td>
+      <td style="font-family:ui-monospace,Consolas,monospace;word-break:break-all">${esc(l.base)}</td>
+      <td style="white-space:nowrap">${ms}</td>
+      <td style="white-space:nowrap">
+        <button class="gray mini" data-tog="${esc(l.id)}" data-on="${l.enabled ? 0 : 1}">${l.enabled ? '停用' : '启用'}</button>
+        ${l.builtin ? '' : `<button class="red mini" data-del="${esc(l.id)}">删除</button>`}
+      </td></tr>`;
+  }).join('');
+  $('#lineList').innerHTML = `<table><thead><tr><th>线路</th><th>地址</th><th>延迟</th><th>操作</th></tr></thead><tbody>${html}</tbody></table>`
+    + (LINES_LOCKED ? '<div class="hint" style="color:#f0c674">当前线路由环境变量 <code>RVC_MARKET_LINES</code> 指定，界面上的增删/停用不生效。</div>' : '');
+  $('#lineSum').textContent = (on.length ? on.length + ' 条启用' : '没有启用线路')
+    + (d && d.file ? ' · ' + d.file : '');
+  $('#lines').innerHTML = '下载线路：' + (on.length ? on.map(l =>
     l.ok ? `<b>${esc(l.label)}</b> ${l.ms}ms` : `<b style="color:#ff9b9b">${esc(l.label)}</b> 不通`
-  ).join(' · ') + ` <button class="gray mini" onclick="loadLines(true)">测速</button>`;
+  ).join(' · ') : '<span style="color:#ff9b9b">没有启用中的线路</span>')
+    + ` <button class="gray mini" onclick="loadLines(true)">测速</button>`;
+  $('#lineList').querySelectorAll('button[data-tog]').forEach(b => b.onclick = async () => {
+    const r = await post('/api/market/line_toggle', {id:b.dataset.tog, on: b.dataset.on === '1'});
+    toast(r.msg || ''); if(r.ok) loadLines(true);
+  });
+  $('#lineList').querySelectorAll('button[data-del]').forEach(b => b.onclick = async () => {
+    if(!confirm('删除这条自定义地址？')) return;
+    const r = await post('/api/market/line_remove', {id:b.dataset.del});
+    toast(r.msg || ''); if(r.ok) loadLines(true);
+  });
+}
+async function addLine(){
+  const base = $('#lnBase').value.trim();
+  if(!base){ toast('先填地址'); return; }
+  if(LINES_LOCKED){ toast('线路由环境变量 RVC_MARKET_LINES 指定，界面改不了'); return; }
+  const r = await post('/api/market/line_add', {label: $('#lnName').value.trim(), base});
+  toast(r.msg || (r.ok ? '已添加' : '添加失败'));
+  if(r.ok){ $('#lnBase').value = ''; $('#lnName').value = ''; loadLines(true); }
+}
+async function testLine(){
+  const base = $('#lnBase').value.trim();
+  if(!base){ toast('先填地址'); return; }
+  toast('正在测这个地址…');
+  const d = await api('/api/market/line_test?base=' + encodeURIComponent(base));
+  toast(d.msg || (d.ok ? '通了' : '不通'));
 }
 async function loadCache(){
   const d = await api('/api/market/cache');

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install.json",
+  "name": "RVC 翻唱站",
+  "repo": "panxian-AI/rvc-cover-station",
+  "version": "1.1.1",
+  "purpose": "Windows 上一键装好 AI 翻唱整套栈（WebUI 7865 + 翻唱后端 3333 + 网易云代理 3002 + 控制台 8899）",
+  "ai_install": {
+    "entry_url": "https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install/ai_install.ps1",
+    "entry_path": "install/ai_install.ps1",
+    "shell": "powershell",
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"iwr -UseBasicParsing '{entry_url}' -OutFile $env:TEMP\\rvc_ai_install.ps1; & $env:TEMP\\rvc_ai_install.ps1 -Dir '{dir}' -Gpu auto\"",
+    "dry_run_arg": "-DryRun",
+    "args": {
+      "Dir": { "required": false, "default": "%LOCALAPPDATA%\\RVC-Cover-Station", "note": "不能是盘根（D:\\ 这种）" },
+      "Gpu": { "required": false, "default": "auto", "enum": ["auto", "gpu", "cpu"] },
+      "Tag": { "required": false, "default": "", "note": "空 = main 最新（长效）；可锁 v1.1.0" },
+      "Start": { "required": false, "default": false, "note": "装完是否自动启动面板" },
+      "DryRun": { "required": false, "default": false, "note": "只验证下载与参数" },
+      "Installer": { "required": false, "default": "", "note": "本地 一键安装.bat 路径（离线/测试）" }
+    },
+    "result": {
+      "format": "json",
+      "on": "stdout 最后一行",
+      "fields": ["ok", "exit_code", "dir", "gpu", "version", "missing", "panel", "error"],
+      "success_when": "ok == true && exit_code == 0",
+      "extra_marker": "<dir>\\_install_ok.txt（失败时是 <dir>\\_install_failed.txt，里面有 Stage=）"
+    }
+  },
+  "requirements": {
+    "os": "Windows 10/11 x64",
+    "admin": false,
+    "python_preinstalled": false,
+    "disk_gb": { "gpu": 12, "cpu": 6 },
+    "network": true,
+    "ports": [7865, 3333, 3002, 8899]
+  },
+  "verify": [
+    "<dir>\\RVC-Data\\RVC-WebUI\\webui.py",
+    "<dir>\\RVC-Data\\RVC-WebUI\\.venv\\Scripts\\python.exe",
+    "<dir>\\RVC-Data\\RVCSVC\\apienv\\Scripts\\python.exe",
+    "<dir>\\RVC-Data\\RVCSVC\\dashboard\\panel.py",
+    "<dir>\\启动RVC.bat"
+  ],
+  "after_install": {
+    "start": "双击 <dir>\\启动RVC.bat（或 -Start 自动启动）",
+    "console": "http://127.0.0.1:8899",
+    "first_step": "控制台点「一键全部启动」，等 7865/3333/3002 变绿",
+    "models": "控制台 → 模型市场（/market）搜声线，下载安装后重启 3333 后端",
+    "uninstall": "双击 <dir>\\卸载程序.bat"
+  },
+  "update": "重跑同一条命令（长效：拉 main 最新代码，只覆盖程序，不动模型/成品/白名单/设置）",
+  "fallback": "环境不能执行 PowerShell 时，让用户双击仓库里的 一键安装.bat（同一套流程的图形版）",
+  "docs": {
+    "agent": "AI-INSTALL.md",
+    "human": "docs/使用说明.md",
+    "readme": "README.md"
+  }
+}

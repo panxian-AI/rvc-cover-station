@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.1.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v1.1.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -34,7 +34,8 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   （音高算法 / 声线检索强度 / 滤波半径 / 混响 / 回声 / 分离聚合度 / 人声与伴奏音量）
 - 🧩 **模型市场**（`/market`）：在公开免费模型站（HuggingFace 模型库 / 数据集合集）里搜声线，
   点开看文件清单选 `.pth` + 配套 `.index`，一键下载并安装；下载前给各线路实测测速挑最快的那条，
-  下完依次核验**大小 → SHA-256 → torch 权重结构**，全过才落进 WebUI
+  下完依次核验**大小 → SHA-256 → torch 权重结构**，全过才落进 WebUI；
+  线路也能自己加：页面上填自己的镜像 / 反代地址，测速通过就参与选线，慢的可以停用
 - 📥 模型导入：控制台点按钮弹 Windows 文件选择框，自动识别 `.pth` 是否为 RVC 声线、
   自动配对 `.index` 索引，确认后直接装进 WebUI
 - 🔄 版本更新：打开控制台自动查最新版，有新版本弹窗显示更新内容，一键更新代码
@@ -56,7 +57,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 10 套回归测试共 434 项断言（`dashboard/e2e_*.py`）
+- 附带 11 套回归测试共 526 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 
@@ -75,6 +76,27 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
 > 🔧 安装器顶部有「下载地址配置区」：GitHub 加速前缀、Python 安装包地址、
 > pip 镜像源等都可以自行定义；所有下载按字节数校验。
 > 要求：Windows 10 1803+（自带 curl）；重跑安装器安全（断点续装）。
+
+## 🤖 让 AI 帮你装（省 token 的入口）
+
+用 WorkBuddy / Cursor / Claude Code 这类能跑命令的助手时，**把这个仓库地址发给它就行**：
+
+> 帮我装这个：https://github.com/panxian-AI/rvc-cover-station
+
+它会读 [`AI-INSTALL.md`](AI-INSTALL.md)（一页纸：入口命令、参数、成功判定、失败对照表），
+跑一条命令装完，**不需要把仓库代码逐个读一遍**——比让它自己摸索安装省下大量 token 和时间。
+
+手工一句话版（自己粘进命令行也行）：
+
+```powershell
+$dir = "D:\RVC-Cover-Station"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install/ai_install.ps1' -OutFile $env:TEMP\rvc_ai_install.ps1; & $env:TEMP\rvc_ai_install.ps1 -Dir '$dir' -Gpu auto"
+```
+
+- 无人值守：不弹文件夹选择框、不问显卡、装完不自动启动，参数全部走 `-Dir` / `-Gpu` / `-Tag`
+- 先空跑：加 `-DryRun`，只验证线路和参数，不装东西（约 20 秒）
+- 机器可读清单：[`install.json`](install.json)；结果最后一行是 JSON（`ok` / `version` / `missing` / `error`）
+- 升级 = 重跑同一条命令（长效模式拉 main 最新，只覆盖程序，不动模型与成品）
 
 ## 架构
 
@@ -142,6 +164,10 @@ QQ群/AstrBot 插件 ──► 8899 面板(访客页/控制台) ──► 3333 �
 
 只列**真正带 `.pth`** 且判定为语音转换类（有 `.index` / 带 rvc 标签 / 名字含 rvc）的仓库，
 `gated`、私有、纯 LLM 权重的仓库会被过滤掉。下载后核验不通过的文件不会进入 `weights`。
+
+线路可以在 `/market` 页面上自己加（填一个 HuggingFace 兼容的镜像 / 反代地址即可），
+加进去后会跟内置线路一起参与测速，慢的就停用；地址只存本机 `RVCSVC/_market_lines.json`，
+也可以用环境变量一次性指定：`RVC_MARKET_LINES="名字A=https://a.example.com,名字B=https://b.example.com"`。
 
 > ⚠️ 模型版权归原作者所有：下载使用前请看仓库里的 LICENSE / 作者说明，
 > **不要**用真人（明星、主播、他人）的声音模型做商业化或公开传播。

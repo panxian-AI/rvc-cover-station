@@ -56,11 +56,105 @@ DEFAULT_LINES = [
 ]
 
 
-def _lines() -> list:
-    """线路表。可用 RVC_MARKET_LINES="名字=https://...,名字2=https://..." 覆盖。"""
+# 自定义市场地址（模型站镜像 / 反代）落盘在这；RVC_MARKET_LINES 环境变量优先级更高
+LINES_FILE = os.environ.get("RVC_MARKET_LINES_FILE") or os.path.join(PROJ, "_market_lines.json")
+MAX_CUSTOM_LINES = 12
+MAX_LINE_URL = 240
+
+
+def normalize_base(url) -> str:
+    """把用户填的地址洗成 https://host[/path]；不合规就抛 ValueError（中文原因）。"""
+    raw = str(url or "").strip().strip('"').strip("'").replace(" ", "")
+    if not raw:
+        raise ValueError("地址不能为空")
+    if len(raw) > MAX_LINE_URL:
+        raise ValueError("地址太长（最多 %d 个字符）" % MAX_LINE_URL)
+    if not re.match(r"^https?://", raw, re.I):
+        raise ValueError("地址要以 http:// 或 https:// 开头")
+    p = urllib.parse.urlsplit(raw)
+    scheme = p.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("只支持 http / https")
+    if not p.netloc or "." not in p.netloc and ":" not in p.netloc:
+        raise ValueError("地址里要带域名，例如 https://hf-mirror.com")
+    if p.username or p.password:
+        raise ValueError("地址里不要带用户名密码")
+    if ".." in p.path or "\\" in p.path:
+        raise ValueError("地址路径不合法")
+    host = p.netloc.lower()
+    path = p.path.rstrip("/")
+    return "%s://%s%s" % (scheme, host, path)
+
+
+def _line_id(base: str) -> str:
+    return "c" + hashlib.sha1(base.encode("utf-8")).hexdigest()[:8]
+
+
+_cfg_lock = threading.Lock()
+_cfg_cache = {"mtime": -1.0, "data": None}
+
+
+def _empty_cfg() -> dict:
+    return {"custom": [], "off": []}
+
+
+def _load_cfg() -> dict:
+    """读自定义线路配置。坏文件 / 缺文件都当空配置，不让市场整个挂掉。"""
+    try:
+        mt = os.path.getmtime(LINES_FILE)
+    except OSError:
+        return _empty_cfg()
+    with _cfg_lock:
+        if _cfg_cache["data"] is not None and mt == _cfg_cache["mtime"]:
+            return _cfg_cache["data"]
+    cfg = _empty_cfg()
+    try:
+        with open(LINES_FILE, "r", encoding="utf-8") as fp:
+            raw = json.load(fp)
+    except Exception:
+        raw = {}
+    if isinstance(raw, dict):
+        seen = set()
+        for item in (raw.get("custom") or [])[:MAX_CUSTOM_LINES * 2]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                base = normalize_base(item.get("base"))
+            except ValueError:
+                continue
+            lid = _line_id(base)
+            if lid in seen:
+                continue
+            seen.add(lid)
+            label = str(item.get("label") or "").strip()[:40] or base
+            cfg["custom"].append({"id": lid, "label": label, "base": base})
+        off = raw.get("off") or []
+        if isinstance(off, list):
+            cfg["off"] = [str(x) for x in off if isinstance(x, (str, int))][:40]
+    with _cfg_lock:
+        _cfg_cache["data"], _cfg_cache["mtime"] = cfg, mt
+    return cfg
+
+
+def _save_cfg(cfg: dict) -> None:
+    tmp = LINES_FILE + ".tmp"
+    payload = {"_note": "模型市场的自定义线路；控制台 /market 里可以增删",
+               "custom": cfg["custom"], "off": cfg["off"]}
+    try:
+        os.makedirs(os.path.dirname(LINES_FILE) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        os.replace(tmp, LINES_FILE)
+    except OSError as e:
+        raise RuntimeError("保存线路配置失败：%s" % e)
+    with _cfg_lock:
+        _cfg_cache["data"], _cfg_cache["mtime"] = cfg, os.path.getmtime(LINES_FILE)
+
+
+def _env_lines() -> list:
     raw = (os.environ.get("RVC_MARKET_LINES") or "").strip()
     if not raw:
-        return [dict(x) for x in DEFAULT_LINES]
+        return []
     out = []
     for i, part in enumerate(raw.split(",")):
         part = part.strip()
@@ -68,13 +162,42 @@ def _lines() -> list:
             continue
         if "=" in part:
             label, base = part.split("=", 1)
-            label, base = label.strip(), base.strip()
         else:
             label, base = "线路%d" % (i + 1), part
-        if not base.startswith("http"):
+        try:
+            base = normalize_base(base)
+        except ValueError:
             continue
-        out.append({"id": "l%d" % i, "label": label or base, "base": base.rstrip("/")})
-    return out or [dict(x) for x in DEFAULT_LINES]
+        out.append({"id": "l%d" % i, "label": (label.strip() or base)[:40], "base": base,
+                    "builtin": True, "enabled": True})
+    return out
+
+
+def all_lines() -> list:
+    """全部线路（含被停用的），带 builtin / enabled 标记，给界面看。"""
+    env = _env_lines()
+    if env:
+        return env
+    cfg = _load_cfg()
+    off = set(cfg["off"])
+    out = [dict(x, builtin=True, enabled=x["id"] not in off) for x in DEFAULT_LINES]
+    out += [{"id": c["id"], "label": c["label"], "base": c["base"],
+             "builtin": False, "enabled": c["id"] not in off} for c in cfg["custom"]]
+    return out
+
+
+def _lines() -> list:
+    """实际参与搜索/下载的线路：启用的那些。全停用则回落到内置线路。
+
+    优先级：RVC_MARKET_LINES 环境变量 > _market_lines.json 里的自定义线路 > 内置两条。
+    """
+    env = _env_lines()
+    if env:
+        return [dict(x) for x in env]
+    usable = [x for x in all_lines() if x.get("enabled")]
+    if usable:
+        return [{"id": x["id"], "label": x["label"], "base": x["base"]} for x in usable]
+    return [dict(x) for x in DEFAULT_LINES]
 
 
 LINES = _lines()
@@ -366,36 +489,134 @@ def detail(kind: str, repo: str) -> dict:
             "total_mb": round(total / 1048576.0, 1), "meta": meta}
 
 
-# ---------------- 线路状态 ----------------
+# ---------------- 线路状态 / 自定义地址 ----------------
 _lines_cache = {"at": 0.0, "data": []}
+
+
+def _clear_line_caches() -> None:
+    with _line_lock:
+        _lines_cache["at"], _lines_cache["data"] = 0.0, []
+        _line_pref["line"], _line_pref["at"] = "", 0.0
+
+
+def _probe(base: str, timeout: float = 8.0) -> dict:
+    """单条地址实测：真发一个小 JSON 请求，返回延迟/错误原因。"""
+    t0 = time.time()
+    try:
+        speed.fetch(base + "/api/models?search=rvc&limit=1", timeout=timeout,
+                    headers={"Accept": "application/json"})
+        return {"ok": True, "ms": int((time.time() - t0) * 1000), "error": ""}
+    except Exception as e:
+        return {"ok": False, "ms": int((time.time() - t0) * 1000), "error": _explain(e)}
+
+
+def line_test(base) -> dict:
+    """「先测一下这个地址通不通」——不落盘。"""
+    try:
+        base = normalize_base(base)
+    except ValueError as e:
+        return {"ok": False, "msg": str(e)}
+    r = _probe(base)
+    if not r["ok"]:
+        return {"ok": False, "base": base, "ms": r["ms"],
+                "msg": "这个地址连不上：%s" % r["error"]}
+    return {"ok": True, "base": base, "ms": r["ms"], "msg": "通了，延迟 %d ms" % r["ms"]}
+
+
+def line_add(label, base, who: str = "") -> dict:
+    """加一条自定义市场地址（HF 兼容的镜像 / 反代）。"""
+    if _env_lines():
+        return {"ok": False, "msg": "当前用环境变量 RVC_MARKET_LINES 指定线路，"
+                                    "界面上的改动不生效；想用界面管理请先去掉这个变量"}
+    try:
+        base = normalize_base(base)
+    except ValueError as e:
+        return {"ok": False, "msg": str(e)}
+    cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in _load_cfg().items()}
+    if any(x["base"].lower() == base.lower() for x in all_lines()):
+        return {"ok": False, "msg": "这个地址已经在列表里了"}
+    if len(cfg["custom"]) >= MAX_CUSTOM_LINES:
+        return {"ok": False, "msg": "自定义地址最多 %d 条，先删掉几条" % MAX_CUSTOM_LINES}
+    lid = _line_id(base)
+    name = str(label or "").strip()[:40] or base.split("://", 1)[-1]
+    cfg["custom"].append({"id": lid, "label": name, "base": base})
+    if lid in cfg["off"]:
+        cfg["off"] = [x for x in cfg["off"] if x != lid]
+    _save_cfg(cfg)
+    _clear_line_caches()
+    r = _probe(base)
+    msg = "已添加「%s」" % name
+    if r["ok"]:
+        msg += "，实测 %d ms" % r["ms"]
+    else:
+        msg += "，但现在连不上（%s）——先留着，等网络好了会自动参与测速" % r["error"]
+    return {"ok": True, "id": lid, "base": base, "label": name,
+            "reachable": r["ok"], "ms": r["ms"], "msg": msg}
+
+
+def line_remove(lid) -> dict:
+    lid = str(lid or "").strip()
+    if _env_lines():
+        return {"ok": False, "msg": "线路由环境变量 RVC_MARKET_LINES 指定，界面改不了"}
+    cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in _load_cfg().items()}
+    hit = [x for x in cfg["custom"] if x["id"] == lid]
+    if not hit:
+        return {"ok": False, "msg": "内置线路不能删，只能停用"}
+    if not [x for x in all_lines() if x["id"] != lid and x["enabled"]]:
+        return {"ok": False, "msg": "这是唯一启用的线路，删了就没地方下模型了；先启用别的线路"}
+    cfg["custom"] = [x for x in cfg["custom"] if x["id"] != lid]
+    cfg["off"] = [x for x in cfg["off"] if x != lid]
+    _save_cfg(cfg)
+    _clear_line_caches()
+    return {"ok": True, "msg": "已删除「%s」" % hit[0]["label"]}
+
+
+def line_toggle(lid, on=True) -> dict:
+    lid = str(lid or "").strip()
+    if _env_lines():
+        return {"ok": False, "msg": "线路由环境变量 RVC_MARKET_LINES 指定，界面改不了"}
+    target = [x for x in all_lines() if x["id"] == lid]
+    if not target:
+        return {"ok": False, "msg": "没有这条线路"}
+    cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in _load_cfg().items()}
+    off = [x for x in cfg["off"] if x != lid]
+    if not on:
+        if len([x for x in all_lines() if x["enabled"]]) <= 1:
+            return {"ok": False, "msg": "至少得留一条线路，不然没地方下模型"}
+        off.append(lid)
+    cfg["off"] = off
+    _save_cfg(cfg)
+    _clear_line_caches()
+    name = target[0]["label"]
+    return {"ok": True, "msg": "已%s「%s」" % ("启用" if on else "停用", name)}
 
 
 def lines_status(fresh: bool = False) -> dict:
     """给界面看的线路延迟（真发一个小请求，不是 ping）。"""
+    env = bool(_env_lines())
     with _line_lock:
         if not fresh and _lines_cache["data"] and time.time() - _lines_cache["at"] < 120:
-            return {"ok": True, "cached": True, "lines": _lines_cache["data"]}
+            return {"ok": True, "cached": True, "lines": _lines_cache["data"],
+                    "custom_max": MAX_CUSTOM_LINES, "locked": env, "file": LINES_FILE}
+
+    all_ln = all_lines()
 
     def one(ln):
-        t0 = time.time()
-        try:
-            speed.fetch(api_url(ln, "/api/models?search=rvc&limit=1"), timeout=8)
-            ok, err = True, ""
-        except Exception as e:
-            ok, err = False, _explain(e)
-        return {"id": ln["id"], "label": ln["label"], "base": ln["base"],
-                "ok": ok, "ms": int((time.time() - t0) * 1000), "error": err}
+        if not ln.get("enabled"):
+            return dict(ln, ms=0, error="", skipped=True)
+        r = _probe(ln["base"])
+        return dict(ln, ok=r["ok"], ms=r["ms"], error=r["error"], skipped=False)
 
     from concurrent.futures import ThreadPoolExecutor
-    lines = _lines()
     try:
-        with ThreadPoolExecutor(max_workers=len(lines)) as ex:
-            data = list(ex.map(one, lines))
+        with ThreadPoolExecutor(max_workers=max(1, len(all_ln))) as ex:
+            data = list(ex.map(one, all_ln))
     except Exception:
-        data = [one(ln) for ln in lines]
+        data = [one(ln) for ln in all_ln]
     with _line_lock:
         _lines_cache["at"], _lines_cache["data"] = time.time(), data
-    return {"ok": True, "cached": False, "lines": data}
+    return {"ok": True, "cached": False, "lines": data,
+            "custom_max": MAX_CUSTOM_LINES, "locked": env, "file": LINES_FILE}
 
 
 # ---------------- 下载任务 ----------------
@@ -847,6 +1068,8 @@ def handle_get(path: str, q: dict) -> tuple:
             return 200, installed()
         if path == "/api/market/lines":
             return 200, lines_status(one("fresh") in ("1", "true"))
+        if path == "/api/market/line_test":
+            return 200, line_test(one("base"))
         if path == "/api/market/cache":
             return 200, cache_info()
     except Exception as e:
@@ -869,6 +1092,12 @@ def handle_post(path: str, body: dict) -> tuple:
             return 200, clear_finished()
         if path == "/api/market/cache_clear":
             return 200, clear_cache()
+        if path == "/api/market/line_add":
+            return 200, line_add(body.get("label"), body.get("base"))
+        if path == "/api/market/line_remove":
+            return 200, line_remove(body.get("id"))
+        if path == "/api/market/line_toggle":
+            return 200, line_toggle(body.get("id"), bool(body.get("on", True)))
     except Exception as e:
         return 200, {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
     return 404, {"ok": False, "msg": "not found"}

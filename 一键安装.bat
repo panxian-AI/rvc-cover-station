@@ -262,6 +262,11 @@ start "" "%INSTALL%\启动RVC.bat"
 goto :bye
 
 :no_line
+rem  AI / 外部脚本已经证明能连 GitHub（RVC_GH_TRUSTED=1）时，测速失败就直连继续
+if /i "%RVC_GH_TRUSTED%"=="1" (
+  echo    测速都没通，按外部脚本的结果直连下载。
+  goto :gh_done
+)
 rem  AI / 外部脚本已经探到一条能用的线路时，别因为测速全失败就放弃
 if defined RVC_GH_PREFIX (
   echo    测速都没通，改用外部指定的线路：%RVC_GH_PREFIX%

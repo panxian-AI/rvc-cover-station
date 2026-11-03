@@ -156,6 +156,8 @@ try {
     $env:RVC_NO_START   = if ($Start) { '0' } else { '1' }
     # 已经探到能用的加速线路就告诉 bat，省得它自己测速全挂时直接放弃
     $env:RVC_GH_PREFIX  = $script:UsedPrefix
+    # 能下到安装器本身就说明网络通：让 bat 在它自己测速全挂时别直接放弃
+    $env:RVC_GH_TRUSTED = if ($Installer) { '' } else { '1' }
     if ($Tag) { $env:RVC_TAG = $Tag } else { $env:RVC_TAG = '' }
     if ($DryRun) { $env:RVC_DRYRUN = '1' } else { $env:RVC_DRYRUN = '' }
 

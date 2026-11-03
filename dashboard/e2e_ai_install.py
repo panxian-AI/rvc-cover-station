@@ -163,6 +163,7 @@ def main():
     chk("无人值守时不让 bat 自己启动面板", "RVC_NO_START" in src)
     chk("把探到的线路传给 bat（省一次测速失败）", "RVC_GH_PREFIX" in src)
     chk("会把 LF 版安装器修成 CRLF", "function Repair-Bat" in src)
+    chk("下载成功后会置 RVC_GH_TRUSTED", "RVC_GH_TRUSTED" in src)
     r = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                         "$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile("
                         "'" + ps1.replace("'", "''") + "',[ref]$null,[ref]$e);"
@@ -186,6 +187,7 @@ def main():
     chk("无人值守不自动启动面板", 'if /i "%RVC_NO_START%"=="1" goto :bye' in btxt)
     chk("支持 dry-run 钩子", 'if /i "%RVC_DRYRUN%"=="1" (' in btxt)
     chk("测速全挂时用外部线路兜底", 'if defined RVC_GH_PREFIX (' in btxt)
+    chk("外部已证明能连时不再放弃", 'if /i "%RVC_GH_TRUSTED%"=="1" (' in btxt)
     chk("成功时写 _install_ok.txt", "_install_ok.txt" in btxt)
     chk("失败时写 _install_failed.txt 并退出码 1",
         "_install_failed.txt" in btxt and "exit /b 1" in btxt)

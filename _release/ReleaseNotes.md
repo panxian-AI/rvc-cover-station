@@ -4,7 +4,7 @@
 
 ## 下载
 
-- **一键安装包**：`RVC翻唱站-一键安装包-v1.0.0.zip`（下方 Assets，约 10KB）
+- **一键安装包**：`RVC-Cover-Station-Installer-v1.0.0.zip`（下方 Assets，约 4KB）
   里含 `一键安装.bat` 与 `安装说明.txt`；安装器会自动去下载程序代码与依赖。
 - 下载慢/失败：国内可先给安装器顶部 `GH_PREFIX` 填一个加速前缀（如 `https://ghfast.top/`），或换任意自选下载地址。
 

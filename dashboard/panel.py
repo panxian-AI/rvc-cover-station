@@ -929,8 +929,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             gid, new_gid = "", False
 
-        # 公开：访客提交翻唱申请（不需密码，但要等站长批准）
-        if guest_mod and path == "/api/guest/request":
+        # 公开：访客提交翻唱申请 / 白名单申请（不需密码，翻唱要等站长批准；
+        # 白名单申请本身也要站长批，且申请侧限流比点歌更紧）
+        if guest_mod and path in ("/api/guest/request", "/api/guest/wl_apply"):
             body = self._read_json()
             if self._too_big():
                 return

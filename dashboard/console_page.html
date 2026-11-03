@@ -136,6 +136,16 @@ summary:hover{color:#dce9ff}
   </div>
 
   <div class="card">
+    <h2>白名单申请 <span id="wlN" style="color:#f0c674"></span></h2>
+    <div id="wlApps"><div class="empty">读取中…</div></div>
+    <details id="wlListBox" style="margin-top:6px">
+      <summary>已批准名单 <span id="wlCount" style="color:#75869f"></span></summary>
+      <div id="wlList" style="margin-top:10px"><div class="empty">读取中…</div></div>
+    </details>
+    <div class="hint">批准后「同一台设备 + 同一个网络」的申请<b>自动入队、不再等你审批</b>；对方换设备或换网络就失效，要重新批（申请里带了设备指纹 + IP，命中判断全部在服务端做）。移除立即生效。</div>
+  </div>
+
+  <div class="card">
     <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="reqs"><div class="empty">读取中…</div></div>
     <details id="visitBox">
@@ -296,6 +306,66 @@ async function loadVisits(){
       <td>${v.count}</td><td>${v.searches||0}</td><td>${v.requests}</td></tr>`).join('') + `</table>`;
 }
 
+/* ---------- 白名单 ---------- */
+async function loadWl(){
+  let d;
+  try{ d = await (await fetch('/api/admin/wl', {cache:'no-store'})).json(); }
+  catch(e){ $('#wlApps').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#wlApps').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
+  const apps = (d.apps||[]).filter(a => a.state === 'pending');
+  const done = (d.apps||[]).filter(a => a.state !== 'pending');
+  $('#wlN').textContent = apps.length ? ('· ' + apps.length + ' 条待审') : '';
+  if(!apps.length){
+    $('#wlApps').innerHTML = '<div class="empty">暂时没有待审的白名单申请' +
+      (done.length ? ('（已处理 ' + done.length + ' 条）') : '') + '</div>';
+  }else{
+    $('#wlApps').innerHTML = apps.map(a => `<div class="qrow">
+      <div class="t" style="min-width:0;flex:1">
+        <b style="font-size:13px">${esc(a.reason)}</b>
+        <span>${esc(a.ua)||'-'}${a.country?' · '+esc(a.country):''} · IP ${esc(a.ip)} · 指纹 ${esc(a.fp_short)}</span>
+        <span>历史：申请 ${a.gid_reqs} 次 · 被拒 ${a.gid_rejected} 次 · 提交于 ${esc(a.created)}${a.already_wl?' · <b style="color:#f0c674">该设备已在名单（换网络重新批）</b>':''}</span>
+      </div>
+      <button class="green" onclick="wlDecide('approve','${esc(a.id)}')">✓ 批准</button>
+      <button class="red" onclick="wlDecide('reject','${esc(a.id)}')">拒绝</button>
+    </div>`).join('');
+  }
+  const list = d.entries || [];
+  $('#wlCount').textContent = list.length ? ('· ' + list.length + ' 人') : '';
+  if(!list.length){
+    $('#wlList').innerHTML = '<div class="empty">还没有人被加入白名单</div>';
+  }else{
+    $('#wlList').innerHTML = `<table><tr><th>批准时间</th><th>网络（IP）</th><th>设备</th><th>备注</th><th>直通次数</th><th>最近活跃</th><th>操作</th></tr>` +
+      list.map(w => `<tr>
+        <td style="white-space:nowrap;color:#75869f">${esc(w.approved)}</td>
+        <td>${esc(w.ip)}${w.country?'<div style="color:#75869f;font-size:11px">'+esc(w.country)+'</div>':''}</td>
+        <td style="color:#75869f">${esc(w.ua)||'-'}</td>
+        <td style="color:#75869f;max-width:180px;word-break:break-all">${esc(w.note)||'-'}</td>
+        <td>${w.hits}${w.active?' <span class="tag t-on">活跃</span>':''}</td>
+        <td style="white-space:nowrap;color:#75869f">${esc(w.last_seen)||'—'}</td>
+        <td><a class="link" href="#" onclick="wlRevoke('${esc(w.gid)}');return false">移除</a></td>
+      </tr>`).join('') + `</table>`;
+  }
+}
+
+async function wlDecide(action, id){
+  if(action === 'reject' && !confirm('拒绝这条白名单申请？（对方 24 小时内不能再申请）')) return;
+  const note = action === 'approve' ? (prompt('备注（可选，会显示在你的名单里）：') || '') : '';
+  const r = await fetch('/api/admin/wl_decide', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, action, note})});
+  const d = await r.json();
+  toast(d.msg || (d.ok ? '已处理' : '失败'));
+  refresh();
+}
+
+async function wlRevoke(gid){
+  if(!confirm('移出白名单？对方立即失去免审批资格。')) return;
+  const r = await fetch('/api/admin/wl_revoke', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({gid})});
+  const d = await r.json();
+  toast(d.msg || (d.ok ? '已移除' : '失败'));
+  refresh();
+}
+
 /* ---------- 操作 ---------- */
 async function decide(kind, id){
   if(kind==='reject' && !confirm('确定拒绝这条申请？')) return;
@@ -326,7 +396,7 @@ function copyUrl(){
 }
 function openUrl(){ if(PUB) window.open(PUB, '_blank'); else toast('还没有公网地址'); }
 
-function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); }
+function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); }
 refresh(); setInterval(refresh, 8000);
 </script>
 </body>

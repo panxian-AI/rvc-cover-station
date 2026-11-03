@@ -69,8 +69,23 @@ SEARCH_LIMIT = 50
 API_WINDOW = 60
 API_LIMIT = 120
 
+# ---------------- 白名单（免审批直通） ----------------
+# 权益：命中白名单的访客提交申请后跳过审批，直接进入制作队列。
+# 身份：gid + 设备指纹 + IP 三者**全部一致**才算命中，任何一项变了都降回普通访客。
+# 威胁模型：批量刷白名单。所以申请侧每层都卡死（见 WL_* 常量与 wl_apply），
+#          且只认 [0-9a-f]{32,64} 的指纹、只存净文本，没有任何拼接进 SQL/路径的地方
+#          （存储本来就是 JSON 文件 + 精确等值比较，不存在注入面）。
+WL_FP_RE = re.compile(r"^[0-9a-f]{32,64}$")
+WL_REASON_MIN = 5            # 申请理由最少字数（太短的批量灌水没意义）
+WL_REASON_MAX = 200          # 申请理由最多字数
+WL_MAX_ENTRIES = 200         # 白名单容量上限
+WL_MAX_PENDING = 30          # 全局待审白名单申请上限
+WL_MAX_APPS = 300            # 申请记录保留条数
+WL_APP_PER_IP_DAY = 3        # 同一 IP 24 小时内最多申请次数
+WL_REJECT_COOLDOWN = 86400   # 被拒后同一访客 24 小时内不能再申请
+
 _lock = threading.RLock()
-_db = {"visits": [], "requests": [], "queue": []}
+_db = {"visits": [], "requests": [], "queue": [], "wl_apps": [], "whitelist": []}
 _sub_hits = {}               # ip -> [时间戳]
 _search_hits = {}            # ip -> [时间戳]
 _api_hits = {}               # ip -> [时间戳]
@@ -90,11 +105,16 @@ def _load():
         with open(DB_PATH, "r", encoding="utf-8") as f:
             d = json.load(f)
         if isinstance(d, dict):
+            wl_apps = d.get("wl_apps")
+            wl_list = d.get("whitelist")
             _db = {"visits": d.get("visits") or [],
                    "requests": d.get("requests") or [],
-                   "queue": [str(x) for x in (d.get("queue") or [])]}
+                   "queue": [str(x) for x in (d.get("queue") or [])],
+                   # 老库没有白名单字段 → 空表，别让 KeyError
+                   "wl_apps": wl_apps if isinstance(wl_apps, list) else [],
+                   "whitelist": wl_list if isinstance(wl_list, list) else []}
     except Exception:
-        _db = {"visits": [], "requests": [], "queue": []}
+        _db = {"visits": [], "requests": [], "queue": [], "wl_apps": [], "whitelist": []}
     return _db
 
 
@@ -315,6 +335,7 @@ def _req_view(r, admin=False):
     if admin:
         out.update({"ip": r.get("ip", ""), "country": r.get("country", ""),
                     "ua": r.get("ua", ""), "gid": r.get("gid", ""),
+                    "auto": bool(r.get("auto")),
                     "decided": _fmt(r.get("decided"))})
     return out
 
@@ -364,15 +385,16 @@ def _sub_allowed(ip):
 
 
 def create_request(gid, ip, country, ua, payload):
-    """统一入口：按 type 分流到 翻唱 / 文字转语音。"""
+    """统一入口：按 type 分流到 翻唱 / 文字转语音。payload.fp 是设备指纹（白名单用）。"""
     payload = payload or {}
+    fp = str(payload.get("fp") or "").strip().lower()
     rtype = str(payload.get("type") or TYPE_COVER).strip()
     if rtype == TYPE_TTS:
         if not tts_mod:
             return {"ok": False, "msg": "文字转语音功能未启用"}
         return _create(gid, ip, country, ua, payload, rtype,
-                       _check_tts(payload))
-    return _create(gid, ip, country, ua, payload, rtype, _check_cover(payload))
+                       _check_tts(payload), fp)
+    return _create(gid, ip, country, ua, payload, rtype, _check_cover(payload), fp)
 
 
 def _check_cover(payload):
@@ -406,7 +428,7 @@ def _check_tts(payload):
     }}
 
 
-def _create(gid, ip, country, ua, payload, rtype, chk):
+def _create(gid, ip, country, ua, payload, rtype, chk, fp=""):
     if not chk.get("ok"):
         return {"ok": False, "msg": chk.get("msg", "参数不合法")}
     f = chk["fields"]
@@ -417,6 +439,8 @@ def _create(gid, ip, country, ua, payload, rtype, chk):
 
     with _lock:
         _prune_zombies()
+        # 白名单命中 → 这单直接批准入队（权益只跳过人工审批，防刷闸一个不少）
+        auto_wl = is_whitelisted(gid, fp, ip)
         # 翻唱：同一访客同一首歌 + 同一模型，未完成时不重复排队
         if rtype == TYPE_COVER:
             for r in _db["requests"]:
@@ -456,13 +480,31 @@ def _create(gid, ip, country, ua, payload, rtype, chk):
         r = {"id": secrets.token_hex(6), "gid": gid, "ip": ip or "",
              "country": country or "", "ua": _short_ua(ua),
              "type": rtype if rtype in (TYPE_COVER, TYPE_TTS) else TYPE_COVER,
-             "state": "pending", "created": time.time(),
-             "decided": None, "job": None, "file": None, "error": None, "note": ""}
+             "state": STATE_QUEUED if auto_wl else "pending",
+             "created": time.time(),
+             "decided": time.time() if auto_wl else None,
+             "auto": bool(auto_wl),
+             "job": None, "file": None, "error": None, "note": ""}
         r.update(f)
         _db["requests"].insert(0, r)
         del _db["requests"][MAX_REQ:]
+        if auto_wl:
+            # 命中成品库就直发（不占队列）；否则老老实实排队，再交给巡队线程推进
+            if _cache_ready(r):
+                res = _launch_locked(r)
+                if not (res.get("ok") and r.get("state") == STATE_DONE):
+                    r.update(state=STATE_QUEUED, job=None)
+            if r.get("state") == STATE_QUEUED:
+                _enqueue(r["id"])
         _save()
         view = _req_view(r)
+    if auto_wl:
+        _pump_async()
+        if r.get("state") == STATE_DONE:
+            return {"ok": True, "msg": "白名单直通：已有成品，直接可下载", "request": view}
+        if r.get("state") == STATE_RUNNING:
+            return {"ok": True, "msg": "白名单直通：已自动批准，马上开始制作", "request": view}
+        return {"ok": True, "msg": "白名单直通：已自动批准，进入制作队列", "request": view}
     if reuse_hit:
         what = "这段文字这个音色" if rtype == TYPE_TTS else "这首歌这个声线"
         return {"ok": True, "reuse": True,
@@ -541,7 +583,218 @@ def _prune_zombies():
             _save()
 
 
-# ---------------- 队列（批准后排队，站长可调顺序） ----------------
+# ---------------- 白名单 ----------------
+def _clean_reason(s):
+    """申请理由只留可打印文本 + 换行，限长。控制字符/超长截断，杜绝任何注入面。"""
+    s = str(s or "")
+    s = "".join(ch for ch in s if ch == "\n" or ord(ch) >= 32)
+    return s.strip()[:WL_REASON_MAX]
+
+
+def _wl_entry_by(gid, fp=None, ip=None):
+    """精确查找白名单条目；fp/ip 传 None 表示不参与匹配。"""
+    with _lock:
+        for w in _db.get("whitelist") or []:
+            if w.get("gid") != gid:
+                continue
+            if fp is not None and w.get("fp") != fp:
+                continue
+            if ip is not None and (w.get("ip") or "") != (ip or ""):
+                continue
+            return w
+    return None
+
+
+def is_whitelisted(gid, fp, ip):
+    """白名单命中 = gid + 设备指纹 + IP 三者全部一致。
+
+    任何一项不一致都返回 False：换设备、换网络（WiFi↔流量）、清了 localStorage
+    都会降回普通访客，需要重新申请。命中就顺手记一次使用次数（给站长看活跃度）。
+    """
+    fp = str(fp or "").strip().lower()
+    if not gid or not WL_FP_RE.match(fp):
+        return False
+    with _lock:
+        w = _wl_entry_by(gid, fp=fp, ip=ip or "")
+        if not w:
+            return False
+        w["hits"] = int(w.get("hits", 0)) + 1
+        w["last_seen"] = time.time()
+        _save(soft=True)
+        return True
+
+
+def wl_mine(gid, fp, ip):
+    """访客查自己的白名单状态。只回状态短语，不回别人任何信息。"""
+    fp = str(fp or "").strip().lower()
+    st, note = "none", ""
+    with _lock:
+        for w in _db.get("whitelist") or []:
+            if w.get("gid") != gid:
+                continue
+            if w.get("fp") == fp and (w.get("ip") or "") == (ip or ""):
+                st, note = "approved", "免审批直通已生效：提交申请后自动进制作队列"
+            elif w.get("fp") == fp:
+                st, note = "mismatch", "你的网络变了，白名单暂不生效；请站长重新批准一次即可"
+            else:
+                st, note = "mismatch", "设备或网络变了，白名单失效；需要重新申请"
+            break
+        if st == "none":
+            has_pending, reject_note = False, ""
+            for a in _db.get("wl_apps") or []:
+                if a.get("gid") != gid:
+                    continue
+                if a.get("state") == "pending":
+                    has_pending = True
+                elif a.get("state") == "rejected" and not reject_note:
+                    reject_note = a.get("note") or "站长没有通过这次申请"
+            if has_pending:
+                st, note = "pending", "申请已提交，等站长处理"
+            elif reject_note:
+                st, note = "rejected", reject_note
+    return {"ok": True, "state": st, "note": note}
+
+
+def wl_apply(gid, fp, ip, country, ua, reason):
+    """提交白名单申请。防批量刷的每一道闸都在这里。"""
+    fp = str(fp or "").strip().lower()
+    reason = _clean_reason(reason)
+    if not WL_FP_RE.match(fp):
+        return {"ok": False, "msg": "页面版本太旧，刷新一下页面再试"}
+    if len(reason) < WL_REASON_MIN:
+        return {"ok": False, "msg": "多写几句申请理由（至少 %d 个字），方便站长认识你" % WL_REASON_MIN}
+    now = time.time()
+    with _lock:
+        if _wl_entry_by(gid, fp=fp, ip=ip or ""):
+            return {"ok": True, "msg": "你已经在白名单里了", "state": "approved"}
+        # 同 gid+指纹已有记录但 IP 变了 → 允许重新申请（站长批一下就更新 IP），
+        # 不能把人挡死在门外；批准时 wl_decide 会做幂等更新。
+        # 注意：不能用 _db.get("wl_apps") or [] —— 空表时会拿到临时副本，插进去就丢
+        apps = _db.setdefault("wl_apps", [])
+        if any(a.get("gid") == gid and a.get("state") == "pending" for a in apps):
+            return {"ok": False, "msg": "你已有一条待审的申请，等站长处理就好"}
+        # 被拒冷却：不给脚本「被拒了马上再试」的机会
+        if any(a.get("gid") == gid and a.get("state") == "rejected"
+               and now - float(a.get("decided") or 0) < WL_REJECT_COOLDOWN for a in apps):
+            return {"ok": False, "msg": "刚被拒绝过，明天再来申请"}
+        # 同 IP 24h 次数：换 gid 也绕不过（IP 是服务端看到的，伪造不了）
+        ipn = sum(1 for a in apps
+                  if a.get("ip") == ip and now - float(a.get("created") or 0) < 86400)
+        if ipn >= WL_APP_PER_IP_DAY:
+            return {"ok": False, "msg": "这个网络今天申请的次数用完了，明天再来"}
+        if sum(1 for a in apps if a.get("state") == "pending") >= WL_MAX_PENDING:
+            return {"ok": False, "msg": "待审的申请太多，过两天再来"}
+        if len(_db.get("whitelist") or []) >= WL_MAX_ENTRIES:
+            return {"ok": False, "msg": "白名单已满，请联系站长"}
+        a = {"id": secrets.token_hex(6), "gid": gid, "fp": fp, "ip": ip or "",
+             "country": country or "", "ua": _short_ua(ua),
+             "reason": reason, "created": now, "state": "pending",
+             "decided": None, "note": ""}
+        apps.insert(0, a)
+        del apps[WL_MAX_APPS:]
+        _save()
+    return {"ok": True, "msg": "申请已提交，等站长处理", "state": "pending"}
+
+
+def wl_admin_view():
+    """控制台的白名单页：待审申请（带访客历史）+ 已批准名单。"""
+    with _lock:
+        apps = []
+        for a in _db.get("wl_apps") or []:
+            gid = a.get("gid", "")
+            apps.append({
+                "id": a.get("id", ""), "gid": gid,
+                "fp_short": (a.get("fp") or "")[:12] + "…",
+                "ip": a.get("ip", ""), "country": a.get("country", ""),
+                "ua": a.get("ua", ""), "reason": a.get("reason", ""),
+                "state": a.get("state", "pending"),
+                "created": _fmt(a.get("created")),
+                "created_ts": float(a.get("created") or 0),
+                "decided": _fmt(a.get("decided")), "note": a.get("note", ""),
+                # 给站长的人工判断材料：这个人历史申请多少、被拒多少
+                "gid_reqs": sum(1 for r in _db["requests"] if r.get("gid") == gid),
+                "gid_rejected": sum(1 for r in _db["requests"]
+                                    if r.get("gid") == gid and r.get("state") == STATE_REJECTED),
+                "already_wl": _wl_entry_by(gid, fp=a.get("fp")) is not None,
+            })
+        entries = []
+        for w in _db.get("whitelist") or []:
+            entries.append({
+                "gid": w.get("gid", ""), "ip": w.get("ip", ""),
+                "country": w.get("country", ""), "ua": w.get("ua", ""),
+                "note": w.get("note", ""), "hits": int(w.get("hits", 0)),
+                "approved": _fmt(w.get("approved")),
+                "last_seen": _fmt(w.get("last_seen")),
+                "last_ts": float(w.get("last_seen") or 0),
+                "active": time.time() - float(w.get("last_seen") or 0) < 14 * 86400,
+            })
+        apps.sort(key=lambda x: x.get("created_ts") or 0, reverse=True)
+        entries.sort(key=lambda x: x.pop("last_ts"), reverse=True)
+        apps = [{k: v for k, v in a.items() if k != "created_ts"} for a in apps]
+        pend = sum(1 for a in apps if a["state"] == "pending")
+    return {"ok": True, "apps": apps, "entries": entries,
+            "counts": {"pending": pend, "total": len(entries)}}
+
+
+def wl_decide(app_id, action, note=""):
+    """批准 / 拒绝白名单申请（只允许本机调用）。"""
+    action = str(action or "").lower()
+    if action not in ("approve", "reject"):
+        return {"ok": False, "msg": "未知操作"}
+    note = str(note or "")[:120]
+    with _lock:
+        a = None
+        for x in _db.get("wl_apps") or []:
+            if x.get("id") == app_id:
+                a = x
+                break
+        if not a:
+            return {"ok": False, "msg": "申请不存在"}
+        if a.get("state") != "pending":
+            return {"ok": False, "msg": "这条已处理过（当前：%s）" % a.get("state")}
+        a["state"] = "approved" if action == "approve" else "rejected"
+        a["decided"] = time.time()
+        a["note"] = note
+        if action == "approve":
+            # 幂等：同 gid+指纹已有记录就只更新 IP（处理「换网络重新批」）
+            hit = _wl_entry_by(a.get("gid"), fp=a.get("fp"))
+            if hit:
+                hit["ip"] = a.get("ip") or hit.get("ip")
+                hit["country"] = a.get("country") or hit.get("country")
+                hit["approved"] = time.time()
+                hit["note"] = note
+                msg = "已更新白名单（同设备新网络）"
+            elif len(_db.get("whitelist") or []) >= WL_MAX_ENTRIES:
+                a["state"] = "pending"
+                a["decided"] = None
+                return {"ok": False, "msg": "白名单已满，先移除一些再加"}
+            else:
+                _db["whitelist"].insert(0, {
+                    "gid": a.get("gid", ""), "fp": a.get("fp", ""),
+                    "ip": a.get("ip", ""), "country": a.get("country", ""),
+                    "ua": a.get("ua", ""), "note": note,
+                    "approved": time.time(), "hits": 0, "last_seen": 0})
+                msg = "已加入白名单（该设备 + 该网络，申请免审批直接排队）"
+        else:
+            msg = "已拒绝这条申请"
+        _save()
+    return {"ok": True, "msg": msg}
+
+
+def wl_revoke(gid):
+    """把某个访客移出白名单（立即失效）。"""
+    gid = str(gid or "")
+    with _lock:
+        before = len(_db.get("whitelist") or [])
+        _db["whitelist"] = [w for w in _db.get("whitelist") or [] if w.get("gid") != gid]
+        removed = before - len(_db["whitelist"])
+        if removed:
+            _save()
+    return {"ok": removed > 0,
+            "msg": ("已移出白名单（%d 条记录）" % removed) if removed else "没找到这条白名单"}
+
+
+
 def _queue_alive():
     """整理队列：丢掉不存在/已不是 queued 的条目，把漏登记的 queued 申请补进来。"""
     q = [str(x) for x in (_db.get("queue") or [])]
@@ -980,6 +1233,10 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
                 bool(v["acapella"]) == acapella for v in variants)
             return 200, {"ok": True, "variants": variants, "exact": exact,
                          "labels": [v["text"] for v in variants]}
+        if path == "/api/guest/wl":
+            # 白名单状态：fp 由前端带上来（服务端再配 IP），匹配逻辑全在服务端
+            fp = (q.get("fp") or [""])[0] if isinstance(q.get("fp"), list) else (q.get("fp") or "")
+            return 200, wl_mine(gid, fp, ip)
         if path == "/api/admin/visits":
             if not is_admin:
                 return 403, {"ok": False, "msg": "需要管理员"}
@@ -989,6 +1246,10 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
                 return 403, {"ok": False, "msg": "需要管理员"}
             st = (q.get("state") or ["all"])[0]
             return 200, admin_requests(st)
+        if path == "/api/admin/wl":
+            if not is_admin:
+                return 403, {"ok": False, "msg": "需要管理员"}
+            return 200, wl_admin_view()
         if path == "/api/admin/queue":
             if not is_admin:
                 return 403, {"ok": False, "msg": "需要管理员"}
@@ -1007,6 +1268,18 @@ def handle_post(path, body, gid, ip, country, ua, is_admin=False):
     try:
         if path == "/api/guest/request":
             return 200, create_request(gid, ip, country, ua, body)
+        if path == "/api/guest/wl_apply":
+            return 200, wl_apply(gid, str(body.get("fp") or ""), ip, country, ua,
+                                 body.get("reason"))
+        if path == "/api/admin/wl_decide":
+            if not is_admin:
+                return 403, {"ok": False, "msg": "需要管理员"}
+            return 200, wl_decide(str(body.get("id") or ""),
+                                  str(body.get("action") or ""), body.get("note"))
+        if path == "/api/admin/wl_revoke":
+            if not is_admin:
+                return 403, {"ok": False, "msg": "需要管理员"}
+            return 200, wl_revoke(str(body.get("gid") or ""))
         if path == "/api/admin/approve":
             if not is_admin:
                 return 403, {"ok": False, "msg": "需要管理员"}

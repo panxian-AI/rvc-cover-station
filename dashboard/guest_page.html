@@ -152,6 +152,17 @@ footer{text-align:center;color:#55647d;font-size:12px;margin-top:22px}
   </div>
 
   <div class="card">
+    <div class="label">白名单 · 免审批直通</div>
+    <div id="wlState" class="hint" style="margin-top:0">读取中…</div>
+    <div id="wlForm" style="display:none;margin-top:8px">
+      <textarea id="wlReason" maxlength="200" style="min-height:76px"
+        placeholder="写几句话介绍下自己、为什么想加入（例如：常来点歌的老朋友）。批准后点歌不用等审批，直接排队制作。"></textarea>
+      <div class="hint"><span id="wlCount">0</span> / 200 字 · 申请会带上你的设备指纹与当前网络；批准后「同一台设备 + 同一网络」的申请免审批，换设备或换网络需要重新批。</div>
+      <button id="btnWl" style="width:100%;margin-top:10px" onclick="submitWl()">提交白名单申请</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="label">我的申请 <span id="recov" style="color:#f0c674;display:none">· 已凭本机记录找回</span></div>
     <div id="mine"><div class="empty">还没有提交过</div></div>
     <div class="hint">只要不清浏览器数据，随时关掉再打开都在（申请记录只跟着这台设备，不按网络找，别人看不到）。</div>
@@ -333,10 +344,11 @@ async function submitReq(){
   if(!model){ toast('没有可用声线'); return; }
   $('#btnGo').disabled = true; $('#btnGo').textContent = '提交中…';
   try{
+    const fp = await deviceFp();
     const d = await (await fetch('/api/guest/request', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({type:'cover', song_id: picked.id, title: picked.name,
-                            artist: picked.artist, model, acapella: $('#acapella').checked})
+                            artist: picked.artist, model, acapella: $('#acapella').checked, fp})
     })).json();
     toast(d.msg || (d.ok ? '已提交' : '提交失败'));
     if(d.ok){ loadMine(); }
@@ -386,10 +398,11 @@ async function submitTts(){
   if(!voice){ toast('没有可用音色'); return; }
   const btn = $('#btnTts'); btn.disabled = true; btn.textContent = '提交中…';
   try{
+    const fp = await deviceFp();
     const d = await (await fetch('/api/guest/request', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({type:'tts', text, voice, rate: $('#rate').value,
-                            base: voice.indexOf('rvc:') === 0 ? ($('#baseVoice').value || '') : ''})
+                            base: voice.indexOf('rvc:') === 0 ? ($('#baseVoice').value || '') : '', fp})
     })).json();
     toast(d.msg || (d.ok ? '已提交' : '提交失败'));
     if(d.ok){ $('#ttsText').value = ''; $('#ttsCount').textContent = '0'; loadMine(); }
@@ -405,6 +418,45 @@ const STATE_CLS = {pending:'b-wait', queued:'b-run', running:'b-run', done:'b-do
 // 服务端只认这个 id，不再按 IP 找（同一出口 IP 下会看到别人的申请）。
 let MYGID = '';
 try{ MYGID = localStorage.getItem('rvc_gid') || ''; }catch(e){}
+
+// 设备指纹：白名单身份的一半（另一半是服务端看到的 IP）。
+// 只取「不变」的浏览器/硬件特征做 SHA-256，存 localStorage；清了浏览器数据 = 新设备。
+async function deviceFp(){
+  let fp = '';
+  try{ fp = localStorage.getItem('rvc_fp') || ''; }catch(e){}
+  if(/^[0-9a-f]{32,64}$/.test(fp)) return fp;
+  const parts = [navigator.userAgent||'', navigator.language||'',
+    (screen.width||0)+'x'+(screen.height||0)+'x'+(screen.colorDepth||0),
+    (Intl.DateTimeFormat().resolvedOptions()||{}).timeZone||'',
+    String(navigator.hardwareConcurrency||''), String(navigator.maxTouchPoints||'')];
+  try{
+    const c = document.createElement('canvas'); c.width = 220; c.height = 50;
+    const x = c.getContext('2d');
+    x.textBaseline = 'top'; x.font = '16px Arial'; x.fillStyle = '#f60';
+    x.fillRect(0, 0, 90, 22); x.fillStyle = '#0af';
+    x.fillText('RVC 翻唱·指纹', 2, 18);
+    x.strokeStyle = 'rgba(0,150,255,.6)'; x.beginPath();
+    x.arc(160, 25, 18, 0, Math.PI*2); x.stroke();
+    parts.push(c.toDataURL());
+  }catch(e){}
+  let hex = '';
+  try{
+    const buf = new TextEncoder().encode(parts.join('|'));
+    const h = await crypto.subtle.digest('SHA-256', buf);
+    hex = [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    // 非安全上下文等拿不到 SubtleCrypto 时兜底：滚动哈希拼到 64 位十六进制
+    const s = parts.join('|');
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    for(let i=0;i<s.length;i++){
+      h1 = ((h1 ^ s.charCodeAt(i)) * 0x01000193) >>> 0;
+      h2 = ((h2 + s.charCodeAt(i) * (i+7)) * 0x85ebca6b) >>> 0;
+    }
+    hex = ((h1.toString(16)+h2.toString(16)).padStart(16,'0')).repeat(4).slice(0,64);
+  }
+  try{ localStorage.setItem('rvc_fp', hex); }catch(e){}
+  return hex;
+}
 
 async function loadMine(){
   let d;
@@ -443,6 +495,49 @@ async function loadMine(){
   }).join('');
 }
 
+/* ---------- 白名单 ---------- */
+let WLFP = '';
+async function loadWl(){
+  if(!WLFP) WLFP = await deviceFp();
+  let d;
+  try{ d = await (await fetch('/api/guest/wl?fp=' + encodeURIComponent(WLFP), {cache:'no-store'})).json(); }
+  catch(e){ return; }
+  const box = $('#wlState'), form = $('#wlForm');
+  if(!d || !d.ok){ box.textContent = ''; form.style.display = 'none'; return; }
+  const st = d.state || 'none';
+  if(st === 'approved'){
+    box.innerHTML = '<span style="color:#22c55e">✓ 已在白名单：提交申请自动排队，不用等审批</span>';
+    form.style.display = 'none';
+  }else if(st === 'pending'){
+    box.innerHTML = '<span style="color:#f0c674">⏳ 白名单申请审核中，等站长处理</span>';
+    form.style.display = 'none';
+  }else if(st === 'mismatch'){
+    box.innerHTML = '<span style="color:#f0c674">' + esc(d.note||'设备或网络变了，白名单暂不生效') + '</span>';
+    form.style.display = '';
+  }else if(st === 'rejected'){
+    box.innerHTML = '<span style="color:#ff8f8f">' + esc(d.note||'申请未通过') + '</span>';
+    form.style.display = '';
+  }else{
+    box.textContent = '常来用的话，可以申请白名单：批准后点歌免审批、直接排队。';
+    form.style.display = '';
+  }
+}
+async function submitWl(){
+  const reason = $('#wlReason').value.trim();
+  if(reason.length < 5){ toast('多写几句理由（至少 5 个字）'); return; }
+  const btn = $('#btnWl'); btn.disabled = true; btn.textContent = '提交中…';
+  if(!WLFP) WLFP = await deviceFp();
+  try{
+    const d = await (await fetch('/api/guest/wl_apply', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({fp: WLFP, reason})})).json();
+    toast(d.msg || (d.ok ? '已提交' : '提交失败'));
+    if(d.ok){ $('#wlReason').value = ''; $('#wlCount').textContent = '0'; loadWl(); }
+  }catch(e){ toast('提交失败：' + e.message); }
+  btn.textContent = '提交白名单申请'; btn.disabled = false;
+}
+$('#wlReason').addEventListener('input', ()=>{ $('#wlCount').textContent = $('#wlReason').value.length; });
+
 $('#kw').addEventListener('keydown', e=>{ if(e.key === 'Enter') doSearch(); });
 $('#cap').addEventListener('keydown', e=>{ if(e.key === 'Enter') doSearch(); });
 ['model','acapella'].forEach(id=>{
@@ -450,12 +545,12 @@ $('#cap').addEventListener('keydown', e=>{ if(e.key === 'Enter') doSearch(); });
   if(el) el.addEventListener('change', checkHave);
 });
 $('#ttsText').addEventListener('input', ()=>{ $('#ttsCount').textContent = $('#ttsText').value.length; });
-loadModels(); loadVoices(); loadMine();
+loadModels(); loadVoices(); loadMine(); loadWl();
 loadPass(); syncCap();
 if(!passValid()) newCap();
 // 通行证到期后自动把验证码区放回来（不打断正在输入的搜索词）
 setInterval(()=>{ if(passToken && !passValid()){ clearPass(); syncCap(); newCap(); } else { syncCap(); } }, 15000);
-setInterval(loadMine, 5000);
+setInterval(()=>{ loadMine(); loadWl(); }, 5000);
 </script>
 </body>
 </html>

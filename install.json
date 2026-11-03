@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install.json",
   "name": "RVC 翻唱站",
   "repo": "panxian-AI/rvc-cover-station",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "purpose": "Windows 上一键装好 AI 翻唱整套栈（WebUI 7865 + 翻唱后端 3333 + 网易云代理 3002 + 控制台 8899）",
   "ai_install": {
     "entry_url": "https://raw.githubusercontent.com/panxian-AI/rvc-cover-station/main/install/ai_install.ps1",

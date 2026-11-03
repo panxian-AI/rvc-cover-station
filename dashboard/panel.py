@@ -31,7 +31,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 # 路径全部由 paths.py 按「本文件位置」推导，不写死盘符（整栈可搬去移动硬盘）
-from paths import (API_BAT, API_DIR, COVERS_DIR, NCM_BAT, NCM_DIR, PROJ,  # noqa: E402
+from paths import (API_BAT, API_DIR, COVERS_DIR, DATA, NCM_BAT, NCM_DIR, PROJ,  # noqa: E402
                    PY_API, PY_WEB, RVC_ROOT, STACK, WEBUI_BAT)
 
 # 翻唱页（搜歌 / 选模型 / 成品库 / 缓存管理），同端口挂在 /cover
@@ -771,6 +771,65 @@ def stop_tunnel():
     return True, "已关闭公网隧道"
 
 
+TUNNEL_LOG = os.path.join(HERE, "tunnel.log")
+URL_FILE = os.path.join(HERE, "公网链接.txt")
+
+
+def _cf_exe():
+    """cloudflared 路径。RVC_CLOUDFLARED 环境变量可覆盖（测试注入假路径用）。"""
+    return os.environ.get("RVC_CLOUDFLARED") or os.path.join(DATA, "tools", "cloudflared.exe")
+
+
+def _latest_url():
+    """公网链接.txt 里最后一个 http 行（tunnel.py 拿到地址时写入）。"""
+    try:
+        with open(URL_FILE, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except OSError:
+        return ""
+    for line in reversed(txt.splitlines()):
+        line = line.strip()
+        if line.startswith("http"):
+            return line
+    return ""
+
+
+def start_tunnel(timeout=25):
+    """UI 一键开公网隧道：拉起 tunnel.py（它负责解析 cloudflared 输出、写地址文件），
+    然后等公网链接.txt 出现**新**地址。返回 (ok, msg)。
+
+    等价于以前的双击「启动RVC-公网.bat」第 3 步，但不用再开命令行窗口。
+    """
+    if tunnel_pids():
+        return True, "公网隧道已在运行"
+    cf = _cf_exe()
+    if not os.path.isfile(cf):
+        return False, ("没找到 cloudflared.exe：%s。到 cloudflare 的 GitHub releases 下载 "
+                       "cloudflared-windows-amd64.exe 放进 tools\\ 目录后再开。" % cf)
+    try:
+        os.remove(URL_FILE)   # 抹掉上次地址，避免把旧的当成刚拿到的
+    except OSError:
+        pass
+    try:
+        log = open(TUNNEL_LOG, "ab", buffering=0)
+        log.write(("\n===== %s 由控制台启动 =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode())
+        subprocess.Popen([PY_API, "-u", os.path.join(HERE, "tunnel.py")],
+                         cwd=HERE, stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=subprocess.STDOUT, close_fds=True,
+                         creationflags=0x00000008 | 0x00000200)
+    except Exception as e:
+        return False, "隧道启动失败: %s" % e
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        url = _latest_url()
+        if url:
+            return True, "公网已开启：%s（发给朋友即可，对方打开是访客点歌页）" % url
+        time.sleep(1)
+    if tunnel_pids():
+        return True, "隧道进程已起来，但 %d 秒内还没拿到地址（网络慢），过几秒刷新页面看状态" % timeout
+    return False, "隧道没建立起来（可能网络不通），详情看 dashboard\\tunnel.log"
+
+
 def stop_all(wait=10, include_tunnel=True):
     """停掉三个服务 + 公网隧道，并等端口真正释放。返回 (ok, msg)
 
@@ -853,18 +912,7 @@ def stop(target):
 # ---------------- 公网隧道信息 ----------------
 def public_info():
     """读 tunnel.py 写下的公网地址，并判断 cloudflared 是否还在跑。"""
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "公网链接.txt")
-    url = ""
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            txt = f.read().strip()
-        for line in reversed(txt.splitlines()):
-            line = line.strip()
-            if line.startswith("http"):
-                url = line
-                break
-    except OSError:
-        pass
+    url = _latest_url()
     alive = False
     try:
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cloudflared.exe", "/NH"],
@@ -1453,6 +1501,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         elif act == "stop":
             ok, msg = stop(target)
+        elif act == "tunnel_start":
+            ok, msg = start_tunnel()
+        elif act == "tunnel_stop":
+            ok, msg = stop_tunnel()
         elif act == "restart":
             ok1, m1 = stop(target)
             time.sleep(3)

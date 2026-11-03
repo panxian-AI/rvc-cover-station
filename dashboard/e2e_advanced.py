@@ -320,6 +320,24 @@ def main():
         bad2 = settings.get()
         chk("类型乱写也收窄成默认", bad2.get("max_parallel") == 1
             and bad2.get("f0_method") == "rmvpe", bad2)
+
+        print("\n== 7. 公网隧道：UI 一键开启/关闭（不碰真 cloudflared） ==")
+        # 假路径注入：start 在「找不到 cloudflared」这一步就该停，不会真开隧道
+        os.environ["RVC_CLOUDFLARED"] = os.path.join(TMP, "没有这文件.exe")
+        s, r = jpost("/api/action", {"action": "tunnel_start"})
+        chk("cloudflared 缺失时报可读错误", s == 200 and not r.get("ok")
+            and "cloudflared" in r.get("msg", ""), (s, r.get("msg")))
+        if panel.tunnel_pids():
+            print("  [跳过] 机器上有真隧道在跑，不动它（stop 用例略过）")
+        else:
+            s, r = jpost("/api/action", {"action": "tunnel_stop"})
+            chk("没在跑时关隧道 ok 且提示未运行", s == 200 and r.get("ok")
+                and "未运行" in r.get("msg", ""), (s, r.get("msg")))
+        st, pub = jget("/api/public")
+        chk("/api/public 返回 url+alive", st == 200 and "url" in pub and "alive" in pub, pub)
+        s, r = jpost("/api/action", {"action": "tunnel_start2"})
+        chk("未知 action 报错", s == 200 and not r.get("ok"), (s, r.get("msg")))
+
     finally:
         cover._run_cover = real_run
         cover.COVERS_DIR, cover.INDEX_PATH, cover.BACKEND_TEMP = real_covers, real_index, real_temp

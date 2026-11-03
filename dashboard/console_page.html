@@ -151,11 +151,13 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
     <div class="row" style="margin-bottom:9px">
       <span id="pubState" class="tag t-off">未开启</span>
       <span class="sp"></span>
+      <button class="green mini" id="btnTunnelOn" onclick="tunnelAct('start')">🌐 开启公网</button>
+      <button class="gray mini" id="btnTunnelOff" onclick="tunnelAct('stop')" style="display:none">⏹ 关闭公网</button>
       <button class="gray mini" onclick="copyUrl()">复制地址</button>
       <button class="gray mini" onclick="openUrl()">打开</button>
     </div>
     <div class="url" id="pubUrl">—</div>
-    <div class="hint">这个地址打开就是<b>访客点歌页</b>。外面只能看到访客页，管理功能只在这台电脑上可用；隧道每次重启会变，要开就双击 <code>E:\启动RVC-公网.bat</code>。</div>
+    <div class="hint">点「开启公网」约 10 秒后出地址，打开就是<b>访客点歌页</b>；外面只能看到访客页，管理功能只在这台电脑上可用。<b>地址每次开启都会变</b>，关了再开会换新地址；不用时建议关掉（临时域名会被互联网扫描器发现）。</div>
   </div>
 
   <div class="card">
@@ -287,7 +289,30 @@ async function loadPublic(){
     const el = $('#pubState');
     el.className = 'tag ' + (on ? 't-on' : 't-off');
     el.textContent = on ? '隧道运行中' : (PUB ? '上次的地址（隧道已断）' : '未开启');
+    const bOn = $('#btnTunnelOn'), bOff = $('#btnTunnelOff');
+    if(bOn) bOn.style.display = on ? 'none' : '';
+    if(bOff) bOff.style.display = on ? '' : 'none';
   }catch(e){}
+}
+
+/* ---------- 公网隧道开关 ---------- */
+async function tunnelAct(what){
+  const bOn = $('#btnTunnelOn'), bOff = $('#btnTunnelOff');
+  if(what === 'stop'){
+    if(!confirm('关闭后公网地址立即失效（本机/局域网不受影响）。继续？')) return;
+    bOff.disabled = true; bOff.textContent = '⏹ 关闭中…';
+  }else{
+    bOn.disabled = true; bOn.textContent = '🌐 开启中…（约 10 秒）';
+  }
+  try{
+    const d = await (await fetch('/api/action', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action: 'tunnel_' + what})})).json();
+    toast(d.msg || (d.ok ? '完成' : '失败'));
+  }catch(e){ toast('请求失败：' + e.message); }
+  if(bOn){ bOn.disabled = false; bOn.textContent = '🌐 开启公网'; }
+  if(bOff){ bOff.disabled = false; bOff.textContent = '⏹ 关闭公网'; }
+  loadPublic();
 }
 
 /* ---------- 队列 ---------- */

@@ -1,5 +1,6 @@
 import re, os, time
 import math
+import gc
 import requests
 import json
 import torch
@@ -333,9 +334,28 @@ import scipy.signal
 if not hasattr(scipy.signal, 'hann'):
     scipy.signal.hann = np.hanning
 split_model = "UVR-HP5"
+
+
+def _avail_mem_mb():
+    """当前系统可用物理内存（MB）。只为日志/报错服务，拿不到就返回 -1。"""
+    try:
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        ms = _MS()
+        ms.dwLength = ctypes.sizeof(_MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+        return ms.ullAvailPhys / 1048576.0
+    except Exception:
+        return -1.0
   
 
-# 替换这个函数
 def wwy_downloader(
     filename,
     split_model
@@ -390,7 +410,35 @@ def wwy_downloader(
     os.makedirs(f"./output/{split_model}/{filename}/", exist_ok=True)
     pre_fun = pre_fun_hp5
     print("分离人声伴奏")
-    pre_fun._path_audio_(uvr_input_path, f"./output/{split_model}/{filename}/", f"./output/{split_model}/{filename}/", "wav")
+    print("   分离前可用内存: %.0f MB" % _avail_mem_mb())
+    try:
+        pre_fun._path_audio_(uvr_input_path, f"./output/{split_model}/{filename}/", f"./output/{split_model}/{filename}/", "wav")
+    except MemoryError:
+        # 分离这一步要把整首歌的频谱摊在内存里，5 分钟的歌正常也要 2~3GB。
+        # 内存真的不够时 numpy 只会丢一句 "Unable to allocate xx MiB"，
+        # 看着像代码 bug，其实是机器扛不住 —— 这里换成能照着做的说明。
+        print("   ❌ 内存不足，分离失败（可用 %.0f MB）" % _avail_mem_mb())
+        raise RuntimeError(
+            "内存不够，处理人声/伴奏这一步失败（这首歌 %.1f 分钟）。\n"
+            "  这一步需要 2~3GB 空闲内存，当前电脑不够了。\n"
+            "  可以这样做：\n"
+            "    1. 关掉浏览器里多余的标签页、游戏、剪辑软件等吃内存的程序，再点一次生成；\n"
+            "    2. 或者换一首短一点的歌（3 分钟以内最稳）；\n"
+            "    3. 如果是第二次点生成才失败，先点一次「一键停止」再「一键全部启动」，把残留内存清掉。" % duration_minutes
+        ) from None
+    finally:
+        # pydub 的整首歌 PCM 和下载到的原始字节到这里就没用了，
+        # 一首 5 分钟的歌它们合计上百 MB，留着只会在后面 RVC 推理时添乱
+        audio_orig = None
+        audio_content = None
+        # 分离用的临时 wav 也要清：失败时不清的话，每次失败都在安装目录
+        # 留一份几十 MB 的整首歌，攒几次就把盘吃掉（以前就留过两份）。
+        if os.path.isfile(uvr_input_path):
+            try:
+                os.remove(uvr_input_path)
+            except OSError:
+                pass
+        gc.collect()
     
     # 6. 删除UVR用过的输入文件
     if os.path.isfile(uvr_input_path):

@@ -81,14 +81,20 @@ def wave_to_spectrogram_mt(
     spec_right = librosa.stft(wave_right, n_fft=n_fft, hop_length=hop_length)
     thread.join()
 
-    spec = np.asfortranarray([spec_left, spec_right])
+    # 直接按 Fortran 序装：原来的 asfortranarray([l, r]) 要先建一份 C 序的
+    # 两份拷贝、再整份转置复制，5 分钟的歌在这一步的瞬时峰值能到 600MB。
+    spec = np.empty((2,) + spec_left.shape, dtype=spec_left.dtype, order="F")
+    spec[0] = spec_left
+    spec[1] = spec_right
 
     return spec
 
 
 def combine_spectrograms(specs, mp):
     l = min([specs[i].shape[2] for i in specs])
-    spec_c = np.zeros(shape=(2, mp.param["bins"] + 1, l), dtype=np.complex64)
+    # 直接建成 Fortran 序：原来建成 C 序、返回时再 asfortranarray 整份复制一遍，
+    # 一首 5 分钟的歌在这一步白白多吃 270MB 峰值。
+    spec_c = np.zeros(shape=(2, mp.param["bins"] + 1, l), dtype=np.complex64, order="F")
     offset = 0
     bands_n = len(mp.param["band"])
 
@@ -121,7 +127,7 @@ def combine_spectrograms(specs, mp):
                 gp = g
                 spec_c[:, b, :] *= g
 
-    return np.asfortranarray(spec_c)
+    return spec_c
 
 
 def spectrogram_to_image(spec, mode="magnitude"):
@@ -357,8 +363,11 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
 
     for d in range(1, bands_n + 1):
         bp = mp.param["band"][d]
+        # 原来写的是 dtype=complex（即 complex128），每个频带的缓冲区凭空翻倍，
+        # 一首 5 分钟的歌光这一步就多占 500MB 以上。stft 出来本来就是 complex64，
+        # istft 也认 complex64，改成 complex64 结果完全等价。
         spec_s = np.ndarray(
-            shape=(2, bp["n_fft"] // 2 + 1, spec_m.shape[2]), dtype=complex
+            shape=(2, bp["n_fft"] // 2 + 1, spec_m.shape[2]), dtype=np.complex64
         )
         h = bp["crop_stop"] - bp["crop_start"]
         spec_s[:, bp["crop_start"] : bp["crop_stop"], :] = spec_m[
@@ -424,6 +433,7 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
                 )
                 # wave = librosa.core.resample(wave2, bp['sr'], sr, res_type="sinc_fastest")
                 wave = librosa.resample(wave2, orig_sr=bp["sr"], target_sr=sr, res_type="scipy")
+                del wave2  # 重采样完这份中间波形就没用了，尽早放掉
 
     return wave.T
 

@@ -63,16 +63,23 @@ def inference(X_spec, device, model, aggressiveness, data):
 
         return X_mag, X_phase
 
-    X_mag, X_phase = preprocess(X_spec)
+    X_mag, X_phase_ang = preprocess(X_spec)
 
     coef = X_mag.max()
-    X_mag_pre = X_mag / coef
 
-    n_frame = X_mag_pre.shape[2]
+    n_frame = X_mag.shape[2]
     pad_l, pad_r, roi_size = make_padding(n_frame, data["window_size"], model.offset)
     n_window = int(np.ceil(n_frame / roi_size))
 
-    X_mag_pad = np.pad(X_mag_pre, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
+    # 归一化只做一次、直接用掉：原来先存一份 X_mag_pre 常驻（一首 5 分钟的歌
+    # 130MB+），下面 pad 再复制一份，等于同一份数据在内存里躺着三四份。
+    X_mag_pad = np.pad(
+        X_mag / coef, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant"
+    )
+
+    # 相位只留复数形式，float32 的中间量用完即弃（又是 130MB）
+    X_phase = np.exp(1.0j * X_phase_ang)
+    del X_phase_ang
 
     if list(model.state_dict().values())[0].dtype == torch.float16:
         is_half = True
@@ -88,7 +95,9 @@ def inference(X_spec, device, model, aggressiveness, data):
         pad_r += roi_size // 2
         n_window += 1
 
-        X_mag_pad = np.pad(X_mag_pre, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
+        X_mag_pad = np.pad(
+            X_mag / coef, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant"
+        )
 
         pred_tta = _execute(
             X_mag_pad, roi_size, n_window, device, model, aggressiveness, is_half
@@ -96,9 +105,9 @@ def inference(X_spec, device, model, aggressiveness, data):
         pred_tta = pred_tta[:, :, roi_size // 2 :]
         pred_tta = pred_tta[:, :, :n_frame]
 
-        return (pred + pred_tta) * 0.5 * coef, X_mag, np.exp(1.0j * X_phase)
+        return (pred + pred_tta) * 0.5 * coef, X_mag, X_phase
     else:
-        return pred * coef, X_mag, np.exp(1.0j * X_phase)
+        return pred * coef, X_mag, X_phase
 
 
 def _get_name_params(model_path, model_hash):

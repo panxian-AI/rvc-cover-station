@@ -1,5 +1,6 @@
 import os,sys
 parent_directory = os.path.dirname(os.path.abspath(__file__))
+import gc
 import logging,pdb
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ class AudioPre:
                     target_sr=bp["sr"],
                     res_type=bp["res_type"],
                 )
+                # 上一级（更高采样率）的波形到这里已经没用了，立刻放掉。
+                # 一首 5 分钟的歌光这几个频带的波形就有 170MB，留着只是白占。
+                X_wave.pop(d + 1, None)
             # Stft of wave source
             X_spec_s[d] = spec_utils.wave_to_spectrogram_mt(
                 X_wave[d],
@@ -88,11 +92,17 @@ class AudioPre:
                 input_high_end_h = (bp["n_fft"] // 2 - bp["crop_stop"]) + (
                     self.mp.param["pre_filter_stop"] - self.mp.param["pre_filter_start"]
                 )
+                # 必须是 copy：原来的写法是切片视图，会把整个最高频频谱一起钉在
+                # 内存里，直到函数结束都释放不掉。
                 input_high_end = X_spec_s[d][
                     :, bp["n_fft"] // 2 - input_high_end_h : bp["n_fft"] // 2, :
-                ]
+                ].copy()
 
         X_spec_m = spec_utils.combine_spectrograms(X_spec_s, self.mp)
+        # 各频带频谱已经合成进 X_spec_m，原来那份（一首 5 分钟的歌约 500MB）可以走了
+        X_wave.clear()
+        X_spec_s.clear()
+        gc.collect()
         aggresive_set = float(self.data["agg"] / 100)
         aggressiveness = {
             "value": aggresive_set,
@@ -108,6 +118,10 @@ class AudioPre:
             pred = spec_utils.mask_silence(pred, pred_inv)
         y_spec_m = pred * X_phase
         v_spec_m = X_spec_m - y_spec_m
+        # 人声/伴奏两套频谱已经算出来了，推理中间量统统放掉：
+        # 这两个（y_spec_m 和 v_spec_m）各自就有一两百 MB。
+        del pred, X_mag, X_phase, X_spec_m
+        gc.collect()
 
         if is_hp3 == True:
             ins_root,vocal_root = vocal_root,ins_root
@@ -154,6 +168,10 @@ class AudioPre:
                         except:
                             pass
         if vocal_root is not None:
+            if ins_root is not None:
+                # 伴奏已经写盘，合成人声时不必再拖着伴奏的整份频谱（~270MB）
+                del y_spec_m
+                gc.collect()
             if is_hp3 == True:
                 head = "instrument_"
             else:

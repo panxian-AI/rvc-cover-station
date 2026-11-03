@@ -7,10 +7,10 @@ import urllib.parse
 import urllib.request
 
 REPO = "panxian-AI/rvc-cover-station"
-TAG = "v1.1.5"
-NAME = "RVC 翻唱站 v1.1.5 · 修长歌生成内存不足 + index 匹配"
-ASSET = r"E:\rvc-cover-station\_release\RVC翻唱站-一键安装包-v1.1.5.zip"
-ASSET_NAME = "RVC-Cover-Station-Installer-v1.1.5.zip"
+TAG = "v1.1.6"
+NAME = "RVC 翻唱站 v1.1.6 · 致歉：修安装器闪退（根因是我们的一处笔误）"
+ASSET = r"E:\rvc-cover-station\_release\RVC翻唱站-一键安装包-v1.1.6.zip"
+ASSET_NAME = "RVC-Cover-Station-Installer-v1.1.6.zip"
 NOTES = open(r"E:\rvc-cover-station\_release\ReleaseNotes.md", encoding="utf-8").read()
 
 

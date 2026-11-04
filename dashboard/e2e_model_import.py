@@ -237,10 +237,11 @@ def main():
         s, _ = jpost("/api/admin/import_check", {"paths": []},
                      {"X-Forwarded-For": "1.2.3.4"})
         chk("带 XFF 头的管理请求被 403", s == 403, s)
-        s, html = jget("/")
+        s, html = jget("/console/settings")
         chk("控制台含模型导入卡片", "模型导入" in html and "importPick" in html)
+        s2, jsrc = jget("/assets/page_settings.js")     # v2.0.0：脚本拆到 assets/ 了
         chk("控制台含导入结果渲染与安装函数",
-            "impRender" in html and "importInstall" in html)
+            s2 == 200 and "impRender" in jsrc and "importInstall" in jsrc, s2)
     finally:
         srv.shutdown()
         time.sleep(0.3)

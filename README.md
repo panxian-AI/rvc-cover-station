@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.5.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.0.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -57,6 +57,16 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   第一首歌省掉约 70 秒的冷启动（分离模型 43 秒 + F0 首次 30~40 秒）
 - 🎛 **设备自适应**（v1.3.2）：按显卡显存/物理核/内存自动选档位（极速/均衡/省内存），
   线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
+- 🧱 **拆包重构**（v2.0.0）：`panel.py` 从 2318 行瘦到 200 行，只剩「怎么起服务」；
+  实现按依赖分层搬进 `dashboard/panelkit/`——`core`（常量/工具）→ `security` / `sysinfo`
+  / `services` / `pages` / `trayapp` → `routes_get` / `routes_post` → `server`。
+  以后改一个功能不用在两千行里翻，也不会因为手滑动到别处
+- 🗂 **控制台分多页**（v2.0.0）：原来一页塞满 13 张卡片，现在拆成 **概览 / 任务 / 访客 /
+  设置** 四页，外加原有的模型市场、模型管理、监控、自助翻唱、访客页。样式与脚本收到
+  `dashboard/assets/` 共用（改完刷新就生效），页面本身只留结构，一屏就能看完一类事
+- 🔒 **依赖锁版本**（v2.0.0）：顶层 `requirements.txt` 全部写成 `==`（含传递依赖），
+  `dashboard/deps.py` 启动时核对机器上实际装的版本，被别的程序顺手升过会在控制台
+  「概览」页直接提示，并给出可直接粘贴的修复命令——不再出现「上游一升级，功能突然不行」
 - 🧵 **翻唱提速**（v1.3.2）：伴奏变调与推理并行、同一模型不再重复加载，
   每首歌再省 5~10 秒；后端日志会打「本首耗时」分段账
 - 🪟 **静默启动**（v1.4.0）：双击 `启动RVC.bat` 不再挂着黑窗口——由 `pythonw`
@@ -105,7 +115,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 17 套回归测试共 859 项断言（`dashboard/e2e_*.py`）
+- 附带 18 套回归测试共 914 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 
@@ -170,6 +180,41 @@ QQ群/AstrBot 插件 ──► 8899 面板(访客页/控制台) ──► 3333 �
 | 3333 | RVCSVC-API/app_rvc.py | 翻唱推理后端（人声分离 + RVC 换声），与 matsuko 插件接口兼容 |
 | 3002 | ncmapi/ncm_proxy.py | 本地网易云搜索代理（标准库实现，兼容 NeteaseCloudMusicApi 常用端点） |
 | 7865 | RVC-WebUI/ | RVC 官方 WebUI（**代码随仓库附带，为上游原版 MIT 代码**） |
+
+### dashboard 的模块分层（v2.0.0 起）
+
+```
+dashboard/
+  panel.py              入口：起 HTTP 服务、挂托盘、出错怎么办（~200 行）
+  panelkit/
+    core.py             常量 / 路径 / 可选子模块 / 页面缓存 / HTTP 小工具（最底层）
+    security.py         公网路径白名单、探测封禁、安全日志
+    sysinfo.py          端口 · 进程 · GPU · 网卡 · 日志 · 依赖核对的数据源
+    services.py         服务启停、启动前体检、公网隧道
+    pages.py            页面登记表 + assets/ 静态资源（越界一律 404）
+    trayapp.py          任务栏图标
+    routes_get.py       GET 路由（页面 + 查询接口）
+    routes_post.py      POST 路由（动作 + 审批 + 导入导出 + 更新）
+    server.py           PanelServer（连接上限）+ Handler 基类 + 路由分发
+  assets/               控制台共用的 console.css 与各页脚本
+  console_page.html         概览：服务状态 / 版本 / 公网地址 / 日志
+  console_tasks_page.html   任务：制作队列 / 自助翻唱 / 待审批 / 申请记录
+  console_guest_page.html   访客：白名单 / 解锁请求 / 公网安全
+  console_settings_page.html 设置：高级设置 / 模型 / 数据备份
+```
+
+分层是单向的：下层不 import 上层（`core` 连 `security` 都不 import），
+所以不会有循环导入；老代码 `import panel` 仍然能用——`panel.py` 把名字重新导出，
+并且 `panel.SERVICE_PORTS = ...` 这类赋值会转发到真正持有它的子模块。
+
+### 依赖锁
+
+| 文件 | 管什么 |
+|---|---|
+| `requirements.txt` | 面板层依赖，**全部 `==` 锁死**（含 urllib3/certifi 等传递依赖） |
+| `RVCSVC-API/requirements.txt` | 翻唱后端直接依赖（torch 版本按显卡选，见文件顶部注释） |
+| `RVCSVC-API/requirements-freeze.txt` | 后端完整环境快照 |
+| `dashboard/deps.py` | 启动/打开控制台时核对锁定值与实际安装，漂移会提示 + 给修复命令 |
 
 ## 🧰 手动安装（进阶）
 

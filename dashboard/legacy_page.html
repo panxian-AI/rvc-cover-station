@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RVC 控制台</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#182031; --card2:#1e283c; --line:#2a3550;
+    --txt:#e8eefc; --dim:#8d9bb8; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --acc:#5b9dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    padding:16px;max-width:1080px;margin:0 auto}
+  h1{font-size:19px;margin:0 0 4px;font-weight:650;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:12px}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+  .card h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:600;letter-spacing:.6px;text-transform:uppercase}
+  .hero{background:linear-gradient(135deg,#1d2b47,#182031);border-color:#31456b}
+  .hero .url{font-family:ui-monospace,Consolas,monospace;font-size:17px;color:#8ec5ff;word-break:break-all;line-height:1.5}
+  .hero .hint{font-size:12px;color:var(--dim);margin-top:8px;line-height:1.7}
+  .btn{background:var(--acc);color:#04121f;border:0;border-radius:8px;padding:7px 13px;font-size:12.5px;
+    font-weight:650;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+  .btn.ghost{background:transparent;color:var(--txt);border:1px solid var(--line);font-weight:500}
+  .btn.red{background:#3a1d24;color:#ff9aa8;border:1px solid #5c2b36}
+  .btn.green{background:#12301f;color:#7ef0a8;border:1px solid #23543a}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.big{padding:11px 22px;font-size:14px;border-radius:10px;font-weight:700;letter-spacing:.3px}
+  .ctrl{background:linear-gradient(135deg,#17233a,#182031);border-color:#2f4066}
+  .ctrl .tip{font-size:12px;color:var(--dim);line-height:1.7;margin-top:9px}
+  .ctrl .tip b{color:#cfe3ff;font-weight:600}
+  .row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #212b40;flex-wrap:wrap}
+  .row:last-child{border-bottom:0}
+  .pname{flex:1;min-width:150px}
+  .pname b{font-size:13.5px;font-weight:600}
+  .pname span{display:block;font-size:11.5px;color:var(--dim);margin-top:2px}
+  .tag{font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);
+    background:#101827;border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+  .kv{background:var(--card2);border-radius:10px;padding:10px 12px}
+  .kv .k{font-size:11px;color:var(--dim);margin-bottom:4px}
+  .kv .v{font-size:14px;font-weight:600}
+  .bar{height:6px;background:#0e1524;border-radius:99px;overflow:hidden;margin-top:7px}
+  .bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#3b82f6,#22d3ee)}
+  .ip{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px dashed #212b40;flex-wrap:wrap}
+  .ip:last-child{border-bottom:0}
+  .ip code{font-family:ui-monospace,monospace;font-size:13px;color:#cfe3ff}
+  .badge{font-size:10.5px;padding:1.5px 7px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+  .badge.on{color:#7ef0a8;border-color:#23543a;background:#12301f}
+  pre{background:#0c1220;border:1px solid var(--line);border-radius:10px;padding:11px;
+    font-size:11.5px;line-height:1.65;color:#9fb3d1;max-height:220px;overflow:auto;margin:0;
+    font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  .flash{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#20304d;
+    border:1px solid #3a5077;color:var(--txt);padding:10px 18px;border-radius:10px;font-size:13px;
+    opacity:0;transition:.25s;pointer-events:none;z-index:9;max-width:88vw;text-align:center}
+  .flash.show{opacity:1}
+  .foot{color:#5d6b87;font-size:11px;text-align:center;margin:16px 0 6px;line-height:1.8}
+  a{color:#8ec5ff}
+</style>
+</head>
+<body>
+<div class="top">
+  <div>
+    <h1>RVC 控制台</h1>
+    <div class="sub" id="meta">加载中…</div>
+  </div>
+  <div style="text-align:right">
+    <div class="sub"><span class="dot" id="live" style="background:#475569"></span><span id="livetxt">连接中</span></div>
+    <div style="display:flex;gap:8px;margin-top:7px;justify-content:flex-end">
+      <a class="btn ghost" href="/" style="text-decoration:none;display:inline-block">← 控制台</a>
+      <a class="btn" href="/cover" style="text-decoration:none;display:inline-block">🎤 翻唱</a>
+      <button class="btn ghost" onclick="load(true)">立即刷新</button>
+    </div>
+  </div>
+</div>
+
+<div class="card ctrl">
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <button class="btn green big" id="btnStart" onclick="act('start_all')">⚡ 一键开启服务</button>
+    <button class="btn red big" id="btnStop" onclick="act('shutdown')">⏹ 一键退出服务</button>
+    <span class="sub" id="ctrlState">…</span>
+  </div>
+  <div class="tip">
+    <b>开启</b>：WebUI(7865) / 后端(3333) / 网易云(3002) 三路并行拉起，先就先用；已在跑的会跳过。
+    <b>退出</b>：按 后端 → 网易云 → WebUI 的顺序停掉，再关公网隧道和本面板。<br>
+    <b>会等端口真的释放再退出</b>：万一有进程停不掉（比如端口被别的东西占着），
+    面板不会假装退出，而是把占用的 PID 报给你，你可以再点一次，或双击根目录的
+    <b>停止RVC.bat</b> 强制结束。<br>
+    拔移动硬盘、玩游戏、想让显卡空出来时用「一键退出」；只想停服务但留着面板看状态，用下面那张卡片里的「全部停止」。
+  </div>
+</div>
+
+<div class="card hero">
+  <h2>手机插件填这两个地址</h2>
+  <div class="sub" style="margin-bottom:4px">① RVC API Gradio 后端服务地址（以 / 结尾）</div>
+  <div class="url" id="pluginUrl">—</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:9px 0 14px">
+    <button class="btn" onclick="copyText(DATA&&DATA.plugin_url)">复制</button>
+    <button class="btn ghost" onclick="openText(DATA&&DATA.plugin_url)">打开</button>
+  </div>
+  <div class="sub" style="margin-bottom:4px">② 网易云音乐 Node.js API 地址（本地服务，不用 https）</div>
+  <div class="url" id="ncmUrl" style="font-size:15px">—</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px">
+    <button class="btn" onclick="copyText(DATA&&DATA.ncm_url)">复制</button>
+    <button class="btn ghost" onclick="openText((DATA&&DATA.ncm_url)+'/search?keywords=%E5%8D%81%E5%B9%B4&limit=3')">测试搜索</button>
+  </div>
+  <div class="hint" id="pluginHint"></div>
+</div>
+
+<div class="card">
+  <h2>端口与进程</h2>
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <button class="btn" onclick="act('start_all')">启动缺失的服务</button>
+    <button class="btn ghost" onclick="act('stop_all')">仅停服务（面板留着）</button>
+    <span class="sub">并行启动：WebUI(7865) / 后端(3333) 同时拉起，谁先就绪谁先用</span>
+  </div>
+  <div id="ports"></div>
+</div>
+
+<div class="card">
+  <h2>本机网络地址</h2>
+  <div id="ips"></div>
+</div>
+
+<div class="card">
+  <h2>RVC 状态</h2>
+  <div class="grid" id="rvcinfo"></div>
+</div>
+
+<div class="card">
+  <h2>显卡</h2>
+  <div class="grid" id="gpu"></div>
+</div>
+
+<div class="card">
+  <h2>后端日志 <span class="tag" id="logfile"></span></h2>
+  <pre id="log">—</pre>
+</div>
+
+<div class="foot">
+  每 3 秒自动刷新 · 面板端口 8899 · 手机与电脑需在同一局域网（同一 Wi-Fi 或同一热点）<br>
+  电脑换网络后 IP 会变，以本页顶部地址为准重新填插件配置
+</div>
+<div class="flash" id="flash"></div>
+
+<script>
+let DATA = null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function toast(msg){
+  const el = document.getElementById('flash');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(window._ft); window._ft = setTimeout(()=>el.classList.remove('show'), 2600);
+}
+
+async function load(manual){
+  try{
+    const r = await fetch('/api/status', {cache:'no-store'});
+    DATA = await r.json();
+    render();
+    document.getElementById('live').style.background = '#22c55e';
+    document.getElementById('livetxt').textContent = '已连接';
+  }catch(e){
+    document.getElementById('live').style.background = '#ef4444';
+    document.getElementById('livetxt').textContent = '面板离线';
+  }
+}
+
+function render(){
+  const d = DATA;
+  document.getElementById('meta').textContent = d.host + ' · ' + d.time;
+
+  // 顶部地址
+  document.getElementById('pluginUrl').textContent = d.plugin_url || '未获取到局域网 IP';
+  document.getElementById('ncmUrl').textContent = d.ncm_url || '未获取到局域网 IP';
+  const reach = d.lan_reach;
+  let hint = '把这个地址填进 AstrBot 插件「RVC API Gradio 后端服务地址」，必须以 / 结尾。';
+  if (reach === true) hint += ' ✅ 局域网内已可访问 3333。';
+  else if (reach === false) hint += ' ⚠️ 后端没在跑，或防火墙没放行 3333。';
+  if (d.gateway) hint += ' 当前网关 ' + d.gateway + '（热点共享时它就是另一台设备）。';
+  const ncm = (d.ports||[]).find(p=>p.key==='ncm');
+  hint += ncm ? (ncm.open ? ' 本地网易云 API(:3002) 已启动。' : ' ⚠️ 本地网易云 API(:3002) 未启动，插件搜不到歌。') : '';
+  document.getElementById('pluginHint').textContent = hint;
+
+  // 端口
+  document.getElementById('ports').innerHTML = d.ports.map(p=>{
+    const color = p.open ? '#22c55e' : '#475569';
+    const st = p.open ? '运行中' : '未启动';
+    let btns = '';
+    if(p.key === 'panel'){
+      btns = '<span class="tag">当前页面</span>';
+    }else{
+      btns =
+        `<button class="btn green" onclick="act('start','${p.key}')" ${p.open?'disabled':''}>启动</button>` +
+        `<button class="btn red" onclick="act('stop','${p.key}')" ${p.open?'':'disabled'} style="margin-left:6px">停止</button>` +
+        `<button class="btn ghost" onclick="act('restart','${p.key}')" style="margin-left:6px">重启</button>`;
+    }
+    return `<div class="row">
+      <div class="pname"><b><span class="dot" style="background:${color}"></span>${esc(p.name)}</b>
+        <span>${esc(p.desc)}</span></div>
+      <span class="tag" style="color:${p.open?'#7ef0a8':'#8d9bb8'}">:${p.port} ${st}</span>
+      <span class="tag">${p.pid?('PID '+p.pid+(p.proc?(' · '+esc(p.proc)):'')):'—'}</span>
+      ${p.multi?`<span class="tag" style="color:#fbbf24;border-color:#fbbf24">⚠ ${p.pids.length} 个进程抢这个端口</span>`:''}
+      <div>${btns}</div>
+    </div>`;
+  }).join('');
+
+  // 总控条状态
+  const svc = (d.ports||[]).filter(p=>p.key!=='panel');
+  const onCnt = svc.filter(p=>p.open).length;
+  const ctrl = document.getElementById('ctrlState');
+  if(ctrl){
+    if(onCnt === svc.length) ctrl.innerHTML = '<span class="dot" style="background:#22c55e"></span>全部在线 '+onCnt+'/'+svc.length;
+    else if(onCnt === 0) ctrl.innerHTML = '<span class="dot" style="background:#475569"></span>全部停止 0/'+svc.length;
+    else ctrl.innerHTML = '<span class="dot" style="background:#f59e0b"></span>部分运行 '+onCnt+'/'+svc.length;
+  }
+
+  // IP
+  document.getElementById('ips').innerHTML = (d.ips.length? d.ips.map(x=>`
+    <div class="ip">
+      <code>${esc(x.ip)}</code>
+      ${x.default?'<span class="badge on">默认出口</span>':''}
+      ${x.private?'<span class="badge">内网</span>':'<span class="badge">公网/其他</span>'}
+      <span style="color:#5d6b87;font-size:11.5px">${esc(x.iface||'')}</span>
+    </div>`).join('') : '<div class="sub">没有检测到可用内网地址</div>');
+
+  // RVC
+  const rv = d.rvc || {};
+  const mlist = (rv.models && rv.models.length)
+    ? rv.models.map(m=>`<span class="tag" style="color:#cfe3ff;color:#cfe3ff">${esc(m.name)} · ${m.mb}MB</span>`).join(' ')
+    : '<span style="color:#ff9aa8">assets/weights 里没有 .pth</span>';
+  document.getElementById('rvcinfo').innerHTML = `
+    <div class="kv"><div class="k">翻唱后端 :3333</div><div class="v" style="color:${rv.online?'#7ef0a8':'#ff9aa8'}">
+      ${rv.online?'正常':'未启动'}</div></div>
+    <div class="kv"><div class="k">换声引擎 :7865</div><div class="v" style="color:${rv.webui?'#7ef0a8':'#ff9aa8'}">
+      ${rv.webui?'正常':'未启动'}</div></div>
+    <div class="kv"><div class="k">当前生效索引</div><div class="v" style="font-size:12.5px;font-weight:500;word-break:break-all">
+      ${esc(rv.active_index || '（还没跑过转换）')}</div></div>
+    <div class="kv" style="grid-column:1/-1"><div class="k">可用模型</div><div class="v" style="line-height:2">${mlist}</div>
+      ${rv.note?`<div class="k" style="margin-top:7px;color:#f59e0b">⚠️ ${esc(rv.note)}</div>`:''}</div>
+    <div class="kv" style="grid-column:1/-1"><div class="k">索引文件（.index）</div>
+      <div class="v" style="font-size:12px;font-weight:500;word-break:break-all">${esc((rv.indices&&rv.indices.length)?rv.indices.join('  ·  '):'—')}</div></div>`;
+
+  renderGpu();
+  renderLog();
+}
+
+function renderGpu(){
+  const g = DATA && DATA.gpu;
+  const box = document.getElementById('gpu');
+  if(!g){ box.innerHTML = '<div class="kv"><div class="k">显卡</div><div class="v" style="color:#ff9aa8">nvidia-smi 不可用</div></div>'; return; }
+  const mp = Math.round(100*g.mem_used/Math.max(1,g.mem_total));
+  box.innerHTML = `
+    <div class="kv" style="grid-column:1/-1"><div class="k">型号</div><div class="v">${esc(g.name)}</div></div>
+    <div class="kv"><div class="k">GPU 利用率</div><div class="v">${g.util}%</div>
+      <div class="bar"><i style="width:${g.util}%"></i></div></div>
+    <div class="kv"><div class="k">显存</div><div class="v">${g.mem_used} / ${g.mem_total} MB <span style="font-size:11px;color:#8d9bb8">(${mp}%)</span></div>
+      <div class="bar"><i style="width:${mp}%"></i></div></div>
+    <div class="kv"><div class="k">温度</div><div class="v" style="color:${g.temp>80?'#ff9aa8':'#e8eefc'}">${g.temp} °C</div></div>`;
+}
+
+function renderLog(){
+  const l = (DATA && DATA.log) || {lines:[]};
+  document.getElementById('logfile').textContent = l.file || '无日志';
+  document.getElementById('log').textContent = (l.lines && l.lines.length) ? l.lines.join('\n') : '（暂无日志）';
+}
+
+async function act(doWhat, target){
+  const label = {start:'启动',stop:'停止',restart:'重启',start_all:'全部启动',
+                 stop_all:'全部停止',shutdown:'退出服务'}[doWhat];
+  if(doWhat === 'shutdown'){
+    if(!confirm('将停止 后端(3333) / 网易云(3002) / RVC WebUI(7865)，并关闭本面板。\n\n' +
+                '正在跑的翻唱任务会被中断；关掉后要再用，请双击「启动监控面板.bat」。\n\n确定退出？')) return;
+  }else if(doWhat === 'stop' || doWhat === 'restart' || doWhat === 'stop_all'){
+    if(!confirm(`确定要${label}吗？`)) return;
+  }
+
+  const btnS = document.getElementById('btnStart');
+  const btnE = document.getElementById('btnStop');
+  if(doWhat === 'shutdown'){
+    toast('正在停止服务…');
+    if(btnE){ btnE.disabled = true; btnE.textContent = '⏹ 退出中…'; }
+    if(btnS) btnS.disabled = true;
+  }else{
+    toast(`${label}中…${doWhat==='start_all'?'（三路并行启动，最长 3 分钟，别关页面）':''}`);
+    if(doWhat === 'start_all'){
+      if(btnS){ btnS.disabled = true; btnS.textContent = '⚡ 启动中…'; }
+      if(btnE) btnE.disabled = true;
+    }
+  }
+
+  try{
+    const r = await fetch('/api/action', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({do:doWhat, target})});
+    const j = await r.json();
+    toast(j.msg || (j.ok?'完成':'失败'));
+    if(j.shutdown){
+      clearInterval(window._timer);
+      document.getElementById('livetxt').textContent = '面板已关闭';
+      document.getElementById('live').style.background = '#ef4444';
+      if(btnE) btnE.textContent = '⏹ 已退出';
+      setTimeout(()=>{ document.body.style.transition='opacity .8s'; document.body.style.opacity='.4'; }, 900);
+      return;
+    }
+  }catch(e){ toast('操作失败: '+e); }
+
+  if(doWhat === 'start_all'){
+    if(btnS){ btnS.disabled = false; btnS.textContent = '⚡ 一键开启服务'; }
+    if(btnE) btnE.disabled = false;
+  }
+  setTimeout(()=>load(), 2000);
+}
+
+function copyText(v){
+  if(!v) return toast('没有可复制的地址');
+  navigator.clipboard?.writeText(v).then(()=>toast('已复制：'+v)).catch(()=>{
+    const t=document.createElement('textarea'); t.value=v; document.body.appendChild(t);
+    t.select(); document.execCommand('copy'); t.remove(); toast('已复制：'+v);
+  });
+}
+function openText(u){ if(u) window.open(u,'_blank'); }
+
+// 首次全量渲染，之后每 3 秒刷新
+load();
+window._timer = setInterval(()=>{
+  fetch('/api/status',{cache:'no-store'}).then(r=>r.json()).then(j=>{
+    DATA=j; render();
+    document.getElementById('live').style.background='#22c55e';
+    document.getElementById('livetxt').textContent='已连接';
+  }).catch(()=>{
+    document.getElementById('live').style.background='#ef4444';
+    document.getElementById('livetxt').textContent='面板离线';
+  });
+}, 3000);
+</script>
+</body>
+</html>

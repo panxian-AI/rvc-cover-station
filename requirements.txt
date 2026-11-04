@@ -1,6 +1,28 @@
-# 面板层（dashboard/ + ncmapi/）依赖 —— 很少几个，标准库为主
-# 翻唱后端（RVCSVC-API/）的依赖单独一份：见 RVCSVC-API/requirements.txt
-edge-tts>=7.0
-gradio-client>=1.13
-pillow>=10.0
-requests
+# 面板层依赖（dashboard/ + ncmapi/）—— 全部锁死版本
+#
+# 为什么写死 ==：这几个包都属于「上游一升级就改行为」的类型，而且都不是我们
+# 能跟着改的（edge-tts 改 TTS 接口、gradio-client 改字段名、Pillow 改 API）。
+# 不锁的话，某天 pip 顺手升一下，面板就可能起不来，或者「以前能用的功能突然
+# 不行了」，而报错信息通常看不出跟升级有关。
+#
+# 升级姿势（不要直接改这里）：
+#   1. 先在测试机  python -m pip install -r requirements.txt --upgrade
+#   2. 跑 dashboard 下的 e2e 回归（至少 e2e_silent / e2e_market / e2e_dataio）
+#   3. 全绿了再回来把新版本号写进这个文件，随版本一起发
+#
+# 核对：dashboard/deps.py 会在控制台「概览」页提示版本漂移
+#       单独查：<python> dashboard/deps.py
+#
+# 翻唱后端（RVCSVC-API）的依赖另有一份：RVCSVC-API/requirements.txt
+
+# ---- 直接依赖 ----
+edge-tts==7.3.1
+gradio-client==1.13.3
+pillow==11.3.0
+requests==2.34.2
+
+# ---- 传递依赖：requests / gradio-client 拉上来的，行为变化同样会咬人 ----
+urllib3==2.8.0
+certifi==2026.10.23
+charset-normalizer==3.5.2
+idna==3.20

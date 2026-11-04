@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务 · RVC 控制台</title>
+<link rel="stylesheet" href="/assets/console.css">
+</head>
+<body>
+<header>
+  <h1>⚙ RVC 控制台</h1>
+  <div class="nav">
+    <a href="/">概览</a>
+    <a href="/console/tasks" class="on">任务</a>
+    <a href="/console/guest">访客</a>
+    <a href="/console/settings">设置</a>
+    <a href="/market">模型市场</a>
+    <a href="/models">模型管理</a>
+    <a href="/panel">监控</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/guest" target="_blank">访客页</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>制作队列 <span id="qSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="queue"><div class="empty">读取中…</div></div>
+    <div class="hint">GPU 一次只跑一单，做完自动接力下一单。默认先到先来，可以手动置顶 / 上移 / 下移；「移出」等于拒绝。<b>前面几单、预计多久开始</b>都是按队列真实位次和最近成品的实际耗时算的（同时制作数量在「设置」里改，改完预计会跟着变）。</div>
+  </div>
+
+  <div class="card">
+    <h2>🎤 自助翻唱任务 <span id="cjSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="cjobs"><div class="empty">读取中…</div></div>
+    <div class="hint">这一块是「自助翻唱」页（<a href="/cover">/cover</a>）里的单：你自己用、不用审批，和上面的访客队列分开排 GPU。以前它的进度只有那个页面自己看得到。</div>
+  </div>
+
+  <div class="card">
+    <h2>待审批 <span id="pendN" style="color:#f0c674"></span></h2>
+    <div id="pend"><div class="empty">读取中…</div></div>
+    <div class="hint">批准即入队，不会因为「还有一单在做」被挡。命中成品库的单批准后立刻发成品，不占队列。</div>
+  </div>
+
+  <div class="card">
+    <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="reqs"><div class="empty">读取中…</div></div>
+    <details id="visitBox">
+      <summary>访客记录 <span id="visitN" style="color:#75869f"></span></summary>
+      <div id="visits" style="margin-top:10px"><div class="empty">读取中…</div></div>
+    </details>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/page_tasks.js"></script>
+</body>
+</html>

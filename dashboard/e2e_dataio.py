@@ -463,7 +463,8 @@ def main():
         chk("数据真的落回来了", len(disk_db()["requests"]) == 3)
 
         print("\n== 14. 页面接线 ==")
-        cpage = open(os.path.join(HERE, "console_page.html"), encoding="utf-8").read()
+        cpage = (open(os.path.join(HERE, "console_settings_page.html"), encoding="utf-8").read()
+                 + open(os.path.join(HERE, "assets", "page_settings.js"), encoding="utf-8").read())
         chk("控制台有这张卡片", "数据备份与迁移" in cpage and 'id="dioSum"' in cpage)
         chk("三个动作都在", all(k in cpage for k in
                                 ("dioExport()", "dioPick()", "dioOpen()")))

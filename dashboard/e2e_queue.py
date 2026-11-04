@@ -219,7 +219,8 @@ def main():
 
         print("\n== 3.6 页面接线（访客页 / 控制台）==")
         gpage = open(os.path.join(HERE, "guest_page.html"), encoding="utf-8").read()
-        cpage = open(os.path.join(HERE, "console_page.html"), encoding="utf-8").read()
+        cpage = (open(os.path.join(HERE, "console_tasks_page.html"), encoding="utf-8").read()
+                 + open(os.path.join(HERE, "assets", "page_tasks.js"), encoding="utf-8").read())
         chk("访客页有四步进度条", "function stepBar" in gpage and gpage.count("stepBar(r)") >= 1)
         chk("访客页顶部有「我在什么处境」摘要", 'id="mySum"' in gpage and "mySum" in gpage)
         chk("访客页用了位次/前面几单/预计三个字段",

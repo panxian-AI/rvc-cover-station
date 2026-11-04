@@ -162,10 +162,35 @@ def test_tray():
 
 # --------------------------------------------------------------- C. 接线
 
+
+
+def page_bundle(html_name, js_name):
+    """页面 + 它引用的脚本（v2.0.0 起控制台拆成多页，脚本在 assets/ 下）。"""
+    a = open(os.path.join(HERE, html_name), encoding="utf-8").read()
+    b = open(os.path.join(HERE, "assets", js_name), encoding="utf-8").read()
+    return a + "\n" + b
+
+
+def panel_src():
+    """面板的全部源码。
+
+    v2.0.0 起 panel.py 只剩启动装配，实现拆到了 panelkit/*.py；接线检查要把
+    拆开的文件一起读，否则「代码搬走了」会被误判成「代码没了」。
+    """
+    def rd(p):
+        return open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
+    parts = [rd("panel.py")]
+    d = os.path.join(HERE, "panelkit")
+    for n in sorted(os.listdir(d)):
+        if n.endswith(".py"):
+            parts.append(rd(os.path.join("panelkit", n)))
+    return "\n".join(parts)
+
+
 def test_wiring():
     print("\n== C. 接线与脚本 ==")
     rd = lambda p: open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
-    psrc = rd("panel.py")
+    psrc = panel_src()
     chk("面板导入托盘模块", "import tray as tray_mod" in psrc)
     chk("面板启动时放图标", "def start_tray" in psrc and "start_tray()" in psrc)
     chk("托盘菜单有启停入口", "def tray_items" in psrc and "一键开启服务" in psrc
@@ -179,7 +204,7 @@ def test_wiring():
     chk("兜底启动 bat 也静默", 'os.startfile(cfg["bat"])' not in psrc)
     chk("静默模式不重复开浏览器", 'RVC_NO_BROWSER' in psrc)
 
-    html = rd("console_page.html")
+    html = page_bundle("console_page.html", "page_overview.js")
     chk("控制台有静默/托盘提示位", 'id="silentLine"' in html)
     chk("控制台能看启动日志", 'id="logPre"' in html and "/api/panel_log" in html)
     chk("控制台写了左键用法", "左键单击呼出菜单" in html)
@@ -219,7 +244,7 @@ def test_quiet_and_cover_jobs():
     print("\n== D. 无窗口启动 / 自助翻唱任务可见 ==")
     rd = lambda p: open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
 
-    psrc = rd("panel.py")
+    psrc = panel_src()
     chk("服务用 pythonw.exe 启动", "def gui_exe" in psrc and 'cmd = [gui_exe(cfg["exe"])]' in psrc)
     chk("只在同目录真有 pythonw 时才换", "if os.path.isfile(w)" in psrc and 'n.lower() == "python.exe"' in psrc)
     chk("分离启动带 CREATE_NO_WINDOW", "_CREATE_NO_WINDOW = 0x08000000" in psrc
@@ -300,12 +325,13 @@ def test_quiet_and_cover_jobs():
     cs = rd("cover.py")
     chk("新增 /api/cover/jobs 接口", 'path == "/api/cover/jobs"' in cs and "jobs_snapshot()" in cs)
 
-    html = rd("console_page.html")
+    html = page_bundle("console_tasks_page.html", "page_tasks.js")
     chk("控制台有「自助翻唱任务」卡片", 'id="cjobs"' in html and "自助翻唱任务" in html)
     chk("控制台会拉快照接口", "'/api/cover/jobs'" in html)
     chk("refresh 里接上了它", "loadQueue(); loadCoverJobs();" in html)
     chk("卡片能显示阶段/用时/试听", "j.stage" in html and "已用" in html and "/api/cover/file" in html)
-    i_local = psrc.find('if not self._local_only(as_json=path.startswith("/api/"))')
+    # v2.0.0 起路由搬到 routes_get.py，接收者是 h 而不是 self
+    i_local = psrc.find('_local_only(as_json=path.startswith("/api/"))')
     i_cover = psrc.find('elif cover_mod and path.startswith("/api/cover/")')
     chk("自助翻唱接口在本机校验之后（外网拿不到）", 0 < i_local < i_cover, (i_local, i_cover))
 

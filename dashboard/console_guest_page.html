@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>访客 · RVC 控制台</title>
+<link rel="stylesheet" href="/assets/console.css">
+</head>
+<body>
+<header>
+  <h1>⚙ RVC 控制台</h1>
+  <div class="nav">
+    <a href="/">概览</a>
+    <a href="/console/tasks">任务</a>
+    <a href="/console/guest" class="on">访客</a>
+    <a href="/console/settings">设置</a>
+    <a href="/market">模型市场</a>
+    <a href="/models">模型管理</a>
+    <a href="/panel">监控</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/guest" target="_blank">访客页</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>白名单申请 <span id="wlN" style="color:#f0c674"></span></h2>
+    <div id="wlApps"><div class="empty">读取中…</div></div>
+    <details id="wlListBox" style="margin-top:6px">
+      <summary>已批准名单 <span id="wlCount" style="color:#75869f"></span></summary>
+      <div id="wlList" style="margin-top:10px"><div class="empty">读取中…</div></div>
+    </details>
+    <div class="hint">批准后「同一台设备 + 同一个网络 + 同一把设备密钥」的申请<b>自动入队、不再等你审批</b>；换设备/换网络/换浏览器就失效，要重新批。每个身份每天最多 12 单、每小时 6 单、20 秒一单；出现多台设备或多个网络共用同一身份会自动暂停并在上方告警。<b>「仅指纹」是老版本批准的</b>，建议让对方重新申请一次绑上设备密钥，才防得住冒用。</div>
+  </div>
+
+  <div class="card">
+    <h2>验证码解锁请求 <span id="ulN" style="color:#f0c674"></span></h2>
+    <div id="ulBox"><div class="empty">读取中…</div></div>
+    <div class="hint">访客验证码连错多次会被临时锁定，他们可以在这里发请求请你提前解除。<b>「同意」只解除当前这一次锁定</b>：错误计数原样保留，之后再输错照样按阶梯锁定（1 / 3 / 10 分钟），不会从此豁免。拿不准就拒绝，让对方等锁定自己过期。</div>
+  </div>
+
+  <div class="card">
+    <h2>安全 <span id="secState" class="tag t-on" style="margin-left:6px">正常</span></h2>
+    <div class="row">
+      <span style="font-size:13px;color:#b7c6dd">公网访问</span>
+      <span class="sp"></span>
+      <button class="gray mini" id="btnPause" onclick="secPause()">⏸ 暂停公网访问</button>
+    </div>
+    <div id="secBan" style="margin-top:8px"></div>
+    <div id="secRecent" class="hint" style="margin-top:8px">还没有探测记录。</div>
+    <div class="hint">公网只能打开<b>访客点歌页</b>和几个访客接口，其它路径一律当作不存在；谁连着试 20 次就直接封这个 IP 30 分钟。被刷、被骚扰时点「暂停公网访问」，访客只会看到维护页，本机控制台照常可用。</div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/page_guest.js"></script>
+</body>
+</html>

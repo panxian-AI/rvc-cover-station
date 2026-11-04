@@ -251,6 +251,9 @@ def main():
         print("\n== 7. 控制台页面元素 ==")
         with open(os.path.join(HERE, "console_page.html"), encoding="utf-8") as f:
             html = f.read()
+        # v2.0.0：脚本搬到 assets/ 了，页面元素检查要把两边一起看
+        with open(os.path.join(HERE, "assets", "page_overview.js"), encoding="utf-8") as f:
+            html += "\n" + f.read()
         for token, label in [("verState", "版本状态标签"), ("检测更新", "手动检测按钮"),
                              ("立即更新", "更新按钮"), ("updModal", "更新弹窗"),
                              ("updCheck", "自动检测函数"), ("updApply", "更新执行函数"),

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设置 · RVC 控制台</title>
+<link rel="stylesheet" href="/assets/console.css">
+</head>
+<body>
+<header>
+  <h1>⚙ RVC 控制台</h1>
+  <div class="nav">
+    <a href="/">概览</a>
+    <a href="/console/tasks">任务</a>
+    <a href="/console/guest">访客</a>
+    <a href="/console/settings" class="on">设置</a>
+    <a href="/market">模型市场</a>
+    <a href="/models">模型管理</a>
+    <a href="/panel">监控</a>
+    <a href="/cover">自助翻唱</a>
+    <a href="/guest" target="_blank">访客页</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>高级设置 <span id="advSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="advBox"><div class="empty">读取中…</div></div>
+    <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center">
+      <button class="green" onclick="saveAdv()">💾 保存设置</button>
+      <button class="gray" onclick="resetAdv()">恢复默认</button>
+      <span style="color:#75869f;font-size:11.5px">改完立即生效：同时制作数量马上下一次推进就按新值，翻唱参数对还没开跑的单生效</span>
+    </div>
+    <div class="hint">「同时制作数量」调大可以让多单并行，但每路都分显卡算力（单首会更慢），显存小于 8G 建议保持 1~2。其余是成品的默认翻唱参数，访客自己不用管。</div>
+  </div>
+
+  <div class="card">
+    <h2>模型市场 <span id="mkSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div class="row">
+      <a class="green" href="/market" style="text-decoration:none;padding:9px 15px;border-radius:9px;font-size:13px;font-weight:600">🧩 去模型市场找声线</a>
+      <span class="sp"></span>
+      <span style="font-size:12.5px;color:#8fa3c2" id="mkLine">线路检测中…</span>
+    </div>
+    <div class="hint">在公开免费模型站里搜声线（角色 / 歌手 / 合集包），点开看文件清单，选 <b>.pth</b> 和配套 <b>.index</b> 就能一键下载。下载前自动给各条线路测速挑最快的，下完核验大小 + SHA-256 + torch 结构，全过才装进 WebUI。装完在下面的导入卡片上点「🔄 更新声线」（一键重启 3333），新声线立刻可用。</div>
+  </div>
+
+  <div class="card">
+    <h2>模型导入</h2>
+    <button class="green" onclick="importPick()">📥 导入模型（弹出文件选择窗口）</button>
+    <span style="margin-left:8px"><input type="checkbox" id="impReplace"> 允许覆盖同名文件</span>
+    <button class="gray" id="impUpdBtn" style="margin-left:8px" onclick="impRestartApi()">🔄 更新声线（重启后端）</button>
+    <div id="impBox" style="margin-top:10px"><div class="empty">还没有导入过模型</div></div>
+    <div id="impRst" style="display:none;margin-top:10px;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.65"></div>
+    <div class="hint">会弹出 Windows 文件选择窗口，可按住 Ctrl 多选声线 <b>.pth</b> 和配套的 <b>.index</b> 索引。程序自动识别所选文件是否为 RVC 声线模型（读出采样率 / 版本 / f0 / 轮数），索引会自动和声线配对；确认合适后点「导入」装进 WebUI。装完<b>直接点上面的 <span style="color:#f0c674">🔄 更新声线</span></b>（一键重启 3333，约 30~90 秒），新声线就会出现在点歌列表——不用再去模型市场。管理/删除已装声线去 <a href="/models" style="color:#7fb4ff">模型管理</a> 页。</div>
+  </div>
+
+  <div class="card">
+    <h2>数据备份与迁移 <span id="dioSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div class="row">
+      <button class="green" id="dioExpBtn" onclick="dioExport()">⬇ 导出备份</button>
+      <button class="gray" id="dioImpBtn" onclick="dioPick()">📤 导入备份（弹文件选择窗口）</button>
+      <button class="gray mini" onclick="dioOpen()">📂 打开备份文件夹</button>
+      <label style="font-size:12px;color:#8fa3c2;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="dioAudio" onchange="dioAudioHint()"> 连成品音频一起打包
+      </label>
+    </div>
+    <div id="dioRst" style="display:none;margin-top:10px;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.7"></div>
+    <div id="dioBox"></div>
+    <div id="dioList" style="margin-top:11px"></div>
+    <div class="hint">换硬盘、重装系统、手改 JSON 改坏了——都靠这份备份救回来。导出的 <b>.zip</b> 里是访客记录、申请与队列、白名单、高级设置、成品库索引（勾上「连成品音频」才含 mp3），外加一份已装声线清单，换机器后照着清单就知道缺哪个声线。<b>导入前会自动把本机现有数据也存一份</b>（列表里带 🕘 的那些），导错了直接再导回来。</div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="/assets/page_settings.js"></script>
+</body>
+</html>

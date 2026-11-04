@@ -189,9 +189,26 @@ def test_backend():
     chk("WebUI 预热受环境变量控制", "RVC_WEBUI_PREWARM" in wsrc and "_start_rmvpe_prewarm" in wsrc)
 
 
+
+def panel_src():
+    """面板的全部源码。
+
+    v2.0.0 起 panel.py 只剩启动装配，实现拆到了 panelkit/*.py；接线检查要把
+    拆开的文件一起读，否则「代码搬走了」会被误判成「代码没了」。
+    """
+    def rd(p):
+        return open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
+    parts = [rd("panel.py")]
+    d = os.path.join(HERE, "panelkit")
+    for n in sorted(os.listdir(d)):
+        if n.endswith(".py"):
+            parts.append(rd(os.path.join("panelkit", n)))
+    return "\n".join(parts)
+
+
 def test_wiring():
     print("\n== C. 面板接线 ==")
-    psrc = open(os.path.join(HERE, "panel.py"), encoding="utf-8").read().replace("\r\n", "\n")
+    psrc = panel_src()
     chk("拉起服务时注入线程数", "perf_mod.env()" in psrc)
     chk("拉起服务时注入预热开关", "perf_mod.child_hints(target)" in psrc)
     chk("/api/status 带档位信息", '"perf": perf_mod.probe()' in psrc and '"perf_text"' in psrc)

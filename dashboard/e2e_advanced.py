@@ -90,6 +90,23 @@ def wait_until(fn, timeout=12, gap=0.3):
     return False
 
 
+
+def panel_src():
+    """面板的全部源码。
+
+    v2.0.0 起 panel.py 只剩启动装配，实现拆到了 panelkit/*.py；接线检查要把
+    拆开的文件一起读，否则「代码搬走了」会被误判成「代码没了」。
+    """
+    def rd(p):
+        return open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
+    parts = [rd("panel.py")]
+    d = os.path.join(HERE, "panelkit")
+    for n in sorted(os.listdir(d)):
+        if n.endswith(".py"):
+            parts.append(rd(os.path.join("panelkit", n)))
+    return "\n".join(parts)
+
+
 def main():
     real_run = cover._run_cover
     real_covers, real_index, real_temp = cover.COVERS_DIR, cover.INDEX_PATH, cover.BACKEND_TEMP
@@ -340,7 +357,7 @@ def main():
 
         print("\n== 8. 启动前体检：网易云 Cookie / WebUI 完整性 / 日志目录 ==")
         # 日志目录兜底：全新安装 RVC-WebUI\logs 不存在时不能再 Errno 2（截图真 bug）
-        src = open(os.path.join(HERE, "panel.py"), encoding="utf-8").read().replace("\r\n", "\n")
+        src = panel_src()
         chk("start() 开日志前先建目录（makedirs 兜底）",
             "os.makedirs" in src and "log_dir" in src)
         fake_root = os.path.join(TMP, "RVC-WebUI")

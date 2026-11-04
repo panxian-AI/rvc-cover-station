@@ -57,3 +57,4 @@ RVC-WebUI/ffprobe.exe
 # ============ 本机专用 ============
 *.bak
 *.tmp
+.ruff_cache/

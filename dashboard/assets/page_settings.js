@@ -195,12 +195,18 @@ function advRender(){
   box.innerHTML = ADV.fields.map(advField).join('');
 }
 
+let ADV_DIRTY = false;      // 用户改过、还没保存
+
 async function loadAdv(){
   try{
     const d = await (await fetch('/api/admin/settings', {cache:'no-store'})).json();
     if(!d.ok){ $('#advBox').innerHTML = '<div class="empty">只能在本机管理</div>'; return; }
-    ADV = d; advRender();
-  }catch(e){ $('#advBox').innerHTML = '<div class="empty">读取失败</div>'; }
+    ADV = d;
+    // 15 秒一次的定时刷新不能重建表单：用户改到一半（尤其输数字时停手
+    // 超过 15 秒）会被服务端旧值覆盖，焦点也丢，看起来「改好了」其实没改。
+    if(ADV_DIRTY || $('#advBox').contains(document.activeElement)) return;
+    advRender();
+  }catch(e){ if(!ADV) $('#advBox').innerHTML = '<div class="empty">读取失败</div>'; }
 }
 
 async function advPost(body){
@@ -210,6 +216,7 @@ async function advPost(body){
 }
 
 async function saveAdv(){
+  ADV_DIRTY = false;
   const values = {};
   document.querySelectorAll('#advBox [data-k]').forEach(el => { values[el.dataset.k] = el.value; });
   try{
@@ -220,6 +227,7 @@ async function saveAdv(){
 }
 
 async function resetAdv(){
+  ADV_DIRTY = false;
   if(!confirm('把所有高级设置恢复成默认值？（同时制作数量会回到 1）')) return;
   try{
     const d = await advPost({act:'reset'});
@@ -455,10 +463,18 @@ async function loadMarket(){
   try{
     const l = await (await fetch('/api/market/lines', {cache:'no-store'})).json();
     if(l.ok && l.lines){
-      $('#mkLine').textContent = '线路：' + l.lines.map(x => x.label + (x.ok ? ' ' + x.ms + 'ms' : ' 不通')).join(' · ');
+      $('#mkLine').textContent = '线路：' + l.lines.map(x => x.label + (x.skipped ? ' 已停用' : (x.ok ? ' ' + x.ms + 'ms' : ' 不通'))).join(' · ');
     }
   }catch(e){}
 }
+
+// 用户一动手就标脏，定时刷新只更新其它卡片，不再重建这张表单
+document.addEventListener('input', e => {
+  if(e.target && e.target.closest && e.target.closest('#advBox')) ADV_DIRTY = true;
+});
+document.addEventListener('change', e => {
+  if(e.target && e.target.closest && e.target.closest('#advBox')) ADV_DIRTY = true;
+});
 
 function refresh(){ loadAdv(); loadMarket(); dioLoad(); }
 refresh(); setInterval(refresh, 15000);

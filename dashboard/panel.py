@@ -163,7 +163,7 @@ def main():
     print("  控制台:     http://127.0.0.1:%d/       （管理只在本机可用）" % PORT)
     print("  任务队列:   http://127.0.0.1:%d/console/tasks" % PORT)
     print("  访客与白名单: http://127.0.0.1:%d/console/guest" % PORT)
-    print("  成品库:     http://127.0.0.1:%d/console/library" % PORT)
+    print("  成品库:     http://127.0.0.1:%d/cover     （翻唱页第 3 节）" % PORT)
     print("  设置/数据:  http://127.0.0.1:%d/console/settings" % PORT)
     print("  监控面板:   http://127.0.0.1:%d/panel" % PORT)
     print("  自助翻唱:   http://127.0.0.1:%d/cover" % PORT)

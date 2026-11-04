@@ -120,7 +120,9 @@ set "STACK=%INSTALL%\RVC-Data"
 set "PYRT=%STACK%\runtime\python312\python.exe"
 
 rem 已完整装过的（重跑本安装器）只补模型，不再重装
-if exist "%STACK%\RVC-WebUI\.venv\Scripts\python.exe" if exist "%STACK%\RVCSVC\apienv\Scripts\python.exe" goto :models
+rem v2.1.0：以前只要两个 venv 存在就整段跳过。pip 中途失败时 venv 早就建好了，
+rem 重跑会直接「假成功」；想靠重跑安装器升级也一个字节都不下载。现在只认显式开关。
+if /i "%RVC_ONLY_MODELS%"=="1" if exist "%STACK%\RVC-WebUI\.venv\Scripts\python.exe" goto :models
 
 echo [0/6] 测速选择下载线路（约 10~40 秒，请稍等）...
 set "GH_LIST=%GH_LINE1%;%GH_LINE2%;%GH_LINE3%;%GH_LINE4%;%GH_LINE5%;%GH_LINE6%;%GH_LINE7%;%GH_LINE8%"
@@ -186,13 +188,13 @@ set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/tags/%TAG%"
 set "RVC_STAGE=download"
 echo [1/6] 下载程序代码（约 3MB）...
 call :log 阶段1 开始下载源码
-curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
+curl.exe -L --fail --retry 2 -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if not errorlevel 1 goto :dl_ok
 if "%TAG%"=="" goto :dl_fail
 echo   该版本包下载失败，改用 main 分支最新代码重试...
 set "ZIP_URL=%GH_PREFIX%https://codeload.github.com/%REPO%/zip/refs/heads/main"
 set "VER=main 分支最新代码"
-curl.exe -L -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
+curl.exe -L --fail --retry 2 -o "%INSTALL%\_repo.zip" "%ZIP_URL%"
 if errorlevel 1 goto :dl_fail
 :dl_ok
 
@@ -204,15 +206,21 @@ set "SRC="
 for /d %%d in ("%INSTALL%\_repo\*") do if exist "%%d\RVC-WebUI\webui.py" set "SRC=%%d"
 if "%SRC%"=="" goto :dl_fail
 md "%STACK%\RVCSVC" 2>nul
-move "%SRC%\RVC-WebUI" "%STACK%\RVC-WebUI" >nul
-move "%SRC%\dashboard" "%STACK%\RVCSVC\dashboard" >nul
-move "%SRC%\RVCSVC-API" "%STACK%\RVCSVC\RVCSVC-API" >nul
-move "%SRC%\ncmapi" "%STACK%\RVCSVC\ncmapi" >nul
-move "%SRC%\setup" "%STACK%\RVCSVC\setup" >nul
+rem 必须用 robocopy /E 合并覆盖。cmd 的 move 在目标目录已存在时不会覆盖，
+rem 而是把源目录「塞进去」变成 RVC-WebUI\RVC-WebUI；外层旧 webui.py 还在，
+rem 校验照样通过 —— 用户以为装的是新版，实际跑的还是旧代码。
+call :sync "%SRC%\RVC-WebUI" "%STACK%\RVC-WebUI" || goto :dl_fail
+call :sync "%SRC%\dashboard" "%STACK%\RVCSVC\dashboard" || goto :dl_fail
+call :sync "%SRC%\RVCSVC-API" "%STACK%\RVCSVC\RVCSVC-API" || goto :dl_fail
+call :sync "%SRC%\ncmapi" "%STACK%\RVCSVC\ncmapi" || goto :dl_fail
+call :sync "%SRC%\setup" "%STACK%\RVCSVC\setup" || goto :dl_fail
 copy /y "%SRC%\启动RVC.bat" "%INSTALL%\" >nul
 copy /y "%SRC%\卸载程序.bat" "%INSTALL%\" >nul
 copy /y "%SRC%\停止RVC.bat" "%INSTALL%\" >nul
 copy /y "%SRC%\README.md" "%INSTALL%\" >nul 2>nul
+rem 启动脚本/文档里到处写「双击安装目录里的 一键安装.bat」，但以前从没复制过它：
+rem 删掉解压目录或走 AI 安装后，用户按提示根本找不到这个文件。
+copy /y "%~f0" "%INSTALL%\" >nul 2>nul
 copy /y "%SRC%\VERSION" "%STACK%\RVCSVC\" >nul 2>nul
 copy /y "%SRC%\requirements.txt" "%STACK%\RVCSVC\" >nul 2>nul
 rd /s /q "%INSTALL%\_repo" 2>nul
@@ -234,12 +242,17 @@ curl.exe -L -o "%INSTALL%\_py.exe" "%PY_TRY%"
 if errorlevel 1 goto :py_retry
 rem 下到的必须是真安装包（10MB 以上）。CDN/代理出错时会给回一段 HTML，
 rem 只有几十 KB——拿去运行就会弹「此应用无法在你的电脑上运行」。
+set "PYSZ=0"
 for %%A in ("%INSTALL%\_py.exe") do set "PYSZ=%%~zA"
+if not defined PYSZ set "PYSZ=0"
 if %PYSZ% LSS 10000000 (
   echo   [!] 下到的文件只有 %PYSZ% 字节，不是安装包（多半是错误页），换镜像重试
   goto :py_retry
 )
 "%INSTALL%\_py.exe" /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 AssociateFiles=0 Shortcuts=0 TargetDir="%STACK%\runtime\python312"
+rem 3010 = 安装成功但需重启（MSI 系安装器常见），不能当失败：否则会白下三次
+rem 安装包，最后报「Python 安装失败」，而它其实已经装好了。
+if errorlevel 1 if exist "%PYRT%" goto :py_ok
 if errorlevel 1 goto :py_retry
 del /q "%INSTALL%\_py.exe" 2>nul
 if not exist "%PYRT%" goto :py_fail
@@ -297,8 +310,10 @@ set "RVC_GH_PREFIX=%GH_PREFIX%"
 set "RVC_STAGE=models"
 echo [6/6] 下载基础模型与工具（rmvpe + 小肥鱼声线 + ffmpeg，约 270MB）...
 call :log 阶段6 下载基础模型
+set "RVC_MODEL_FAIL=0"
 "%PYRT%" "%STACK%\RVCSVC\setup\下载基础模型.py"
-if errorlevel 1 echo   （模型下载有失败也不影响安装完成，可重跑本安装器只补模型）
+if errorlevel 1 set "RVC_MODEL_FAIL=1"
+if "%RVC_MODEL_FAIL%"=="1" echo   [!] 有模型没下全（rmvpe / ffmpeg 缺了第一首就会报错），重跑本安装器可补齐
 copy /y "%STACK%\RVCSVC\setup\fix_paths.py" "%STACK%\runtime\fix_paths.py" >nul 2>nul
 
 rem ---- 安装后体检（v1.3.1）----
@@ -313,6 +328,7 @@ echo ==================================================
 echo    安装完成！
 echo.
 echo    本次安装版本：%VER%
+if "%RVC_MODEL_FAIL%"=="1" echo    [!] 基础模型不齐全：重跑 %INSTALL%\一键安装.bat 补齐
 echo.
 echo    以后使用：双击  %INSTALL%\启动RVC.bat
 echo    会自动打开监控面板 http://127.0.0.1:8899
@@ -394,6 +410,12 @@ if defined RVC_INNER (
   exit 0
 )
 endlocal
+exit /b 0
+
+:sync
+rem 合并覆盖目录（robocopy 0~7 都算成功，>=8 才是真失败）
+robocopy "%~1" "%~2" /E /MOVE /NFL /NDL /NJH /NJS /NC /NS /R:1 /W:1 >nul
+if errorlevel 8 exit /b 1
 exit /b 0
 
 :log

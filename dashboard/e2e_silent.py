@@ -55,14 +55,36 @@ def test_launcher():
 
     p = free_port()
     chk("没人监听的端口判 False", L.panel_up(p, 0.4) is False)
+
+    # 只监听、不回应 HTTP 的端口不算「面板就绪」：以前只测 TCP 能不能连，
+    # 别的程序占着 8899 时启动器会以为面板已在运行，直接把浏览器开过去。
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(5)
     live = srv.getsockname()[1]
     try:
-        chk("有人监听的端口判 True", L.panel_up(live, 2.0) is True)
+        chk("只有 TCP 监听（不是面板）判 False", L.panel_up(live, 0.8) is False)
     finally:
         srv.close()
+
+    # 真的回 /api/ping 标识才算
+    import http.server, threading
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"ok":true,"app":"rvc-panel"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *a):
+            pass
+    hs = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=hs.serve_forever, daemon=True).start()
+    try:
+        chk("回了 rvc-panel 标识的端口判 True",
+            L.panel_up(hs.server_address[1], 2.0) is True)
+    finally:
+        hs.shutdown(); hs.server_close()
 
     tmp = tempfile.mkdtemp()
     log = os.path.join(tmp, "启动.log")

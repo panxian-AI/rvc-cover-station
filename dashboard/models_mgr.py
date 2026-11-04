@@ -57,12 +57,28 @@ def _safe_join(base, name):
 
 
 def _match_indices(model_name):
-    """返回与该模型配套的 index 文件名列表。"""
-    base = os.path.splitext(model_name)[0].lower()
+    """返回与该模型配套的 index 文件名列表。
+
+    只认「名字相等」或「以 模型名 + 分隔符 开头」，绝不做裸子串包含：
+    RVC 的索引名形如 added_IVF966_Flat_nprobe_1_<模型名>_v2.index，
+    以前 `base in stem` 会让模型 `1.pth` / `ai.pth` 命中一大堆无关索引，
+    删声线时把别人的 faiss 索引一起删掉（索引只能重训，等于毁数据）。
+    """
+    base = os.path.splitext(model_name)[0].lower().strip()
+    if not base:
+        return []
     hits = []
     for fn, _p in _collect_indices():
-        key = _index_key(os.path.splitext(fn)[0])
-        if key == base or (base and base in os.path.splitext(fn)[0].lower()):
+        stem = os.path.splitext(fn)[0].lower()
+        key = _index_key(stem)
+        if key == base or stem == base:
+            hits.append(fn)
+            continue
+        # 模型名太短时不做任何前缀匹配（"ai"/"1" 这类会误伤一大片）
+        if len(base) < 4:
+            continue
+        if any(stem.startswith(base + sep) or stem.endswith(sep + base)
+               for sep in ("_", "-", ".", " ")):
             hits.append(fn)
     return hits
 

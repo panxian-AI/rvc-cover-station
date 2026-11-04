@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 import traceback
@@ -126,10 +127,14 @@ _cooldown_until = 0.0
 
 # ---------------- 存储 ----------------
 def _shape(d) -> dict:
-    """把任意对象归一成库的形状：缺字段补空表、类型不对就丢掉。
+    """把任意对象归一成库的形状：缺字段补空表、类型不对就丢掉、坏条目剔除。
 
     单独抽出来是因为「从文件加载」和「导入备份整份替换」必须用同一套规则——
     两处各写一份，早晚会有一处忘了补新字段。
+
+    v2.1.0 起逐条过滤：以前只保证「是 list」，一条手改坏的记录（字符串、
+    缺 id、count 写成 null）就能让 touch() 在**每次访客打开首页**时抛异常，
+    整页 500 且永远不自愈。这里按主键字段剔掉不合形的条目。
     """
     if not isinstance(d, dict):
         d = {}
@@ -139,24 +144,80 @@ def _shape(d) -> dict:
     def as_list(v):
         return v if isinstance(v, list) else []
 
-    return {"visits": as_list(d.get("visits")),
-            "requests": as_list(d.get("requests")),
-            "queue": [str(x) for x in as_list(d.get("queue"))],
+    def rows(v, key):
+        out = []
+        for x in as_list(v):
+            if not isinstance(x, dict):
+                continue
+            k = x.get(key)
+            if not isinstance(k, str) or not k.strip():
+                continue
+            out.append(x)
+        return out
+
+    return {"visits": rows(d.get("visits"), "id"),
+            "requests": rows(d.get("requests"), "id"),
+            "queue": [str(x) for x in as_list(d.get("queue")) if str(x).strip()],
             # 老库没有白名单字段 → 空表，别让 KeyError
-            "wl_apps": as_list(wl_apps),
-            "whitelist": as_list(wl_list)}
+            "wl_apps": rows(wl_apps, "id"),
+            "whitelist": rows(wl_list, "gid")}
+
+
+def _num(v, default=0.0) -> float:
+    """把库里读出来的任意值转成 float；转不了就用默认值。
+
+    库是纯文本 JSON，可能是老版本写的、手改的、别的工具写的。任何一处
+    float("") / int(None) 抛异常，都会让**所有访客**的首页 500，所以取值
+    一律走这里，不允许裸转换。
+    """
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int(v, default=0) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _quarantine(reason):
+    """把读不动的库另存一份再继续，绝不静默覆盖。
+
+    没有这一步时：文件带 BOM / 手改漏个逗号 / 杀软短暂独占，_load() 会把
+    内存换成空库，而访客随便打开一次首页就会 _save() 把**空库写回去**，
+    整份申请与白名单永久消失。现在原件留在 .bad-时间戳 里，站长还有得救，
+    同时在状态接口上给出 save_error 提示。
+    """
+    global _last_error
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dst = "%s.bad-%s" % (DB_PATH, stamp)
+    try:
+        if os.path.isfile(DB_PATH):
+            shutil.copy2(DB_PATH, dst)
+    except OSError:
+        dst = ""
+    _last_error = ("访客库读取失败（%s），当前按空库运行。原件已另存为 %s"
+                   % (reason, dst or "（另存也失败了）"))
 
 
 def _load():
     global _db, _dirty
-    try:
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            _db = _shape(json.load(f))
-    except Exception:
-        _db = _shape({})
-    # 刚按文件重建了内存，之前的脏标记作废——否则会把「加载进来的内容」再写一遍
-    _dirty = False
-    return _db
+    with _lock:
+        try:
+            with open(DB_PATH, "r", encoding="utf-8-sig") as f:
+                _db = _shape(json.load(f))
+        except FileNotFoundError:
+            _db = _shape({})
+        except Exception as e:
+            # 注意不能吞掉：读失败 ≠ 空库。留证据、留原件、留错误信息。
+            _db = _shape({})
+            _quarantine("%s: %s" % (type(e).__name__, e))
+        # 刚按文件重建了内存，之前的脏标记作废——否则会把「加载进来的内容」再写一遍
+        _dirty = False
+        return _db
 
 
 _dirty = False                # 有未落盘的改动（soft 写被节流时会置上）
@@ -189,8 +250,10 @@ def _save(soft=False):
             os.replace(tmp, DB_PATH)
             _dirty = False
             _last_error = ""
-        except OSError as e:
-            # 写失败必须保留脏标记：下次 flush 还会重试，不能「假装写成功」把改动吞掉
+        except (OSError, TypeError, ValueError) as e:
+            # 写失败必须保留脏标记：下次 flush 还会重试，不能「假装写成功」把改动吞掉。
+            # TypeError/ValueError 也要接住：某个字段被塞进不可序列化的对象时，
+            # json.dump 会在**已经打开并截断 tmp** 之后抛错，不能让它冒到巡队线程。
             _last_error = "%s: %s" % (type(e).__name__, e)
 
 
@@ -296,21 +359,21 @@ def touch(gid, ip, country, ua):
     with _lock:
         for v in _db["visits"]:
             if v["id"] == gid:
-                if now - float(v.get("last") or 0) < 30:
+                if now - _num(v.get("last")) < 30:
                     return v
                 v["last"] = now
-                v["count"] = int(v.get("count", 1)) + 1
+                v["count"] = _int(v.get("count"), 1) + 1
                 v["ip"] = ip or v.get("ip")
                 v["country"] = country or v.get("country")
                 v["ua"] = _short_ua(ua) or v.get("ua")
                 _save(soft=True)
                 return v
-        if ip and now - float(_visit_ip.get(ip) or 0) < 60:
+        if ip and now - _num(_visit_ip.get(ip)) < 60:
             # 同一 IP 短时间内反复换 Cookie 来"新访客"——只算一次
             for v in _db["visits"]:
                 if v.get("ip") == ip:
                     v["last"] = now
-                    v["count"] = int(v.get("count", 1)) + 1
+                    v["count"] = _int(v.get("count"), 1) + 1
                     _save(soft=True)
                     return v
         v = {"id": gid, "ip": ip or "", "country": country or "",
@@ -332,7 +395,7 @@ def touch_search(gid):
     with _lock:
         for v in _db["visits"]:
             if v["id"] == gid:
-                v["searches"] = int(v.get("searches", 0)) + 1
+                v["searches"] = _int(v.get("searches"), 0) + 1
                 _save(soft=True)
                 return
 
@@ -360,7 +423,8 @@ def _search_allowed(ip):
 
 
 def _fmt(ts):
-    return time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else ""
+    t = _num(ts)
+    return time.strftime("%m-%d %H:%M", time.localtime(t)) if t else ""
 
 
 def visits():
@@ -369,10 +433,10 @@ def visits():
         for v in _db["visits"]:
             items.append({
                 "id": v["id"], "ip": v.get("ip", ""), "country": v.get("country", ""),
-                "ua": v.get("ua", ""), "count": int(v.get("count", 1)),
-                "searches": int(v.get("searches", 0)),
+                "ua": v.get("ua", ""), "count": _int(v.get("count"), 1),
+                "searches": _int(v.get("searches"), 0),
                 "first": _fmt(v.get("first")), "last": _fmt(v.get("last")),
-                "last_ts": v.get("last", 0),
+                "last_ts": _num(v.get("last")),
                 "requests": sum(1 for r in _db["requests"] if r.get("gid") == v["id"]),
             })
         items.sort(key=lambda x: x["last_ts"], reverse=True)
@@ -768,17 +832,32 @@ def _find(rid):
 
 
 def _prune_zombies():
-    """把任务记录已丢失的 running（面板重启/进程中断造成）转成 error，释放名额。"""
+    """把任务记录已丢失的 running（面板重启/进程中断造成）转成 error，释放名额。
+
+    v2.1.0 起区分两种情况：
+      - 后端**明确**说这个 job 不存在（找不到记录）→ 判死；
+      - 查询本身抛异常（模块热更新、字段缺失、临时故障）→ 保留 running。
+    以前一律 `except: alive=None`，一次异常就把所有在跑的单全判失败，
+    巡队线程紧接着再开新单，GPU 上两拨任务打架。
+    """
     with _lock:
         changed = False
         for x in _db["requests"]:
             if x.get("state") != STATE_RUNNING:
                 continue
-            try:
-                fn = tts_mod.job_status if x.get("type") == TYPE_TTS else cover_mod.job_status
-                alive = fn(x.get("job") or "")
-            except Exception:
-                alive = None
+            jid = x.get("job") or ""
+            if not jid:
+                alive = False                     # 没有 job 句柄，本来就不可能再推进
+            else:
+                try:
+                    fn = tts_mod.job_status if x.get("type") == TYPE_TTS else cover_mod.job_status
+                    alive = bool(fn(jid))
+                    unknown = False
+                except Exception:
+                    # 查不动 ≠ 任务死了：宁可多等一轮，也不要把正在跑的单判失败
+                    alive, unknown = True, True
+                if unknown:
+                    continue
             if not alive:
                 x.update(state=STATE_ERROR, error="任务记录丢失（面板重启过），请重新提交或让站长再批")
                 changed = True
@@ -817,25 +896,37 @@ def _dv_hash(dv):
 
 
 def _sec_log(line, ip=""):
-    """安全事件落一行到 dashboard/security.log（和面板共用一份，超 512KB 截半）。"""
+    """安全事件落一行到 dashboard/security.log（和面板共用一份，超 512KB 截半）。
+
+    截断必须用**二进制**模式：文本流不支持负数 end-relative seek，会抛
+    UnsupportedOperation。以前截断和追加在同一个 try 里，一抛就整段跳过 ——
+    文件一旦超过 512KB，之后所有安全事件都不再留痕（连扫描都看不见）。
+    现在截断失败也照样追加。
+    """
+    p = os.path.join(HERE, "security.log")
     try:
-        p = os.path.join(HERE, "security.log")
         if os.path.isfile(p) and os.path.getsize(p) > 512 * 1024:
-            with open(p, "r", encoding="utf-8", errors="replace") as f:
+            with open(p, "rb") as f:
                 f.seek(-256 * 1024, os.SEEK_END)
                 keep = f.read()
-            with open(p, "w", encoding="utf-8") as f:
+            nl = keep.find(b"\n")
+            if nl >= 0:
+                keep = keep[nl + 1:]
+            with open(p, "wb") as f:
                 f.write(keep)
+    except OSError:
+        pass
+    try:
         with open(p, "a", encoding="utf-8") as f:
             f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line[:400]))
-    except Exception:
+    except OSError:
         pass
 
 
 def _wl_recent_miss(w, now=None):
     now = now or time.time()
     return [m for m in (w.get("miss") or [])
-            if isinstance(m, dict) and now - float(m.get("t") or 0) < 86400]
+            if isinstance(m, dict) and now - _num(m.get("t")) < 86400]
 
 
 def _wl_mark_miss(w, fp, ip, kind):
@@ -910,7 +1001,7 @@ def wl_check(gid, fp, ip, dv=""):
                 _wl_mark_miss(w, fp, ip, "dv")
                 return "mismatch", "", w
         now = time.time()
-        uses = [float(t) for t in (w.get("uses") or []) if now - float(t) < 86400]
+        uses = [t for t in (_num(x) for x in (w.get("uses") or [])) if now - t < 86400]
         w["uses"] = uses
         if uses and now - uses[-1] < WL_MIN_GAP:
             return "gap", "提交太快了：白名单也要 %d 秒一单，等 %d 秒再试" % (
@@ -922,7 +1013,7 @@ def wl_check(gid, fp, ip, dv=""):
             return "quota", "这个身份今天已经做了 %d 单（上限 %d），明天再来" % (
                 len(uses), WL_DAY_QUOTA), w
         # 命中就记一次活跃度（控制台「直通次数 / 最近活跃」看的是这个）
-        w["hits"] = int(w.get("hits", 0)) + 1
+        w["hits"] = _int(w.get("hits"), 0) + 1
         w["last_seen"] = now
         _save(soft=True)
         return "ok", "", w
@@ -937,7 +1028,7 @@ def wl_consume(w):
         return
     with _lock:
         now = time.time()
-        uses = [float(t) for t in (w.get("uses") or []) if now - float(t) < 86400]
+        uses = [t for t in (_num(x) for x in (w.get("uses") or [])) if now - t < 86400]
         uses.append(now)
         w["uses"] = uses
         _save(soft=True)
@@ -1011,11 +1102,11 @@ def wl_apply(gid, fp, ip, country, ua, reason, dv=""):
             return {"ok": False, "msg": "这台设备已有一条待审的申请，等站长处理就好"}
         # 被拒冷却：不给脚本「被拒了马上再试」的机会
         if any(a.get("gid") == gid and a.get("state") == "rejected"
-               and now - float(a.get("decided") or 0) < WL_REJECT_COOLDOWN for a in apps):
+               and now - _num(a.get("decided")) < WL_REJECT_COOLDOWN for a in apps):
             return {"ok": False, "msg": "刚被拒绝过，明天再来申请"}
         # 同 IP 24h 次数：换 gid 也绕不过（IP 是服务端看到的，伪造不了）
         ipn = sum(1 for a in apps
-                  if a.get("ip") == ip and now - float(a.get("created") or 0) < 86400)
+                  if a.get("ip") == ip and now - _num(a.get("created")) < 86400)
         if ipn >= WL_APP_PER_IP_DAY:
             return {"ok": False, "msg": "这个网络今天申请的次数用完了，明天再来"}
         if sum(1 for a in apps if a.get("state") == "pending") >= WL_MAX_PENDING:
@@ -1045,7 +1136,7 @@ def wl_admin_view():
                 "ua": a.get("ua", ""), "reason": a.get("reason", ""),
                 "state": a.get("state", "pending"),
                 "created": _fmt(a.get("created")),
-                "created_ts": float(a.get("created") or 0),
+                "created_ts": _num(a.get("created")),
                 "decided": _fmt(a.get("decided")), "note": a.get("note", ""),
                 # 给站长的人工判断材料：这个人历史申请多少、被拒多少
                 "gid_reqs": sum(1 for r in _db["requests"] if r.get("gid") == gid),
@@ -1057,15 +1148,15 @@ def wl_admin_view():
         for w in _db.get("whitelist") or []:
             miss = _wl_recent_miss(w)
             now = time.time()
-            uses = [float(t) for t in (w.get("uses") or []) if now - float(t) < 86400]
+            uses = [t for t in (_num(x) for x in (w.get("uses") or [])) if now - t < 86400]
             entries.append({
                 "gid": w.get("gid", ""), "ip": w.get("ip", ""),
                 "country": w.get("country", ""), "ua": w.get("ua", ""),
-                "note": w.get("note", ""), "hits": int(w.get("hits", 0)),
+                "note": w.get("note", ""), "hits": _int(w.get("hits"), 0),
                 "approved": _fmt(w.get("approved")),
                 "last_seen": _fmt(w.get("last_seen")),
-                "last_ts": float(w.get("last_seen") or 0),
-                "active": time.time() - float(w.get("last_seen") or 0) < 14 * 86400,
+                "last_ts": _num(w.get("last_seen")),
+                "active": time.time() - _num(w.get("last_seen")) < 14 * 86400,
                 # 安全视图：有没有绑设备密钥、今天用了几单、有没有多设备/多网络迹象
                 "device_bound": bool(w.get("dv_hash")),
                 "legacy_hint": "" if w.get("dv_hash") else WL_LEGACY_HINT,
@@ -1169,8 +1260,8 @@ def wl_set_state(gid, action):
             w.pop("suspend_reason", None)
             w.pop("suspended_at", None)
             w["miss"] = []
-            w["uses"] = [t for t in (w.get("uses") or [])
-                         if time.time() - float(t) < 86400]
+            w["uses"] = [t for t in (_num(x) for x in (w.get("uses") or []))
+                         if time.time() - t < 86400]
             msg = "已恢复白名单权限"
         _save()
     _sec_log("白名单%s gid=%s（站长操作）" % ("暂停" if action == "suspend" else "恢复", gid))
@@ -1201,7 +1292,7 @@ def _queue_alive():
             out.append(rid)
             seen.add(rid)
     # 状态是 queued 却没进队列（老数据 / 中途落盘失败）：按提交时间补到末尾
-    for rid, r in sorted(alive.items(), key=lambda kv: float(kv[1].get("created") or 0)):
+    for rid, r in sorted(alive.items(), key=lambda kv: _num(kv[1].get("created"))):
         if rid not in seen:
             out.append(rid)
             seen.add(rid)
@@ -1218,10 +1309,10 @@ def _enqueue(rid):
     _queue_alive()
     q = _db["queue"]
     pos = len(q)
-    created = float(r.get("created") or 0)
+    created = _num(r.get("created"))
     for i, other in enumerate(q):
         ro = _find(other)
-        if ro and float(ro.get("created") or 0) > created:
+        if ro and _num(ro.get("created")) > created:
             pos = i
             break
     q.insert(pos, rid)

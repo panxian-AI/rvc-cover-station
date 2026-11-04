@@ -338,16 +338,55 @@ def models() -> dict:
 
 
 # ---------------- 成品库 ----------------
+_index_error = ""            # 索引读失败的原因（空串 = 正常），给状态/日志看
+
+
 def _load_index() -> list:
-    # 翻唱和朗读都会改这份 index.json，读写都用同一把锁，
-    # 否则「读-改-写」交叉时会互相覆盖，丢掉一条成品记录。
+    """读成品索引；读不动时**先把坏文件另存一份**再返回空表。
+
+    以前 except 直接 return []，调用方 append 一条再 _save_index()，就把
+    「读失败」固化成「所有历史成品的元信息都没了」（mp3 还在，但歌名/声线/
+    升降调全丢，复用也失效）。现在坏文件留在 covers/index.json.bad-时间戳。
+    """
+    global _index_error
     with _lock:
         try:
             with open(INDEX_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return data if isinstance(data, list) else []
-        except Exception:
+            if not isinstance(data, list):
+                raise ValueError("索引不是数组（%s）" % type(data).__name__)
+            _index_error = ""
+            return data
+        except FileNotFoundError:
+            _index_error = ""
             return []
+        except Exception as e:
+            _index_error = "%s: %s" % (type(e).__name__, e)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            try:
+                if os.path.isfile(INDEX_PATH):
+                    shutil.copy2(INDEX_PATH, "%s.bad-%s" % (INDEX_PATH, stamp))
+            except OSError:
+                pass
+            return []
+
+
+def index_error() -> str:
+    return _index_error
+
+
+def _mutate_index(fn) -> list:
+    """在**同一把锁**里完成「读 → 改 → 写」。
+
+    以前 _load_index() 和 _save_index() 各拿一次锁，中间的空档足以让另一单
+    归档插进来：两边都基于同一份旧快照 append，后写的把先写的整条记录盖掉
+    （并发 2 以上、或「删成品」与新成品归档交叉时必现）。
+    """
+    with _lock:
+        items = _load_index()
+        fn(items)
+        _save_index(items)
+        return items
 
 
 def _save_index(items: list) -> None:
@@ -356,6 +395,8 @@ def _save_index(items: list) -> None:
         tmp = INDEX_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(items, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, INDEX_PATH)
 
 
@@ -410,7 +451,9 @@ def delete_cover(name: str) -> dict:
         os.remove(p)
     except OSError as e:
         return {"ok": False, "msg": "删除失败：%s" % e}
-    _save_index([i for i in _load_index() if i.get("name") != name])
+    def _drop(items):
+        items[:] = [i for i in items if not (isinstance(i, dict) and i.get("name") == name)]
+    _mutate_index(_drop)
     return {"ok": True, "msg": "已删除 %s，释放 %s" % (name, human_size(sz))}
 
 
@@ -682,7 +725,13 @@ def _run_cover(jid, song_id, title, artist, model, key_shift, acapella, key=None
             raise RuntimeError("后端没有返回有效文件：%r" % (result,))
 
         _update(jid, stage="归档成品…")
-        name = _archive(str(result), title, artist, model, key_shift, acapella, song_id)
+        with _lock:
+            # 同一首歌的另一单还在跑（不同声线/升降调）→ 后端输出文件是共用的，
+            # 不能删，否则对方会拿到「文件不存在」
+            others = any(k != key and k.startswith(str(song_id) + "|")
+                         for k in _inflight)
+        name = _archive(str(result), title, artist, model, key_shift, acapella,
+                        song_id, clean_backend=not others)
         sz = os.path.getsize(os.path.join(COVERS_DIR, name))
         _update(jid, state="done", stage="完成", ended=time.time(), file=name,
                 size=sz, size_text=human_size(sz))
@@ -709,8 +758,29 @@ def _port_open(port: int, host="127.0.0.1", timeout=0.8) -> bool:
         s.close()
 
 
+def _claim_name(stem: str) -> tuple[str, str]:
+    """独占式抢一个成品文件名，返回 (name, 绝对路径)。
+
+    先 exists() 再 copy2() 是典型 TOCTOU：两单并发算出同一个 stem 时，
+    后写的会把先完成的成品覆盖掉，两条索引指向同一个文件（下载到别人的声音）。
+    这里用 O_CREAT|O_EXCL 原子占位，抢不到就换 (2)(3)…
+    """
+    n = 1
+    while n < 1000:
+        name = stem + ".mp3" if n == 1 else "%s(%d).mp3" % (stem, n)
+        dst = os.path.join(COVERS_DIR, name)
+        try:
+            fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return name, dst
+        except FileExistsError:
+            n += 1
+    raise RuntimeError("同名成品太多了，先清理一下成品库")
+
+
 def _archive(src: str, title: str, artist: str, model: str,
-             key_shift: int, acapella: bool, song_id: str) -> str:
+             key_shift: int, acapella: bool, song_id: str,
+             clean_backend: bool = True) -> str:
     """把成品收进 covers 目录并登记；顺手清掉源文件避免双份占盘"""
     if not trusted_src(src):
         raise RuntimeError("后端返回的文件不在允许的临时目录内，已拒绝处理：%s" % src)
@@ -726,28 +796,27 @@ def _archive(src: str, title: str, artist: str, model: str,
         stem += "-清唱"
     stem += "-" + _safe_name(os.path.splitext(model)[0])[:32]
 
-    name = stem + ".mp3"
-    n = 2
-    while os.path.exists(os.path.join(COVERS_DIR, name)):
-        name = "%s(%d).mp3" % (stem, n)
-        n += 1
-
-    dst = os.path.join(COVERS_DIR, name)
+    name, dst = _claim_name(stem)
     shutil.copy2(src, dst)          # 先复制，成功后再删源，避免半截文件
 
-    # 源文件可能是 gradio 缓存副本，也可能是后端 temp 里的原始成品，都清掉
-    for cand in (src, os.path.join(BACKEND_TEMP, "%s-RVC-AI翻唱.mp3" % song_id)):
+    # 源文件可能是 gradio 缓存副本，也可能是后端 temp 里的原始成品，都清掉。
+    # 后端输出名只由 song_id 决定（不含声线/升降调），同一首歌并发两单会写同一个
+    # 文件；这种情况下**不能删**，否则另一单会报「文件不在允许目录内」——
+    # 保存到后端 temp 里，下一单覆盖即可，不会累积。
+    cands = [src]
+    if clean_backend:
+        cands.append(os.path.join(BACKEND_TEMP, "%s-RVC-AI翻唱.mp3" % song_id))
+    for cand in cands:
         try:
             if os.path.isfile(cand) and os.path.abspath(cand) != os.path.abspath(dst):
                 os.remove(cand)
         except OSError:
             pass
 
-    items = _load_index()
-    items.append({"name": name, "title": title, "artist": artist, "model": model,
-                  "key_shift": key_shift, "acapella": acapella, "song_id": song_id,
-                  "created": time.time(), "size": os.path.getsize(dst)})
-    _save_index(items)
+    rec = {"name": name, "title": title, "artist": artist, "model": model,
+           "key_shift": key_shift, "acapella": acapella, "song_id": song_id,
+           "created": time.time(), "size": os.path.getsize(dst)}
+    _mutate_index(lambda items: items.append(rec))
     return name
 
 

@@ -305,6 +305,12 @@ def main():
     for k, m in MANUAL.items():
         print("· %s\n    %s" % (m["desc"], m["hint"]))
     print("\n完成：自动项 %d 成功 / %d 失败" % (ok, bad))
+    # 退出码要能表达失败：安装器靠 errorlevel 判断「模型是否齐全」。
+    # 以前永远返回 0，于是 rmvpe/ffmpeg 没下下来也照样写 _install_ok.txt，
+    # 用户装完第一首歌才发现 500。
+    if bad:
+        print("有 %d 项没下成功，重跑本脚本（或重跑安装器）可补齐。" % bad)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

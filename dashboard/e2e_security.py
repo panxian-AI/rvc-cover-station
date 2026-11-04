@@ -216,6 +216,35 @@ def main():
     hits = [guest._search_allowed("6.6.6.6")[0] for _ in range(guest.SEARCH_LIMIT + 3)]
     chk("第 51 次被拦", hits.count(True) == guest.SEARCH_LIMIT, hits.count(True))
 
+    print("\n[15] keep-alive 请求走私（body 必须被读掉）")
+    # 一条带 body 的 GET：body 里藏一条「新请求」。
+    # 不读 body 时，残留字节会被当成下一条请求的请求行 —— 藏在 body 里的那条
+    # 不带任何转发头，于是被当成本机直连，管理接口就暴露给隧道来客了。
+    import socket
+    smuggled = b"GET /api/ping HTTP/1.1\r\nHost: 127.0.0.1:8898\r\n\r\n"
+    raw = (b"GET /login HTTP/1.1\r\nHost: 127.0.0.1:8898\r\n"
+           b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n\r\n" + smuggled)
+    sk = socket.create_connection(("127.0.0.1", 8898), timeout=6)
+    try:
+        sk.sendall(raw)
+        buf = b""
+        while True:
+            try:
+                chunk = sk.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        sk.close()
+    chk("body 里的伪请求没有被执行（只有一条响应）",
+        buf.count(b"HTTP/1.1 ") == 1, buf[:120])
+
+    print("\n[16] 就绪探针")
+    st, _, b = req("/api/ping")
+    chk("/api/ping 公开可读", st == 200 and b"rvc-panel" in b, (st, b[:60]))
+
     srv.shutdown()
     if os.path.isfile(BAK):
         shutil.move(BAK, DB)

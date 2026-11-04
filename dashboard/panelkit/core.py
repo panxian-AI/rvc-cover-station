@@ -48,9 +48,13 @@ _TRAY = {"obj": None}
 
 
 def tray_up():
-    """托盘是否真的挂上了（控制台据此显示「托盘已就绪」）。"""
+    """托盘是否真的挂上了（控制台据此显示「托盘已就绪」）。
+
+    hwnd 存在只说明窗口建好了；Shell_NotifyIconW 失败时图标并不在通知区，
+    必须同时看 error。否则状态页报「已就绪」，用户却点不到入口。
+    """
     obj = _TRAY.get("obj")
-    return bool(obj and obj.hwnd)
+    return bool(obj and obj.hwnd and not getattr(obj, "error", ""))
 
 # 翻唱页（搜歌 / 选模型 / 成品库 / 缓存管理），同端口挂在 /cover
 try:

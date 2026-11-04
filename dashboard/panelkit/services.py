@@ -69,9 +69,20 @@ def gui_exe(exe):
 
 
 def pid_alive(pid):
-    """进程是否还活着（不依赖 tasklist，纯 ctypes）"""
+    """进程是否还活着（不依赖 tasklist，纯 ctypes）。
+
+    ctypes 必须声明 argtypes/restype：不声明时按 C int 传参，64 位下
+    HANDLE 会被截断成 32 位，CloseHandle 作用在错误句柄上 → 判定失准 + 句柄泄漏。
+    """
     try:
         k32 = ctypes.windll.kernel32
+        k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p,
+                                           ctypes.POINTER(ctypes.c_ulong)]
+        k32.GetExitCodeProcess.restype = ctypes.c_int
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.restype = ctypes.c_int
         h = k32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
         if not h:
             return False
@@ -93,7 +104,7 @@ SERVICES = {
         "env": {"PYTHONIOENCODING": "utf-8", "NO_PROXY": "localhost,127.0.0.1,::1",
                 "PATH": API_DIR + os.pathsep + os.environ.get("PATH", "")},
         "log": os.path.join(API_DIR, "api_rvc_panel.log"),
-        "bat": API_BAT,
+        "bat": API_BAT, "port": 3333,
     },
     "webui": {
         "exe": PY_WEB,
@@ -103,7 +114,7 @@ SERVICES = {
                 "GRADIO_ANALYTICS_ENABLED": "False",
                 "NO_PROXY": "localhost,127.0.0.1,::1"},
         "log": os.path.join(RVC_ROOT, "logs", "webui_service.log"),
-        "bat": WEBUI_BAT,
+        "bat": WEBUI_BAT, "port": 7865,
     },
     "ncm": {
         "exe": PY_API,
@@ -111,7 +122,7 @@ SERVICES = {
         "args": ["-u", "ncm_proxy.py"],
         "env": {"PYTHONIOENCODING": "utf-8", "NO_PROXY": "localhost,127.0.0.1,::1"},
         "log": os.path.join(NCM_DIR, "ncm.log"),
-        "bat": NCM_BAT,
+        "bat": NCM_BAT, "port": 3002,
     },
 }
 
@@ -120,6 +131,11 @@ def start(target):
     cfg = SERVICES.get(target)
     if not cfg:
         return False, "未知服务: %s" % target
+    # 已经在跑就别再拉一个：Windows 允许多个进程抢同一端口，重复点「启动」
+    # 会叠出两套后端，互相抢 GPU / 端口，stop 还得靠按端口杀全部才收得回来。
+    p = cfg.get("port")
+    if p and port_open(p):
+        return True, "%s 已经在运行（端口 %d 已就绪），没有重复启动" % (target, p)
     if os.path.isfile(cfg["exe"]):
         env = os.environ.copy()
         env.update(perf_mod.env() if perf_mod else {})   # 线程数按物理核给，别让 BLAS 开满 32 个抢核心
@@ -148,6 +164,13 @@ def start(target):
                     raise
                 proc = subprocess.Popen(cmd, creationflags=detach_flags(False), **kwargs)
                 print("breakaway 被拒绝，已用 DETACHED_PROCESS 降级启动 %s" % target)
+            finally:
+                # 子进程已复制一份句柄，父进程这份必须关：以前每次启动泄漏一个，
+                # 反复启停会一直涨，最后日志文件被自己锁住。
+                try:
+                    log.close()
+                except OSError:
+                    pass
             with _spawn_lock:
                 _SPAWNED[target] = proc.pid
             return True, "已启动 %s，约 30~60 秒后端口就绪" % target

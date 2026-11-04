@@ -67,7 +67,9 @@ def asset_abs(name):
     只允许 assets 目录下一层，不做递归目录，避免 ../ 摸到别处去。
     """
     name = str(name or "").replace("\\", "/")
-    if not name or name.startswith("/") or ".." in name or "\x00" in name:
+    # ":" 必须挡：os.path.join("E:\\...\\assets", "C:/x.js") 会**丢掉**前半段，
+    # 变成真正的 C:\x.js（盘符只算一段，len(parts)>2 拦不住）。
+    if not name or name.startswith("/") or ".." in name or "\x00" in name or ":" in name:
         return None
     if "/" in name.strip("/"):
         # 允许一级子目录（如 assets/fonts/x.woff2），但不许再深
@@ -75,11 +77,18 @@ def asset_abs(name):
         if len(parts) > 2:
             return None
     p = os.path.join(ASSET_DIR, name.replace("/", os.sep))
-    if not os.path.isfile(p):
+    # 最后再兜一次：真实路径必须仍在 assets 目录下（符号链接/短名也拦）
+    real = os.path.realpath(p)
+    try:
+        if os.path.commonpath([real, os.path.realpath(ASSET_DIR)]) != os.path.realpath(ASSET_DIR):
+            return None
+    except ValueError:            # 不同盘符
         return None
-    if os.path.splitext(p)[1].lower() not in _TYPES:
+    if not os.path.isfile(real):
         return None
-    return p
+    if os.path.splitext(real)[1].lower() not in _TYPES:
+        return None
+    return real
 
 
 def asset_type(path):

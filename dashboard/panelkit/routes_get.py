@@ -98,8 +98,27 @@ def handle(h):
         h._redirect("/")
         return
 
+    # 浏览器每个页面都会自动请求 favicon：必须在「只认本机」之前处理，
+    # 否则每个公网访客都吃一次 403 并往 security.log 写一行「拒绝远程管理」，
+    # 真正的扫描事件反而被噪声淹没。
+    if path == "/favicon.ico":
+        h._send(204, b"")
+        return
+    # 就绪探针：只回一个标识，不暴露任何本机信息。
+    # 启动器用它区分「面板起来了」和「端口被别的程序占了」——
+    # 以前只测 TCP 能不能连，别的程序占着 8899 也会被当成面板已就绪。
+    if path == "/api/ping":
+        h._send(200, json.dumps({"ok": True, "app": "rvc-panel"}, ensure_ascii=False))
+        return
+
     # ---- 以下全是管理功能：只认本机直连 ----
     if not h._local_only(as_json=path.startswith("/api/")):
+        return
+
+    # 有写盘副作用的 GET（导出会真的打包 zip）：跨站页面不能借本机身份触发。
+    if path == "/api/data/export" and not h._same_origin():
+        h._send(403, json.dumps({"ok": False, "msg": "跨站请求已被拒绝"},
+                                   ensure_ascii=False))
         return
 
     # 多页面共用的样式/脚本（只有本机能看，公网访客页是自包含的）
@@ -243,6 +262,6 @@ def handle(h):
             h._send(500, json.dumps({"file": None, "lines": [str(e)], "size": 0},
                                        ensure_ascii=False))
     elif path == "/favicon.ico":
-        h._send(204, b"")
+        h._send(204, b"")          # 兜底（正常在上面已处理，本机不该走到这）
     else:
         h._send(404, json.dumps({"error": "not found"}))

@@ -127,6 +127,10 @@ const $ = s => document.querySelector(s);
 let DATA = null, PEND = null;
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+// encodeURIComponent 不编码单引号（' ( ) ! * ~ 都放过），
+// 模型名 Eminem's voice.pth 会把 onclick 里的 JS 字符串提前截断，
+// 删除按钮点了毫无反应。补编一步 %27，decodeURIComponent 仍能还原。
+function enc(s){ return encodeURIComponent(String(s==null?'':s)).replace(/'/g,'%27'); }
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),2600)}
 function rstShow(kind,html){const b=$('#rstBox');b.className='rst on'+(kind?' '+kind:'');b.innerHTML=html}
 async function api(p){const r=await fetch(p);return r.json().catch(()=>({ok:false}))}
@@ -155,7 +159,7 @@ function render(){
       + '<td>' + (m.indices.length
           ? '<span class="tag t-on">✓ ' + m.indices.length + ' 个</span><div class="idx">' + m.indices.map(esc).join('<br>') + '</div>'
           : '<span class="tag t-off">无（音色略偏）</span>') + '</td>'
-      + '<td><button class="red mini" onclick="askDelete(\'' + encodeURIComponent(m.name) + '\')">删除</button></td>'
+      + '<td><button class="red mini" onclick="askDelete(\'' + enc(m.name) + '\')">删除</button></td>'
       + '</tr>').join('')
     + '</table>'
     + (ms.length < DATA.count ? '<div class="hint">已按「'+esc(q)+'」过滤：显示 '+ms.length+' / '+DATA.count+' 个</div>' : '');
@@ -170,7 +174,7 @@ function renderOrphans(){
       + '<td><div class="n">🗂 ' + esc(o.name) + '</div></td>'
       + '<td style="white-space:nowrap">' + o.mb + ' MB</td>'
       + '<td style="white-space:nowrap;color:#75869f">' + o.date + '</td>'
-      + '<td><button class="red mini" onclick="askDelete(\'' + encodeURIComponent(o.name) + '\')">删除</button></td>'
+      + '<td><button class="red mini" onclick="askDelete(\'' + enc(o.name) + '\')">删除</button></td>'
       + '</tr>').join('') + '</table>';
 }
 

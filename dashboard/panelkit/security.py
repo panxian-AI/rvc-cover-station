@@ -150,11 +150,20 @@ def sec_log(line, ip=""):
         _sec_last["ip"], _sec_last["t"] = ip, now
     try:
         if os.path.isfile(SEC_LOG) and os.path.getsize(SEC_LOG) > 512 * 1024:
-            with open(SEC_LOG, "r", encoding="utf-8", errors="replace") as f:
+            # 必须二进制读：文本流的 seek(-N, SEEK_END) 会抛 UnsupportedOperation，
+            # 以前它和追加写共用一个 try，一抛就整段跳过 —— 文件过了 512KB
+            # 之后所有安全事件都不再落盘，扫描看起来像「没人扫」。
+            with open(SEC_LOG, "rb") as f:
                 f.seek(-256 * 1024, os.SEEK_END)
                 keep = f.read()
-            with open(SEC_LOG, "w", encoding="utf-8") as f:
+            nl = keep.find(b"\n")
+            if nl >= 0:
+                keep = keep[nl + 1:]          # 从整行开始，别留半行
+            with open(SEC_LOG, "wb") as f:
                 f.write(keep)
+    except OSError:
+        pass
+    try:
         with open(SEC_LOG, "a", encoding="utf-8") as f:
             f.write(time.strftime("%Y-%m-%d %H:%M:%S  ") + line + "\n")
     except OSError:

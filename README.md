@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.0.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -57,6 +57,11 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   第一首歌省掉约 70 秒的冷启动（分离模型 43 秒 + F0 首次 30~40 秒）
 - 🎛 **设备自适应**（v1.3.2）：按显卡显存/物理核/内存自动选档位（极速/均衡/省内存），
   线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
+- 🧰 **稳定版 · 全面加固**（v2.1.0）：逐文件审了一遍、逐条实测复现后修掉 6 个会丢数据
+  或让公网访客冒充本机的严重问题——长连接里未读的请求体会被当成「下一条请求」（可绕过
+  本机校验）、访客库读失败会被当空库写回、删声线会误删别人的索引、安装器重跑会「假成功」、
+  卸载选「保留数据」仍删访客库、并发归档丢成品记录。另有二十多个不报错但用着不对劲的
+  毛病（设置页覆盖输入、退出失败按钮变灰、托盘没放上却报就绪、日志过 512KB 后不再记录…）
 - 🛡 **导入备份不再丢数据**（v2.0.1）：以前导入时若有访客正在访问、或队列巡队线程
   正好在写盘，那份**旧内存**会在几秒后把刚导入的库盖回去——接口还返回成功。现在写库
   统一走 `guest.replace_db()`，换内存与落盘在同一把锁里完成，导入期间有人来访也不会冲掉

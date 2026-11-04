@@ -268,15 +268,28 @@ def _wait_secs(ip):
 
 
 def _fail(ip):
-    """记一次输错；连错到阶梯点时锁定。"""
+    """记一次输错；连错到阶梯点（及以上）就锁定。
+
+    必须用 `>=` 且记住「已经用到第几档」：以前是 `streak == 6/9/12`，
+    streak 一旦涨到 13，三个等值判断全不成立 —— 之后的每一次输错都不再锁，
+    爆破只需要扛过前 12 次。
+    """
     ip = ip or ""
     with _lock:
-        f = _fails.setdefault(ip, {"streak": 0, "until": 0})
+        f = _fails.setdefault(ip, {"streak": 0, "until": 0, "tier": -1})
         f["streak"] = int(f.get("streak", 0)) + 1
+        tier = -1
         for i, step in enumerate(LOCK_STEPS):
-            if f["streak"] == step:
-                f["until"] = time.time() + LOCK_SECS[i]
-                break
+            if f["streak"] >= step:
+                tier = i
+        # 只在跨入更高一档时续锁：同一档内继续错保持现有 until，别无限叠加
+        if tier > int(f.get("tier", -1)):
+            f["tier"] = tier
+            f["until"] = time.time() + LOCK_SECS[tier]
+        elif tier >= 0 and f["streak"] > LOCK_STEPS[tier]:
+            # 已过最高档仍在错：按最高档时长继续锁（冷却结束又错一次就再锁）
+            if f["until"] <= time.time():
+                f["until"] = time.time() + LOCK_SECS[tier]
         if len(_fails) > 2000:
             for k in list(_fails)[:1000]:
                 _fails.pop(k, None)
@@ -288,6 +301,7 @@ def _ok(ip):
         if f:
             f["streak"] = 0
             f["until"] = 0
+            f["tier"] = -1
 
 
 def consume(token, answer, gid="", ip=""):

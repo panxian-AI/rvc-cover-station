@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -33,7 +34,7 @@ from paths import DATA, DASH, PROJ, RVC_ROOT
 import speed
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "2.0.1"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "2.1.0"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")
@@ -89,15 +90,20 @@ def local_version() -> str:
 
 
 def _tuple(v) -> tuple:
+    """版本号归一成可比较的四段元组。
+
+    以前只取前三段：发 2.0.1.5 时老机器（2.0.1）永远收不到更新提示
+    （两者比较结果相等），而这个 bug 没有任何报错。
+    """
     parts = []
     for p in str(v or "").strip().lstrip("vV").split("."):
         try:
             parts.append(int(p))
         except ValueError:
             parts.append(0)
-    while len(parts) < 3:
+    while len(parts) < 4:
         parts.append(0)
-    return tuple(parts[:3])
+    return tuple(parts)
 
 
 def is_newer(latest: str, current: str) -> bool:
@@ -297,8 +303,54 @@ def _skippable(rel: str) -> bool:
     return False
 
 
+_APPLY_LOCK = threading.Lock()     # 连点两次「更新」不许并行写同一批文件
+
+
+def _stage_file(z, zi, dest):
+    """把一个成员写成「临时文件 → os.replace」，绝不在原文件上直接截断。
+
+    直接 open(dest, "wb") 会先把原文件清零：磁盘满 / 被 AV 占用 / 写到一半
+    断电，就留下一个 0 字节或半截的 .py，整个面板都起不来，而且已覆盖的
+    文件不会回滚。临时文件 + 原子替换至少保证「要么旧、要么新」。
+    """
+    tmp = dest + ".rvcnew"
+    try:
+        with z.open(zi) as src, open(tmp, "wb") as out:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _rollback(touched):
+    """把这次更新动过的文件还原（bak 存在就写回，原本不存在就删掉）。"""
+    n = 0
+    for dest, bak, existed in reversed(touched):
+        try:
+            if bak and os.path.isfile(bak):
+                shutil.copy2(bak, dest)
+                n += 1
+            elif not existed and os.path.isfile(dest):
+                os.remove(dest)
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
 def apply() -> dict:
     """下载最新 tag 的源码并覆盖代码目录。返回 ok/msg/明细。"""
+    with _APPLY_LOCK:
+        return _apply_locked()
+
+
+def _apply_locked() -> dict:
     info = check(force=True)
     if not info.get("ok"):
         return {"ok": False, "msg": info.get("error") or "检测失败，先确认能连上 GitHub"}
@@ -316,6 +368,7 @@ def apply() -> dict:
     backup = os.path.join(BACKUP_DIR, stamp)
     work = tempfile.mkdtemp(prefix="rvc_update_")
     written, backed, skipped = 0, 0, 0
+    touched = []          # [(dest, 备份路径 or None, 写之前是否存在)]
     try:
         zpath = os.path.join(work, "src.zip")
         with open(zpath, "wb") as f:
@@ -338,16 +391,18 @@ def apply() -> dict:
                         skipped += 1
                         continue
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    if os.path.isfile(dest) and os.path.getsize(dest) < 2 * 1024 * 1024:
+                    existed = os.path.isfile(dest)
+                    bdst = None
+                    if existed and os.path.getsize(dest) < 2 * 1024 * 1024:
                         bdst = os.path.join(backup, "_root", rel)
                         try:
                             os.makedirs(os.path.dirname(bdst), exist_ok=True)
                             shutil.copy2(dest, bdst)
                             backed += 1
                         except OSError:
-                            pass
-                    with z.open(zi) as src, open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out)
+                            bdst = None
+                    touched.append((dest, bdst, existed))
+                    _stage_file(z, zi, dest)
                     written += 1
                     continue
 
@@ -364,23 +419,30 @@ def apply() -> dict:
                     skipped += 1
                     continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                if os.path.isfile(dest) and os.path.getsize(dest) < 2 * 1024 * 1024:
+                existed = os.path.isfile(dest)
+                bdst = None
+                if existed and os.path.getsize(dest) < 2 * 1024 * 1024:
                     bdst = os.path.join(backup, top, sub)
                     try:
                         os.makedirs(os.path.dirname(bdst), exist_ok=True)
                         shutil.copy2(dest, bdst)
                         backed += 1
                     except OSError:
-                        pass
-                with z.open(zi) as src, open(dest, "wb") as out:
-                    shutil.copyfileobj(src, out)
+                        bdst = None
+                touched.append((dest, bdst, existed))
+                _stage_file(z, zi, dest)
                 written += 1
-        # 版本号跟着更新，下次打开就不会再提示同一版
-        with open(VERSION_FILE, "w", encoding="utf-8") as f:
+        # 版本号跟着更新，下次打开就不会再提示同一版（同样走原子写）
+        vz = os.path.join(work, "VERSION")
+        with open(vz, "w", encoding="utf-8") as f:
             f.write(new_ver + "\n")
+        os.replace(vz, VERSION_FILE)
     except Exception as e:
-        return {"ok": False, "msg": "更新失败：%s: %s" % (type(e).__name__, e),
-                "backup": backup if backed else ""}
+        # 已经写进去的文件必须还原，否则会留下「一半新一半旧」的代码目录
+        restored = _rollback(touched)
+        return {"ok": False, "msg": "更新失败：%s: %s（已还原 %d 个文件）"
+                                    % (type(e).__name__, e, restored),
+                "backup": backup if backed else "", "rolled_back": restored}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

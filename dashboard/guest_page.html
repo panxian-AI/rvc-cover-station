@@ -566,9 +566,20 @@ async function loadMine(){
     try{ localStorage.setItem('rvc_gid', MYGID); }catch(e){}
   }
   const box = $('#mine');
-  $('#recov').style.display = (d.ok && d.recovered) ? '' : 'none';
+  $('#recov').style.display = (d && d.ok && d.recovered) ? '' : 'none';
   const sum = $('#mySum');
-  if(!d.ok || !d.requests.length){
+  if(!d || !d.ok){
+    // 限流（429）/ 网络抖动不能显示成「还没有提交过」——那会让人以为单子丢了
+    // 而重复提交。保留上一次的列表，只把原因说出来。
+    const why = (d && d.msg) ? esc(d.msg) : '网络不太好，正在重试…';
+    if(!box.dataset.loaded){
+      box.innerHTML = '<div class="empty">' + why + '</div>';
+      sum.style.display = 'none'; sum.innerHTML = '';
+    }
+    return;
+  }
+  box.dataset.loaded = '1';
+  if(!d.requests.length){
     box.innerHTML = '<div class="empty">还没有提交过</div>';
     sum.style.display = 'none'; sum.innerHTML = '';
     return;

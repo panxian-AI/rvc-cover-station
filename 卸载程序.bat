@@ -27,10 +27,17 @@ if errorlevel 2 goto :stop_srv
 set "BK=%HERE%_卸载备份"
 md "%BK%" 2>nul
 move "%HERE%\RVC-Data\RVCSVC\covers" "%BK%\covers" >nul 2>&1
-move "%HERE%\RVC-Data\RVCSVC\guest_db.json" "%BK%\guest_db.json" >nul 2>&1
+rem guest_db.json 在 dashboard 目录里（guest.py: DB_PATH = HERE\guest_db.json），
+rem 以前写的是 RVCSVC\guest_db.json —— 移不动，错误又被 >nul 吞掉，
+rem 然后整个安装目录被 rd /s /q，访客申请/白名单永久消失。
+move "%HERE%\RVC-Data\RVCSVC\dashboard\guest_db.json" "%BK%\guest_db.json" >nul 2>&1
+move "%HERE%\RVC-Data\RVCSVC\dashboard\advanced_settings.json" "%BK%\advanced_settings.json" >nul 2>&1
+move "%HERE%\RVC-Data\RVCSVC\dashboard\public_access.json" "%BK%\public_access.json" >nul 2>&1
+move "%HERE%\RVC-Data\RVCSVC\covers\index.json" "%BK%\covers_index.json" >nul 2>&1
 move "%HERE%\RVC-Data\RVCSVC\ncmapi\ncm_cookie.txt" "%BK%\ncm_cookie.txt" >nul 2>&1
+if exist "%BK%\guest_db.json" echo   个人数据已备份到：%BK%
 if exist "%BK%\covers" echo   个人数据已备份到：%BK%
-if not exist "%BK%\covers" echo   （没有找到可备份的个人数据，跳过）
+if not exist "%BK%\guest_db.json" if not exist "%BK%\covers" echo   （没有找到可备份的个人数据，跳过）
 
 :stop_srv
 echo.

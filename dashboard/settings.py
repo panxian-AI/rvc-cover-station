@@ -117,6 +117,9 @@ def _sanitize(raw: dict) -> tuple[dict, list[str]]:
 
 def load() -> dict:
     """读盘（损坏 / 缺字段都兜回默认）。"""
+    # 没有 global 时 `_cache = vals` 只写进局部作用域，模块级缓存永远是 None：
+    # 于是每次 get() 都重新开文件读 JSON（排队时 _acquire_slot 每秒调一次）。
+    global _cache
     with _lock:
         try:
             with open(PATH, "r", encoding="utf-8") as f:
@@ -140,6 +143,7 @@ def get() -> dict:
 
 def save(patch) -> dict:
     """合并保存一个补丁 dict。返回 {ok, values, warns, msg}。"""
+    global _cache
     if not isinstance(patch, dict):
         return {"ok": False, "msg": "设置内容必须是 JSON 对象"}
     patch = {k: v for k, v in patch.items() if k in _BY_KEY}

@@ -109,6 +109,7 @@ def gpu_list():
 
 def probe(force=False):
     """探测一次硬件并给出档位。结果缓存，force=True 重探。"""
+    global CACHE
     if CACHE and not force:
         return CACHE
     total, avail = _mem_mb()
@@ -144,8 +145,10 @@ def probe(force=False):
         # 纯 CPU：分离模型常驻会跟推理抢内存，只做导入
         prewarm = "import" if avail < 0 or avail >= 1200 else "off"
 
-    CACHE.clear()
-    CACHE.update({
+    # 一次性替换整个 dict，不要 clear() + update()：
+    # 并发读者（托盘定时刷新、probe() 的其他调用）会拿到「已清空、还没填满」
+    # 的中间态，直接 KeyError: 'tier'。CACHE 是模块级名字，整体赋值即可。
+    CACHE = {
         "tier": tier,
         "threads": threads,
         "cpu_physical": phys,
@@ -156,7 +159,7 @@ def probe(force=False):
         "vram_mb": vram,
         "prewarm": prewarm,
         "forced": bool(forced in THREAD_CAP),
-    })
+    }
     return CACHE
 
 

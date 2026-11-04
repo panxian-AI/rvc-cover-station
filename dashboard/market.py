@@ -996,7 +996,9 @@ def _verify_file(job: dict, f: dict, path: str) -> None:
     if f["type"] == "pth":
         with open(path, "rb") as fp:
             head = fp.read(4)
-        if head[:2] != b"PK":
+        # torch>=1.6 的 torch.save 是 zip 容器（PK），更早的是 pickle 流（\x80\x02）。
+        # 老 RVC 模型（v1 时代）确实存在后者，只认 PK 会把能用的模型判成坏的。
+        if head[:2] != b"PK" and head[:2] != b"\x80\x02":
             raise RuntimeError("%s 不是 PyTorch 权重（头部 %r）" % (f["name"], head))
 
 
@@ -1049,6 +1051,18 @@ def clear_cache() -> dict:
     if busy:
         return {"ok": False, "msg": "还有任务在跑，等它下完再清缓存"}
     import shutil
+    # CACHE_DIR 可被 RVC_MARKET_CACHE 改到别的盘（缓存太大挪走是正当用法）。
+    # 递归删除前必须验形状：设成 E:// 或 E://RVC-Data 时，一次点击就清空整块盘。
+    # 复用 cover 里那套「盘根 / 系统目录 / 用户主目录一律不动」的闸门。
+    try:
+        import cover as _cover
+        ok = _cover._clearable(CACHE_DIR)
+    except Exception:
+        ok = False
+    if not ok:
+        return {"ok": False,
+                "msg": "缓存目录看起来不像专用目录（%s），为安全起见不自动删除。"
+                       "确认无误请手动清空。" % CACHE_DIR}
     shutil.rmtree(CACHE_DIR, ignore_errors=True)
     return {"ok": True, "msg": "缓存已清空"}
 

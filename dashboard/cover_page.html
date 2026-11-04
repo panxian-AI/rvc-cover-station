@@ -148,6 +148,15 @@ function toast(msg, ms=2600){
   clearTimeout(f._t); f._t = setTimeout(()=>f.classList.remove('show'), ms);
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// 放进 onclick="fn('...')" 里的字符串必须用它，不能用 esc：
+// HTML 解析器会先把 &#39; 解码回 '，再当 JS 源码编译 —— 歌名里一个撇号
+// （Don't Stop）就能把整句断掉，按钮点了没反应。
+// \x27 不是 HTML 实体，解析器不动它；JS 在字符串里会把它还原成 '。
+function jsq(s){ return String(s==null?'':s)
+  .replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'&quot;')
+  .replace(/</g,'&lt;').replace(/\r?\n/g,'\\n'); }
+
 function fmtDur(s){ if(!s) return '--:--'; return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
 
 async function api(path, body){
@@ -182,7 +191,7 @@ async function doSearch(){
       <div class="song">
         <div class="t"><b>${esc(s.name)}</b><span>${esc(s.artist)}${s.album?' · '+esc(s.album):''}</span></div>
         <span class="dur">${fmtDur(s.duration)}</span>
-        <button class="btn sm" onclick="pick('${esc(s.id)}')">选这首</button>
+        <button class="btn sm" onclick="pick('${jsq(s.id)}')">选这首</button>
       </div>`).join('');
   } finally { btn.disabled = false; }
 }
@@ -230,21 +239,42 @@ async function startCover(){
     acapella: document.getElementById('acapella').checked
   };
   const btn = document.getElementById('goBtn'); btn.disabled = true;
-  const j = await api('/api/cover/start', body);
+  let j;
+  try{ j = await api('/api/cover/start', body); }
+  catch(e){ btn.disabled = false; return toast('请求失败：' + e.message, 5000); }
   if(!j.ok){ btn.disabled = false; return toast(j.msg||'启动失败'); }
   JOB = j.job;
   document.getElementById('prog').classList.add('on');
   document.getElementById('progText').textContent = j.cached ? '直接复用已有成品…' : '已排队…';
   toast(j.cached ? ('已有成品，直接复用：' + (j.file||'')) : '已开始，约 2~4 分钟', j.cached?5000:2600);
   if(TIMER) clearInterval(TIMER);
+  POLL_FAIL = 0;
   TIMER = setInterval(pollJob, 2000);
   pollJob();
 }
 
+let POLL_FAIL = 0;
+
 async function pollJob(){
   if(!JOB) return;
-  const j = await api('/api/cover/job?id='+encodeURIComponent(JOB));
-  if(!j.ok){ clearInterval(TIMER); return; }
+  let j;
+  try{ j = await api('/api/cover/job?id='+encodeURIComponent(JOB)); }
+  catch(e){ j = {ok:false, msg:e.message||'网络中断'}; }
+  if(!j.ok){
+    // 不再静默退出：以前这里直接 clearInterval 就 return，进度条一直转、
+    // 「开始翻唱」永久变灰、也不给任何提示，只能刷页面。
+    POLL_FAIL++;
+    if(POLL_FAIL < 5){
+      document.getElementById('progText').textContent = '连接中断，正在重试…';
+      return;
+    }
+    POLL_FAIL = 0;
+    clearInterval(TIMER); TIMER = null;
+    document.getElementById('prog').classList.remove('on');
+    document.getElementById('goBtn').disabled = false;
+    return toast('查不到这个任务了（面板可能重启过）：' + (j.msg||''), 6000);
+  }
+  POLL_FAIL = 0;
   const st = j.job;
   const txt = document.getElementById('progText');
   txt.textContent = `${st.stage||''}　已用 ${st.elapsed||0} 秒`;
@@ -280,7 +310,7 @@ async function loadCovers(){
         <div class="t"><b>${esc(c.title||c.name)}</b>
           <span>${esc(c.artist||'')} ${tags.join(' · ')} · ${esc(c.mtime||'')} · ${c.size_text||''}</span></div>
         <a class="btn sm ghost" href="/api/cover/file?name=${encodeURIComponent(c.name)}" download="${esc(c.name)}">下载</a>
-        <button class="btn sm red" onclick="delCover('${esc(c.name)}')">删除</button>
+        <button class="btn sm red" onclick="delCover('${jsq(c.name)}')">删除</button>
       </div>
       <audio controls preload="none" src="/api/cover/file?name=${encodeURIComponent(c.name)}"></audio>
     </div>`;

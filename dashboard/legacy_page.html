@@ -309,6 +309,13 @@ async function act(doWhat, target){
     }
   }catch(e){ toast('操作失败: '+e); }
 
+  if(doWhat === 'shutdown'){
+    // 后端「没停干净」时会返回 shutdown:false 并提示可以再点一次。
+    // 只要不是真退出，就必须把两个按钮恢复，否则用户被卡在「退出中…」
+    // 且按钮全灰，只能 F5 —— 正好是最需要“再点一次”的场景。
+    if(btnS){ btnS.disabled = false; }
+    if(btnE){ btnE.disabled = false; btnE.textContent = '⏹ 一键退出服务'; }
+  }
   if(doWhat === 'start_all'){
     if(btnS){ btnS.disabled = false; btnS.textContent = '⚡ 一键开启服务'; }
     if(btnE) btnE.disabled = false;

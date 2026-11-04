@@ -66,7 +66,10 @@ def pick_files():
     """弹 Windows 文件选择框，返回 {"ok", "paths", "cancelled"/"msg"}。"""
     if os.name != "nt":
         return {"ok": False, "msg": "文件选择框只在 Windows 上可用"}
-    tmp = os.path.join(tempfile.gettempdir(), "_rvc_model_pick.py")
+    # 每次用独立临时文件：固定名字时两个并发请求会互相覆盖/删除对方的脚本，
+    # 而且 %TEMP% 里任何进程都能预置同名文件（面板会以本机权限执行它）。
+    fd, tmp = tempfile.mkstemp(prefix="_rvc_model_pick_", suffix=".py")
+    os.close(fd)
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(_PICK_SRC)

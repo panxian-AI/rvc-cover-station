@@ -65,20 +65,44 @@ def log_line(path, msg):
         pass
 
 
+def _panel_answers(port, host="127.0.0.1", wait=0.6):
+    """这个端口上跑的是不是**我们的面板**（不是「随便什么程序」）。
+
+    只看 TCP 能不能连会把「别的程序占着 8899」当成面板已就绪：启动器于是
+    不起面板、不报错，直接把浏览器开到一个不是面板的地址，用户看到白页。
+    这里真的发一条 GET /api/ping，认 JSON 里的 app 标识。
+    """
+    try:
+        s = socket.create_connection((host, port), timeout=wait)
+    except OSError:
+        return False
+    try:
+        s.settimeout(wait)
+        s.sendall(b"GET /api/ping HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                  b"Connection: close\r\n\r\n" % int(port))
+        buf = b""
+        while len(buf) < 4096:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            buf += chunk
+        return b"rvc-panel" in buf
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
 def panel_up(port=None, timeout=1.0, host="127.0.0.1"):
-    """面板端口是否已经有人监听（连上就算，不看返回内容）。"""
+    """面板是否已经就绪：端口通 + /api/ping 回的是本程序的标识。"""
     port = PORT if port is None else port
     deadline = time.time() + max(0.0, timeout)
     while True:
-        s = socket.socket()
-        s.settimeout(0.5)
-        try:
-            if s.connect_ex((host, port)) == 0:
-                return True
-        except OSError:
-            pass
-        finally:
-            s.close()
+        if _panel_answers(port, host):
+            return True
         if time.time() >= deadline:
             return False
         time.sleep(0.25)

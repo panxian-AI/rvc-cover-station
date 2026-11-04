@@ -45,11 +45,14 @@ def start_tray():
     except Exception as e:
         print("托盘图标启动失败（不影响网页控制台）: %s" % e)
         return None
-    if obj.hwnd:
+    # 不能只看 hwnd：窗口建出来了、但 Shell_NotifyIconW 失败时，图标其实
+    # 并不在通知区。静默启动没有窗口，托盘是唯一入口 —— 必须按「真的放上了」判。
+    if obj.hwnd and not getattr(obj, "error", ""):
         _TRAY["obj"] = obj
         print("  任务栏图标: 已放置（左键单击呼出菜单，左键双击打开控制台）")
     else:
-        print("  任务栏图标: 没放上（%s），网页控制台照常可用" % (obj.error or "未知原因"))
+        print("  任务栏图标: 没放上（%s），网页控制台照常可用"
+              % (getattr(obj, "error", "") or "未知原因"))
     return obj
 
 

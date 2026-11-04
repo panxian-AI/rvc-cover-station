@@ -47,6 +47,8 @@ SCHEMA = 1                      # 包格式版本；将来改结构就 +1，老�
 BACKUP_DIR = os.environ.get("RVC_BACKUP_DIR") or os.path.join(PROJ, "_backup")
 
 MAX_ZIP = 4 * 1024 * 1024 * 1024     # 单个包上限 4GB（比这大必然是选错文件了）
+MAX_MEMBER = 1024 * 1024 * 1024      # 单个成员解压后上限 1GB（成品 mp3 远小于这个）
+MAX_UNPACK = 6 * 1024 * 1024 * 1024  # 整包解压后上限 6GB（防高压缩比的解压炸弹）
 MAX_KEEP_AUTO = 20                  # 「导入前自动备份」最多留 20 份
 MAX_KEEP_MANUAL = 50                # 手动导出最多留 50 份（再多就提示用户删）
 
@@ -594,6 +596,8 @@ def check(zip_path) -> dict:
             return {"ok": False, "msg": "包里没有文件清单"}
 
         bad, items, audio_n, audio_bytes = [], [], 0, 0
+        audio_arcs = []
+        unpacked = 0
         for f in files:
             if not isinstance(f, dict):
                 bad.append("清单里有一条不是对象")
@@ -605,6 +609,20 @@ def check(zip_path) -> dict:
             if arc not in names:
                 bad.append("%s 在包里不存在" % arc)
                 continue
+            # 解压炸弹：只卡压缩包体积没用，一个几百 MB 的全零 mp3 压缩后只有几十 KB，
+            # 预检阶段就能把内存打满。先看声明的大小，超限直接拒收。
+            try:
+                fi = zf.getinfo(arc)
+            except KeyError:
+                bad.append("%s 在包里不存在" % arc)
+                continue
+            if fi.file_size > MAX_MEMBER:
+                return {"ok": False, "msg": "包里有一项解压后过大（%s，%.1f MB），已拒绝导入"
+                                            % (arc[:60], fi.file_size / 1048576.0)}
+            unpacked += fi.file_size
+            if unpacked > MAX_UNPACK:
+                return {"ok": False, "msg": "包里内容解压后超过 %.1f GB，已拒绝导入"
+                                            % (MAX_UNPACK / 1073741824.0)}
             try:
                 raw = zf.read(arc)
             except Exception as e:
@@ -621,6 +639,7 @@ def check(zip_path) -> dict:
             if f.get("fast"):
                 audio_n += 1
                 audio_bytes += len(raw)
+                audio_arcs.append(arc)
                 continue
             items.append({"key": os.path.basename(arc), "arc": arc,
                           "label": str(f.get("label") or arc),
@@ -703,6 +722,7 @@ def check(zip_path) -> dict:
         "settings_included": st is not None,
         "audio_files": audio_n,
         "audio_bytes": audio_bytes,
+        "audio_arcs": audio_arcs,
         "audio_text": _human(audio_bytes),
         "missing_models": missing_models[:20],
         "missing_models_n": len(missing_models),
@@ -775,6 +795,10 @@ def _merge_guest_db(cur, inc) -> tuple[dict, dict]:
                 cur_m[k] = r
                 order_k.append(k)
                 stat[tag + "_added"] += 1
+            elif old.get("state") == "done" and r.get("state") != "done":
+                # 本机已经做完的单，不能被包里更「新」的 error/rejected 覆盖：
+                # 那样成品下载链接会消失（mp3 还在 covers 里变成孤儿）
+                continue
             elif _newer(r, old):
                 old.update(r)
                 stat[tag + "_updated"] += 1
@@ -813,6 +837,27 @@ def _merge_guest_db(cur, inc) -> tuple[dict, dict]:
     return out, stat
 
 
+def _job_alive(r) -> bool:
+    """这条 running 记录对应的 job 在本进程里是否真的还在跑。
+
+    查不动（模块没加载/接口变了）时按「还活着」处理：宁可让它下一轮再查，
+    也不要重复开跑。查得到但返回 None = 确实没有这个 job（别的机器导进来的），
+    才允许打回队列。
+    """
+    jid = str(r.get("job") or "")
+    if not jid:
+        return False
+    try:
+        mod = None
+        if r.get("type") == "tts":
+            import tts as mod
+        else:
+            import cover as mod
+        return bool(mod.job_status(jid))
+    except Exception:
+        return True
+
+
 def _normalize(db, prefer_queue=None) -> tuple[dict, dict]:
     """把「在别的机器上跑到一半」的状态收拾干净。
 
@@ -825,6 +870,11 @@ def _normalize(db, prefer_queue=None) -> tuple[dict, dict]:
         if not isinstance(r, dict):
             continue
         if r.get("state") == "running":
+            # 本机还在跑的单（导入自己刚导出的备份时）不能打回队列：
+            # 否则 pump() 会再开一单，同一个 rid 两个 watcher，先结束的那个
+            # 会把已完成的结果改成失败。
+            if _job_alive(r):
+                continue
             r["state"] = "queued"
             r.pop("job", None)
             r.pop("file", None)
@@ -912,6 +962,11 @@ def _reload():
 
 def _current_snapshot() -> dict:
     snap = {}
+    # 访客库的内存副本才是「现在」：soft 写有 2 秒节流，且写盘可能一直在失败。
+    # 只读文件会在回滚时把这期间新进来的申请一起丢掉。
+    mem = _cur_db()
+    if isinstance(mem, dict):
+        snap["__guest_mem__"] = mem
     for arc, p in (("data/guest_db.json", _db_path()),
                    ("data/advanced_settings.json", _settings_path()),
                    ("data/covers_index.json", _index_path())):
@@ -924,7 +979,13 @@ def _current_snapshot() -> dict:
 
 
 def _restore(snapshot: dict):
+    mem = snapshot.get("__guest_mem__")
+    if isinstance(mem, dict) and _replace_guest(mem):
+        # 内存里那份已经原样写回，文件也由 replace_db 落盘了，不用再按文件覆盖
+        snapshot = {k: v for k, v in snapshot.items() if k != "data/guest_db.json"}
     for arc, data in snapshot.items():
+        if arc == "__guest_mem__":
+            continue
         if arc == "data/guest_db.json":
             obj = _loads(data)
             # 回滚也要走 guest 的写入口，否则内存里还是「导入后」的内容，
@@ -1045,8 +1106,10 @@ def apply(zip_path, token="", mode="replace") -> dict:
                                                  indent=1).encode("utf-8"))
 
                 # ---- 成品音频：先全解到临时目录，成功了再整体搬进去 ----
-                audio = [n for n in names if n.startswith(AUDIO_PREFIX)
-                         and not n.endswith("/")]
+                # 只解「预检已经校验过 sha256/大小」的音频条目。
+                # 以前直接遍历 namelist：包里多塞一个不在清单内的
+                # covers/同名.mp3，预检说没问题、导入却会覆盖本机成品。
+                audio = [n for n in (c.get("audio_arcs") or []) if n in names]
                 if audio:
                     cdir = _covers_dir()
                     os.makedirs(cdir, exist_ok=True)
@@ -1140,7 +1203,9 @@ def pick_zip():
     import sys
     import tempfile
 
-    tmp = os.path.join(tempfile.gettempdir(), "_rvc_backup_pick.py")
+    # 独立临时文件：固定名会被其它进程预置/被并发请求互相覆盖
+    fd, tmp = tempfile.mkstemp(prefix="_rvc_backup_pick_", suffix=".py")
+    os.close(fd)
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(_PICK_SRC)
@@ -1152,6 +1217,11 @@ def pick_zip():
         return {"ok": False, "msg": "打开选择框超过 5 分钟没动作，已放弃"}
     except Exception as e:
         return {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     out = (p.stdout or "").strip().splitlines()
     for line in reversed(out):
         line = line.strip()

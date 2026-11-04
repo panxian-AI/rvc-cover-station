@@ -244,27 +244,107 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "<p>站长暂停了公网访问，稍后再来试试。</p></div></body></html>")
         self._send(503, html, "text/html; charset=utf-8")
 
-    def _csrf_ok(self):
-        """跨站请求防护：带了 Origin 就必须和本站同源。
+    def _same_origin(self):
+        """请求是不是「本站页面」发起的。
 
-        浏览器发起的跨站 POST 一定带 Origin；curl / 本机脚本不带，因此不受影响。
-        配合 Cookie 的 SameSite=Lax，构成双保险。
+        Origin 有值就必须同源；新版浏览器还会带 Sec-Fetch-Site，一并看。
+        都没有（curl / 本机脚本 / 老浏览器）时放行 —— 这条闸是防浏览器跨站，
+        不是身份认证，真正的身份判定在 _is_local()。
         """
-        origin = self.headers.get("Origin")
-        if not origin:
-            return True
         host = (self.headers.get("Host") or "").strip().lower()
-        try:
-            o = urllib.parse.urlparse(origin)
-        except Exception:
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
             return False
-        return bool(o.netloc) and o.netloc.strip().lower() == host
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                o = urllib.parse.urlparse(origin)
+            except Exception:
+                return False
+            if not o.netloc or o.netloc.strip().lower() != host:
+                return False
+        ref = self.headers.get("Referer")
+        if ref and not origin:
+            try:
+                r = urllib.parse.urlparse(ref)
+            except Exception:
+                return False
+            if r.netloc and r.netloc.strip().lower() != host:
+                return False
+        return True
+
+    def _csrf_ok(self):
+        """跨站请求防护（POST 用）。
+
+        v2.1.0 起把判断收敛到 _same_origin()，并额外看 Sec-Fetch-Site：
+        浏览器从恶意页面发起的 fetch 一定带 cross-site，哪怕没带 Origin。
+        """
+        return self._same_origin()
 
 
     MAX_BODY = 256 * 1024        # 单个请求体上限，防止拿 Content-Length 撑爆内存
+    MAX_DRAIN = 8 * 1024 * 1024   # 超限请求体最多丢弃这么多，防「声明 2GB」拖死线程
 
-    def _read_json(self):
+    def _body_bytes(self):
+        """把请求体完整读掉（只读一次），返回**前 MAX_BODY 字节**。
+
+        为什么必须在每个分支之前就读：
+            HTTP/1.1 默认 keep-alive，没读的 body 会被当成下一条请求的请求行。
+            一条 `POST /xx` 带 `Content-Length` 的 body 里可以藏
+            `POST /api/update/apply`（不带转发头、Host 写 127.0.0.1）—— 隧道
+            转发的连接会被复用，这条「藏在 body 里的请求」就拿到了本机身份。
+            所以不管走哪个分支、是否 403，都先把 body 吃掉。
+
+        超限：读完（最多 MAX_DRAIN）后置 _body_too_big，调用方回 413 并断开。
+        chunked：按块读并拼起来，同样受 MAX_BODY / MAX_DRAIN 约束。
+        """
+        if getattr(self, "_body_done", False):
+            return self._body_raw
+        self._body_raw = b""
+        self._body_done = True
         self._body_too_big = False
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+
+        if "chunked" in te:
+            keep = bytearray()
+            drained = 0
+            while True:
+                line = self.rfile.readline(65537)
+                if not line:
+                    self.close_connection = True
+                    break
+                try:
+                    size = int(line.split(b";")[0].strip() or b"0", 16)
+                except ValueError:
+                    # 块头坏了就没法再对齐，直接断开这条连接
+                    self.close_connection = True
+                    break
+                if size == 0:
+                    # 吃掉 trailer（以空行结束），否则下一条请求又会错位
+                    while True:
+                        t = self.rfile.readline(65537)
+                        if t in (b"\r\n", b"\n", b""):
+                            break
+                    break
+                left = size
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                    drained += len(chunk)
+                    if len(keep) < self.MAX_BODY:
+                        keep += chunk[:self.MAX_BODY - len(keep)]
+                    if drained > self.MAX_DRAIN:
+                        self._body_too_big = True
+                        self.close_connection = True
+                        break
+                self.rfile.read(2)          # 块尾 CRLF
+                if self._body_too_big:
+                    break
+            self._body_raw = bytes(keep)
+            return self._body_raw
+
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
@@ -272,16 +352,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if n < 0:
             n = 0
         if n > self.MAX_BODY:
-            # 只读掉上限那么多，剩下的不读并断开连接（否则连接复用会错位）
-            try:
-                self.rfile.read(self.MAX_BODY)
-            except Exception:
-                pass
             self._body_too_big = True
             self.close_connection = True
-            return {}
+            left = min(n, self.MAX_DRAIN)
+            while left > 0:
+                b = self.rfile.read(min(65536, left))
+                if not b:
+                    break
+                left -= len(b)
+            return b""
+        self._body_raw = self.rfile.read(n) if n else b""
+        return self._body_raw
+
+    def _read_json(self):
+        raw = self._body_bytes()
         try:
-            raw = self.rfile.read(n) if n else b""
             obj = json.loads(raw.decode("utf-8", "ignore") or "{}")
             # 只接受 JSON 对象：数组/字符串/数字会让后面 body.get 直接 AttributeError
             return obj if isinstance(obj, dict) else {}
@@ -320,8 +405,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     # ---------- 路由：具体实现在 routes_get.py / routes_post.py ----------
+    def handle_one_request(self):
+        # 每条请求都要重置读体缓存：一个 Handler 实例可能服务同一条 keep-alive
+        # 连接上的多条请求，缓存串了会把上一条的 body 当成这一条的。
+        self._body_done = False
+        self._body_raw = b""
+        self._body_too_big = False
+        super().handle_one_request()
+
     def do_GET(self):
+        # 先把 body 吃掉：见 _body_bytes 的说明（不读会让 keep-alive 请求错位）
+        self._body_bytes()
         routes_get.handle(self)
 
     def do_POST(self):
+        self._body_bytes()
         routes_post.handle(self)

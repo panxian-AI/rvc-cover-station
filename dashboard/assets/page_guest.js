@@ -6,6 +6,11 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');
   clearTimeout(window._t);window._t=setTimeout(()=>t.classList.remove('on'),2400);}
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// onclick="fn('...')" 里用：esc 不转义单引号，IP/文件名里一个 ' 就把整句
+// JS 断掉（按钮点了没反应）；\x27 不是 HTML 实体，解析器不会提前解码。
+function jsq(s){ return String(s==null?'':s)
+  .replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'&quot;')
+  .replace(/</g,'&lt;').replace(/\r?\n/g,'\\n'); }
 
 const SVC_NAME = {api:'后端 3333', webui:'WebUI 7865', ncm:'网易云 3002', panel:'面板 8899'};
 
@@ -24,7 +29,7 @@ async function loadWl(){
     $('#wlApps').innerHTML = `<div style="background:#3a1d24;border:1px solid #5c2b36;border-radius:10px;
       padding:9px 11px;margin-bottom:8px;font-size:12.5px;color:#ff9aa8">
       ⚠ 有 ${alerts.length} 个白名单身份因异常被自动暂停（多设备/多网络/反复对不上）：<br>` +
-      alerts.map(a => `· IP ${esc(a.ip)} — ${esc(a.reason)} <a class="link" href="#" onclick="wlState('${esc(a.gid)}','resume');return false">恢复</a>`).join('<br>') +
+      alerts.map(a => `· IP ${esc(a.ip)} — ${esc(a.reason)} <a class="link" href="#" onclick="wlState('${jsq(a.gid)}','resume');return false">恢复</a>`).join('<br>') +
       `</div>`;
   }else{ $('#wlApps').innerHTML = ''; }
   const apps = (d.apps||[]).filter(a => a.state === 'pending');
@@ -40,8 +45,8 @@ async function loadWl(){
         <span>${esc(a.ua)||'-'}${a.country?' · '+esc(a.country):''} · IP ${esc(a.ip)} · 指纹 ${esc(a.fp_short)}</span>
         <span>历史：申请 ${a.gid_reqs} 次 · 被拒 ${a.gid_rejected} 次 · 提交于 ${esc(a.created)}${a.already_wl?' · <b style="color:#f0c674">该设备已在名单（换网络重新批）</b>':''}</span>
       </div>
-      <button class="green" onclick="wlDecide('approve','${esc(a.id)}')">✓ 批准</button>
-      <button class="red" onclick="wlDecide('reject','${esc(a.id)}')">拒绝</button>
+      <button class="green" onclick="wlDecide('approve','${jsq(a.id)}')">✓ 批准</button>
+      <button class="red" onclick="wlDecide('reject','${jsq(a.id)}')">拒绝</button>
     </div>`).join('');
   }
   const list = d.entries || [];
@@ -61,8 +66,8 @@ async function loadWl(){
         <td>${w.hits}${w.active?' <span class="tag t-on">活跃</span>':''}</td>
         <td style="white-space:nowrap;color:#75869f">${esc(w.last_seen)||'—'}</td>
         <td style="white-space:nowrap">${w.suspended
-          ? `<a class="link" href="#" onclick="wlState('${esc(w.gid)}','resume');return false">恢复</a> `
-          : `<a class="link" href="#" onclick="wlState('${esc(w.gid)}','suspend');return false">暂停</a> `}<a class="link" href="#" onclick="wlRevoke('${esc(w.gid)}');return false">移除</a></td>
+          ? `<a class="link" href="#" onclick="wlState('${jsq(w.gid)}','resume');return false">恢复</a> `
+          : `<a class="link" href="#" onclick="wlState('${jsq(w.gid)}','suspend');return false">暂停</a> `}<a class="link" href="#" onclick="wlRevoke('${jsq(w.gid)}');return false">移除</a></td>
       </tr>`).join('') + `</table>`;
   }
 }
@@ -91,8 +96,8 @@ async function loadUnlock(){
           <span>已连错 ${u.streak} 次 · 请求于 ${Math.floor(u.age/60)} 分 ${u.age%60} 秒前</span>
           <span>同意 = 只解除当前这次锁定（错误计数保留，再错照常锁）</span>
         </div>
-        <button class="green" onclick="unlockDecide('${esc(u.ip)}',1)">✓ 同意解锁</button>
-        <button class="red" onclick="unlockDecide('${esc(u.ip)}',0)">拒绝</button>
+        <button class="green" onclick="unlockDecide('${jsq(u.ip)}',1)">✓ 同意解锁</button>
+        <button class="red" onclick="unlockDecide('${jsq(u.ip)}',0)">拒绝</button>
       </div>`).join('')
     : '<div class="empty">暂时没有解锁请求。</div>';
 }
@@ -119,7 +124,7 @@ async function loadSec(){  let d;
     ? `<div style="color:#ff9aa8;font-size:12.5px">已封禁 ${bans.length} 个来源：</div>` + bans.map(b =>
         `<div class="row" style="padding:5px 0;border:0"><span class="tag">${esc(b.ip)}</span>
          <span style="color:#75869f;font-size:12px">剩余 ${Math.ceil(b.left/60)} 分钟</span>
-         <span class="sp"></span><a class="link" href="#" onclick="secUnban('${esc(b.ip)}');return false">解除</a></div>`).join('')
+         <span class="sp"></span><a class="link" href="#" onclick="secUnban('${jsq(b.ip)}');return false">解除</a></div>`).join('')
     : '<div style="color:#75869f;font-size:12.5px">没有被封禁的来源。</div>';
   const rec = d.recent || [];
   $('#secRecent').innerHTML = rec.length

@@ -23,9 +23,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from paths import DATA, STACK  # noqa: E402
 
-CF = os.path.join(DATA, "tools", "cloudflared.exe")
+# 与面板侧（panelkit/services.py）保持同一套环境变量：只认写死路径/端口时，
+# 用户改了 RVC_PANEL_PORT 或把 cloudflared 放到别处，面板说"找到了、已拉起"，
+# 这里却报"没找到"或把隧道指向没人监听的 8899（公网打开 502）。
+CF = (os.environ.get("RVC_CLOUDFLARED")
+      or os.path.join(DATA, "tools", "cloudflared.exe"))
 URL_FILE = os.path.join(HERE, "公网链接.txt")
-TARGET = "http://127.0.0.1:8899"
+TARGET = "http://127.0.0.1:%s" % (os.environ.get("RVC_PANEL_PORT") or "8899")
 PATTERN = re.compile(r"https://[-a-z0-9]+\.trycloudflare\.com")
 
 

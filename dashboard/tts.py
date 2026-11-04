@@ -49,7 +49,8 @@ BASE_VOICES = [v for v in VOICES if v["id"].startswith("zh-CN")]
 BASE_IDS = {v["id"] for v in BASE_VOICES}
 RATES = {"慢": "-25%", "正常": "+0%", "快": "+30%"}
 
-_lock = threading.Lock()
+_lock = threading.RLock()     # 可重入：_new_job 内部也会加锁
+_INFLIGHT = {}          # tkey -> jid（同内容不重复合成）
 _jobs: dict[str, dict] = {}
 
 
@@ -180,7 +181,15 @@ def start(payload: dict) -> dict:
         return {"ok": True, "job": jid, "cached": True, "file": hit["name"],
                 "msg": "这段文字这个音色之前做过，直接给你现成的"}
 
-    jid = _new_job(title=v["title"], voice=v["base"], model=v["model"])
+    # 同一个内容正在合成时直接复用那个 job：连点两次不会并行合成两遍
+    # （翻唱侧有 _inflight 去重，TTS 以前没有，同一段文字会被真的跑两次）
+    with _lock:
+        running = _INFLIGHT.get(tkey)
+        j = _jobs.get(running) if running else None
+        if j and j.get("state") in ("queued", "running"):
+            return {"ok": True, "job": running, "msg": "这段文字正在合成，稍等一下"}
+        jid = _new_job(title=v["title"], voice=v["base"], model=v["model"])
+        _INFLIGHT[tkey] = jid
     threading.Thread(target=_run, args=(jid, dict(v, tkey=tkey)), daemon=True).start()
     return {"ok": True, "job": jid,
             "msg": "已开始换声，一般半分钟到一分钟" if v["model"]
@@ -281,30 +290,23 @@ def _safe_name(s: str) -> str:
 
 def _archive(src: str, title: str, label: str, model: str, tkey: str = "") -> str:
     """收进 covers 目录并登记（复用翻唱的 index.json）。"""
-    from cover import trusted_src
-    if not trusted_src(src):
+    import cover as _cover
+    if not _cover.trusted_src(src):
         raise RuntimeError("换声结果不在允许的临时目录内，已拒绝处理：%s" % src)
     os.makedirs(COVERS_DIR, exist_ok=True)
     stem = "朗读-" + _safe_name(title)[:40] + "-" + _safe_name(label)[:32]
-    name = stem + ".mp3"
-    n = 2
-    while os.path.exists(os.path.join(COVERS_DIR, name)):
-        name = "%s(%d).mp3" % (stem, n)
-        n += 1
-    dst = os.path.join(COVERS_DIR, name)
+    # 与翻唱共用独占抢名 + 单锁读改写：TTS 和翻唱会同时归档到同一份 index.json
+    name, dst = _cover._claim_name(stem)
     shutil.copy2(src, dst)
-    for p in (src,):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
-    items = cover_index()
-    items.append({"name": name, "title": "朗读：" + title, "artist": label,
-                  "model": model or label, "key_shift": None, "acapella": False,
-                  "song_id": "tts", "created": time.time(),
-                  "tts_key": tkey or "",
-                  "size": os.path.getsize(dst)})
-    save_index(items)
+    try:
+        os.remove(src)
+    except OSError:
+        pass
+    rec = {"name": name, "title": "朗读：" + title, "artist": label,
+           "model": model or label, "key_shift": None, "acapella": False,
+           "song_id": "tts", "created": time.time(),
+           "tts_key": tkey or "", "size": os.path.getsize(dst)}
+    _cover._mutate_index(lambda items: items.append(rec))
     return name
 
 
@@ -366,3 +368,8 @@ def _run(jid, v: dict):
         _update(jid, state="error", stage="失败", ended=time.time(),
                 error="%s: %s" % (type(e).__name__, e))
         traceback.print_exc()
+    finally:
+        key = v.get("tkey") or ""
+        with _lock:
+            if key and _INFLIGHT.get(key) == jid:
+                _INFLIGHT.pop(key, None)

@@ -56,7 +56,12 @@ jobs:
 
       - name: 全量回归
         working-directory: stack/RVC-Data/RVCSVC/dashboard
-        run: python run_e2e.py --strict --timeout 900
+        # 用 cmd + chcp 936：安装器回归要跑 GBK 的 .bat（用户双击就是 cmd 环境），
+        # runner 默认代码页是 1252，中文文件名会解析成乱码，e2e_ai_install 会假红。
+        shell: cmd
+        run: |
+          chcp 936 >nul
+          python run_e2e.py --strict --timeout 900
 
       - name: 留下回归日志
         if: always()

@@ -68,6 +68,77 @@ def proc_name(pid):
         return ""
 
 
+def proc_cmdline(pid):
+    """进程完整命令行；拿不到返回 ""。
+
+    为什么要自己写：psutil 没装，wmic 在 Win11 24H2 已被移除。
+    ProcessCommandLineInformation(=60) 是 Win8.1+ 的信息类，直接返回
+    UNICODE_STRING，不用去读目标进程的 PEB（那要先跨进程读内存）。
+
+    这条能力是必需的：WebUI 加载到一半崩掉时进程还在、显存还占着，但
+    端口已经没人监听了 —— 只按端口找永远发现不了它。
+    """
+    try:
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        ntdll = ctypes.WinDLL("ntdll")
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        ntdll.NtQueryInformationProcess.argtypes = [
+            wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p,
+            ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+        ntdll.NtQueryInformationProcess.restype = ctypes.c_long
+
+        h = k32.OpenProcess(0x1000, False, int(pid))   # QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            need = ctypes.c_ulong(0)
+            ntdll.NtQueryInformationProcess(h, 60, None, 0, ctypes.byref(need))
+            if not need.value:
+                return ""
+            buf = ctypes.create_string_buffer(need.value)
+            st = ntdll.NtQueryInformationProcess(h, 60, buf, need.value,
+                                                 ctypes.byref(need))
+            if st != 0:
+                return ""
+            length = ctypes.c_ushort.from_buffer(buf).value
+            # UNICODE_STRING 在 x64 下：Length(2) + MaxLength(2) + 对齐(4) + Buffer(8)
+            ptr = ctypes.c_void_p.from_buffer(buf, 8).value
+            if not length or not ptr:
+                return ""
+            return ctypes.wstring_at(ptr, length // 2)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return ""
+
+
+def python_pids():
+    """所有 python.exe / pythonw.exe 的 PID（含 venv 的 shim）。
+
+    用 tasklist 而不是快照 API：它已经在 proc_name 里用着，
+    一条命令拿全，省得再写一遍 Toolhelp32 的结构体解析。
+    """
+    pids = []
+    for image in ("python.exe", "pythonw.exe"):
+        try:
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq %s" % image,
+                                  "/FO", "CSV", "/NH"],
+                                 capture_output=True, timeout=8,
+                                 creationflags=0x08000000).stdout.decode("gbk", "ignore")
+        except Exception:
+            continue
+        for line in out.splitlines():
+            m = re.match(r'"[^"]+","(\d+)"', line.strip())
+            if m:
+                pids.append(int(m.group(1)))
+    return pids
+
+
+
 def gpu_info():
     now = time.time()
     with _lock:

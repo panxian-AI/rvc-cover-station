@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.1.3-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.4-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![e2e](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
@@ -52,6 +52,13 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   再错照常锁，绝不从此豁免
 - 🪶 **模型按需加载**：人声分离器不再开机常驻内存，首个任务现场加载、空闲 15 分钟
   自动释放（`RVC_UVR_IDLE_UNLOAD` 可调）——装再多声线也不白占内存
+- 🛡 **WebUI 单实例与显存修复**（v2.1.4）：端口被占时 WebUI 以前会悄悄换到
+  7866 继续启动——但后端固定连 7865，多出来的实例没人用，唯一效果是每个都往
+  显存里塞一份模型，叠到第三份就是 CUDA out of memory，且一次 OOM 后该进程的
+  CUDA 上下文彻底报废。现在：同一端口只允许一个实例（守卫在加载 torch 之前，
+  几毫秒退出）、面板启动前自动清理重复/错位的实例（含不监听端口的僵尸）、
+  推理失败不再返回空音频、报错按真因给建议（显存问题告诉你重启，不再一律
+  建议重装）；双击启动后右下角出现「正在启动」卡片，没看到卡片才是没启动
 - ⚡ **启动提速**（v1.2.1）：后端 3333 从约 20 秒降到约 7 秒（torch / UVR 重模块
   推迟到真正用到时才导入），「一键开启」三路并行再省 15~30 秒
 - 🚀 **首曲不再等**（v1.3.2）：服务就绪后在后台把 torch、分离模型、rmvpe 预加载好，
@@ -134,7 +141,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 19 套回归测试共 1028 项断言（`dashboard/e2e_*.py`），一条命令全跑：
+- 附带 19 套回归测试共 1046 项断言（`dashboard/e2e_*.py`），一条命令全跑：
   在 `dashboard` 里执行 `..\apienv\Scripts\python.exe run_e2e.py`
   （在安装目录里跑时加 `--repo <仓库根>`；失败的套会回显末尾输出并写 `logs\e2e_run-last.log`）
   发布脚本 `_release/create_release.py` 会先跑这遍全量，不绿不许发版

@@ -56,11 +56,37 @@ _RVC_WEBUI_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "RVC-WebU
 _WEBUI_LOG = os.path.join(_RVC_WEBUI_DIR, "logs", "webui_service.log")
 
 
+# WebUI 日志里这些行是**下游症状**，不是真因：vc_single 推理失败时会把
+# None 当音频交给 gradio，Audio 组件后处理读 .dtype 才炸出这一句。
+# 老版本只取最后一条 Error，于是每次推理失败都被归因成 dtype，真因
+# （CUDA 显存不足）被埋在上面几十行，用户被引去重装整个环境。
+_SYMPTOM_MARKS = (
+  "'NoneType' object has no attribute 'dtype'",
+  "convert_to_16_bit_wav",
+)
+
+# 真因里最要紧的一类：显卡/显存。命中就优先返回，并给对应的处置办法。
+_GPU_ERROR_MARKS = (
+  "out of memory",
+  "cuda error",
+  "cublas_status",
+  "cudnn error",
+  "device-side assert",
+  "no kernel image",
+  "cuda out of memory",
+)
+
+
 def _webui_tail_error(max_bytes=131072):
-  """从 WebUI 日志尾部捞出最后一条异常，让报错能落地而不是只有「推理失败」。
+  """从 WebUI 日志尾部捞出真正的报错，让报错能落地而不是只有「推理失败」。
 
   gradio 的 /run/infer_convert 出错时返回 HTTP 500 + {"error": null}，
   真实堆栈只写在这个日志里；不抓出来用户根本不知道该改什么。
+
+  两件必须做的事：
+  1. 跳过症状行（`'NoneType' object has no attribute 'dtype'`）—— 那是
+     上游失败的下游表现，照它去修永远修不好；
+  2. 优先返回 CUDA/显存 那条 —— 它才是「昨天还好好的」的真正原因。
   """
   try:
     if not os.path.isfile(_WEBUI_LOG):
@@ -74,20 +100,70 @@ def _webui_tail_error(max_bytes=131072):
     return ""
 
   lines = tail.splitlines()
-  # 异常行形如 "RuntimeError: Error(s) in loading ..."，排除 Traceback 里 "File ..." 之类
+  found = []
+  # 从尾往前扫，最多收 8 条候选（太早的都是上一次失败的残留）
   for i in range(len(lines) - 1, -1, -1):
     s = lines[i].strip()
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception|Interrupt):\s*\S", s):
-      detail = [s]
-      # 带上紧随其后的尺寸不符明细，这类信息对用户最有价值
-      for nxt in lines[i + 1:i + 4]:
-        n = nxt.strip()
-        if not n or n.startswith("Traceback") or re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception):", n):
-          break
-        detail.append(n)
-      msg = " ".join(detail)
-      return msg[:400] + ("…" if len(msg) > 400 else "")
-  return ""
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception|Interrupt):\s*\S", s):
+      continue
+    if any(mark in s for mark in _SYMPTOM_MARKS):
+      continue
+    detail = [s]
+    # 带上紧随其后的尺寸不符明细，这类信息对用户最有价值
+    for nxt in lines[i + 1:i + 4]:
+      n = nxt.strip()
+      if not n or n.startswith("Traceback") or re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception):", n):
+        break
+      detail.append(n)
+    found.append(" ".join(detail))
+    if len(found) >= 8:
+      break
+
+  if not found:
+    return ""
+  cuda = next((e for e in found
+               if any(k in e.lower() for k in _GPU_ERROR_MARKS)), "")
+  msg = cuda or found[0]
+  return msg[:400] + ("…" if len(msg) > 400 else "")
+
+
+def _webui_error_advice(hint):
+  """按真因给下一步动作。
+
+  以前不管什么原因都建议「重跑一键安装.bat」：显存不够根本不是装坏了，
+  重装一遍除了浪费半小时，什么都不会变。
+  """
+  h = (hint or "").lower()
+  if any(k in h for k in _GPU_ERROR_MARKS):
+    return (
+      "这是**显卡/显存**的问题，不是安装坏了，重装没有用。\n"
+      "最常见的原因：同时开着多个 WebUI 实例，每个都往显存里塞一份模型，\n"
+      "最后一份装不下就 out of memory；而且显存一爆，那个进程的 CUDA 上下文\n"
+      "就废了，之后所有推理都只会报 unknown error —— 只能重启进程。\n"
+      "处理：\n"
+      "  1. 双击安装目录里的 停止RVC.bat（会清掉所有残留的 WebUI 进程）\n"
+      "  2. 再双击 启动RVC.bat（面板会自动保证只留一个 WebUI）\n"
+      "  3. 仍然报错：关掉其它吃显存的程序（游戏 / 剪辑 / 别的 AI 工具）再试\n"
+      "  4. 都不行就换首短一点的歌，或把「推理音高」之外的批量参数调小"
+    )
+  if ("hubert" in h) or ("size mismatch" in h) or ("error(s) in loading" in h):
+    return (
+      "这是**基础模型和权重对不上**（安装包版本与模型文件不一致）。\n"
+      "处理：重跑一次 一键安装.bat（会补齐基础模型，已装好的不会重下）"
+    )
+  if "no such file" in h or "filenotfound" in h:
+    return (
+      "这是**文件缺失**（多半是声线/索引/临时文件被删或被杀毒隔离）。\n"
+      "处理：确认声线文件还在，或换一个声线再试；仍不行重跑 一键安装.bat"
+    )
+  return (
+    "常见原因：\n"
+    "  1. 显卡显存不足（关掉其它占显存的程序，或换首短一点的歌）\n"
+    "  2. WebUI 进程状态坏了（双击 停止RVC.bat，再双击 启动RVC.bat）\n"
+    "  3. 基础模型配置不匹配（重跑一键安装.bat 可修）\n"
+    "  4. 声线与当前 RVC 版本不兼容（换一个模型试试）"
+  )
+
 
 
 # ========== 新增：音高优化函数 ==========
@@ -837,11 +913,9 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
 
   if not isinstance(response, dict) or not response.get("data"):
     hint = _webui_tail_error()
-    raise gr.Error("RVC 推理失败%s\n\n日志：%s\n常见原因：\n"
-                   "  1. 基础模型配置不匹配（hubert 配置与权重卷积核不一致，重跑一键安装.bat 可修）\n"
-                   "  2. 显卡显存不足（换短一点的歌，或关掉其它占显存的程序）\n"
-                   "  3. 声线与当前 RVC 版本不兼容（换一个模型试试）"
-                   % (("：" + hint) if hint else "（WebUI 没给出具体原因）", _WEBUI_LOG))
+    raise gr.Error("RVC 推理失败%s\n\n%s\n\n日志：%s"
+                   % (("：" + hint) if hint else "（WebUI 没给出具体原因）",
+                      _webui_error_advice(hint), _WEBUI_LOG))
 
   data = response["data"][1]["name"]
   print(response["data"][0])

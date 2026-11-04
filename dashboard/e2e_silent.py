@@ -372,12 +372,99 @@ def test_quiet_and_cover_jobs():
     chk("自助翻唱接口在本机校验之后（外网拿不到）", 0 < i_local < i_cover, (i_local, i_cover))
 
 
+def test_startup_ux():
+    """启动体验：有提示、单实例、报错按真因归因。
+
+    背景（2026-11-04 真实故障）：用户机器上叠了三个 WebUI 实例，显存被
+    切成三份 → CUDA out of memory → 上下文报废；而报错一路被吞，最后
+    只剩 gradio 的 'NoneType' object has no attribute 'dtype'，把真因
+    埋得干干净净。这一段守住四道防线，改实现必须同步改这里。
+    """
+    print("\n== E. 启动提示 / 单实例 / 报错归因 ==")
+
+    def rd(rel):
+        # RVC-WebUI 在真实安装盘是 ../../（DATA 层），仓库/CI 布局是 ../
+        for base in (os.path.join(HERE, ".."), os.path.join(HERE, "..", "..")):
+            p = os.path.join(base, rel)
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    return f.read().replace("\r\n", "\n")
+        raise AssertionError("找不到源码: " + rel)
+
+    ls = rd("dashboard/launch_silent.py")
+    chk("启动器有 Splash 卡片类", "class Splash" in ls)
+    chk("等待循环里有状态更新（不会永远停在第一句）",
+        "splash.set(" in ls and ls.count("splash.set(") >= 3)
+    # 模态消息框会盖住 splash：所有 show_error 前必须先 close
+    shows = len(re.findall(r"^\s+show_error\(", ls, re.M))
+    closes = ls.count("splash.close()")
+    chk("每个失败弹框前都先把卡片收掉（close 数 ≥ show 数）",
+        closes >= shows, "show=%d close=%d" % (shows, closes))
+
+    wsrc = rd("RVC-WebUI/webui.py")
+    i_guard_call = wsrc.find("guard_single_instance(_argv_port())")
+    m_torch = re.search(r"^import torch", wsrc, re.M)   # 别匹配到注释里的文字
+    i_torch = m_torch.start() if m_torch else -1
+    chk("WebUI 单实例守卫在 import torch 之前（晚了显存已被吃）",
+        0 < i_guard_call < i_torch, (i_guard_call, i_torch))
+    chk("守卫默认拦截、RVC_WEBUI_ALLOW_MULTI 才放行",
+        'RVC_WEBUI_ALLOW_MULTI' in wsrc)
+    chk("端口被占不再自动 +1 换端口（飘出去的实例后端连不上）",
+        "RVC_WEBUI_ALLOW_PORT_FALLBACK" in wsrc
+        and "find_available_port(next_port) if allow_fallback else next_port" in wsrc)
+
+    msrc = rd("RVC-WebUI/infer/vc/modules.py")
+    i_fail = msrc.find('inference_status("单次推理", "失败", info)')
+    chk("推理失败不再返回 None 音频（会炸成 dtype 假错误）",
+        i_fail > 0 and "np.zeros(1, dtype=np.float32)" in msrc[i_fail:i_fail + 400],
+        msrc[i_fail:i_fail + 200] if i_fail > 0 else "未找到失败分支")
+
+    asrc = rd("RVCSVC-API/app_rvc.py")
+    chk("归因会跳过 dtype 症状行",
+        "'NoneType' object has no attribute 'dtype'" in asrc)
+    chk("CUDA/显存类真因有专属建议（不再一律建议重装）",
+        "_GPU_ERROR_MARKS" in asrc and "_webui_error_advice" in asrc)
+
+    # 行为级：拿真实函数跑一遍假日志，确认抓到的是真因不是症状
+    import ast as _ast
+    tree = _ast.parse(asrc)
+    ns = {"os": os, "re": re, "_WEBUI_LOG": os.path.join(tempfile.gettempdir(),
+                                                         "e2e_silent_fake_webui.log")}
+    for node in tree.body:
+        name = getattr(node, "name", None) or (
+            node.targets[0].id if isinstance(node, _ast.Assign)
+            and isinstance(node.targets[0], _ast.Name) else None)
+        if name in ("_SYMPTOM_MARKS", "_GPU_ERROR_MARKS",
+                    "_webui_tail_error", "_webui_error_advice"):
+            exec(compile(_ast.Module(body=[node], type_ignores=[]), "<e2e>", "exec"), ns)
+    with open(ns["_WEBUI_LOG"], "w", encoding="utf-8") as f:
+        f.write("""Traceback (most recent call last):
+  File "infer/vc/pipeline.py", line 149, in get_f0
+RuntimeError: CUDA error: out of memory
+
+Traceback (most recent call last):
+  File "gradio/processing_utils.py", line 219, in convert_to_16_bit_wav
+AttributeError: 'NoneType' object has no attribute 'dtype'
+""")
+    hint = ns["_webui_tail_error"]()
+    chk("假日志：抓到 CUDA 真因而不是 dtype 症状",
+        "out of memory" in hint.lower() and "NoneType" not in hint, hint[:120])
+    adv = ns["_webui_error_advice"](hint)
+    chk("建议指向重启而不是重装",
+        "停止RVC.bat" in adv and "重跑一次 一键安装.bat" not in adv, adv[:120])
+    try:
+        os.remove(ns["_WEBUI_LOG"])
+    except OSError:
+        pass
+
+
 def main():
     print("RVC 静默启动 / 任务栏图标 回归测试")
     test_launcher()
     test_tray()
     test_wiring()
     test_quiet_and_cover_jobs()
+    test_startup_ux()
     print("\n== 结果 ==")
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

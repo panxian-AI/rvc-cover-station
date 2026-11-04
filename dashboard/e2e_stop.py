@@ -187,6 +187,37 @@ def main():
             if child.poll() is None:
                 child.kill()
 
+        print("\n== 8. WebUI 重复实例：收敛成一个 ==")
+        # 隔离：WEBUI_PORT 换成测试端口；命令行线索关掉 —— 真机器上可能
+        # 真有 WebUI 在跑，扫到它会把测试环境搅乱（本次测试就是被它救过：
+        # 实际发现过三个实例，其中两个不监听端口、只占显存）。
+        import panelkit.services as services
+        real_wp, real_span = services.WEBUI_PORT, services.WEBUI_PORT_SPAN
+        real_py_pids = services.python_pids
+        services.WEBUI_PORT, services.WEBUI_PORT_SPAN = PB, 4
+        services.python_pids = lambda: []
+        try:
+            a = spawn_listener(PB)
+            wait_port(PB, True)
+            inst = services.webui_instances()
+            chk("端口线索能找到实例", inst.get(PB) == [a.pid], inst)
+
+            okd, note = services._dedupe_webui()
+            chk("单个真身判定为健康，不动它", okd and note == "", (okd, note))
+            chk("健康实例没被杀", panel.pid_alive(a.pid))
+
+            b = spawn_listener(PB)
+            time.sleep(1.2)
+            okd, note = services._dedupe_webui()
+            chk("两个真身触发清理", okd, note)
+            chk("提示里带端口号", str(PB) in note, note)
+            chk("清理后端口释放", wait_port(PB, False, 10))
+            chk("两个进程都已结束",
+                (not panel.pid_alive(a.pid)) and (not panel.pid_alive(b.pid)))
+        finally:
+            services.WEBUI_PORT, services.WEBUI_PORT_SPAN = real_wp, real_span
+            services.python_pids = real_py_pids
+
     finally:
         panel.SERVICE_PORTS = real_ports
         panel.STOP_ORDER = real_order

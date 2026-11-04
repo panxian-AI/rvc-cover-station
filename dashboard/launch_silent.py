@@ -162,6 +162,96 @@ def show_error(title, text, kind="error"):
         return False
 
 
+# ------------------------------------------------------------------ 启动提示
+
+class Splash:
+    """右下角一张小卡片，告诉用户「正在启动 / 已启动」。
+
+    为什么需要：双击 启动RVC.bat 后黑窗一闪就没了，浏览器又要等十几秒才
+    打开 —— 这段空窗期里，用户（尤其是帮别人装的机器）完全分不清是在启动
+    还是根本没反应，于是又双击一次，叠出第二个 WebUI 各占一份显存。
+
+    tkinter 不可用时（精简版解释器、无桌面会话）整体降级成 no-op：
+    绝不能因为「提示窗起不来」把启动本身搞挂。
+    """
+
+    W, H = 360, 104
+
+    def __init__(self, title="RVC 翻唱站", text="正在启动…"):
+        self.ok = False
+        self.root = None
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.overrideredirect(True)          # 无边框
+            root.attributes("-topmost", True)    # 压在其他窗口上面
+            try:
+                root.attributes("-alpha", 0.96)
+            except Exception:
+                pass
+            x = root.winfo_screenwidth() - self.W - 28
+            y = root.winfo_screenheight() - self.H - 72
+            root.geometry("%dx%d+%d+%d" % (self.W, self.H, x, y))
+            root.configure(bg="#1d2027")
+
+            box = tk.Frame(root, bg="#1d2027", highlightthickness=1,
+                           highlightbackground="#3b4150")
+            box.pack(fill="both", expand=True)
+            tk.Label(box, text=title, bg="#1d2027", fg="#e8eaed", anchor="w",
+                     font=("Microsoft YaHei UI", 11, "bold")).pack(
+                fill="x", padx=16, pady=(16, 4))
+            self.lbl = tk.Label(box, text=text, bg="#1d2027", fg="#9aa4b2",
+                                anchor="w", justify="left",
+                                wraplength=self.W - 32,
+                                font=("Microsoft YaHei UI", 9))
+            self.lbl.pack(fill="x", padx=16)
+            self.root = root
+            self.ok = True
+            self.pump(0.05)
+        except Exception:
+            self.ok = False
+
+    def set(self, text):
+        """换一行状态文字（并立刻重绘）。"""
+        if not self.ok:
+            return
+        try:
+            self.lbl.config(text=str(text))
+            self.root.update()
+        except Exception:
+            self.ok = False
+
+    def pump(self, seconds=0.0):
+        """在 seconds 秒内持续泵 tkinter 事件，让窗口不至于「未响应」。
+
+        不能用 mainloop()：这个进程还要同时等端口、读日志，主线程被
+        mainloop 占住就没法干活了。手动 update 是这类启动器最省事的做法。
+        """
+        if not self.ok:
+            if seconds > 0:
+                time.sleep(seconds)
+            return
+        end = time.time() + max(0.0, seconds)
+        while True:
+            try:
+                self.root.update()
+            except Exception:
+                self.ok = False
+                return
+            if time.time() >= end:
+                return
+            time.sleep(0.05)
+
+    def close(self):
+        if not self.ok:
+            return
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        self.ok = False
+
+
 # ------------------------------------------------------------------ 单实例
 
 def acquire_mutex(name=MUTEX_NAME):
@@ -315,9 +405,20 @@ def main(argv=None):
         api, _ = pick_python()
         return subprocess.call([api, "-u", "panel.py"], cwd=HERE)
 
+    # 走到这里有 UI 了：先弹一张「正在启动」的卡片，别让用户对着桌面发呆。
+    splash = Splash()
+    try:
+        return _start_with_splash(start_log, splash)
+    finally:
+        splash.close()
+
+
+def _start_with_splash(start_log, splash):
     # 1) 面板已经在跑：直接开页面，不重复起第二个实例
     if panel_up(PORT, 0.8):
         log_line(start_log, "面板已在运行，开浏览器")
+        splash.set("面板已经在运行，正在打开浏览器…")
+        splash.pump(1.0)
         maybe_browser()
         return 0
 
@@ -326,9 +427,21 @@ def main(argv=None):
         if busy:
             # 另一个启动器正在起 → 等它，别并行抢 8899
             log_line(start_log, "另一个启动器正在启动，等它就绪…")
-            if panel_up(PORT, TIMEOUT):
+            splash.set("另一个启动窗口正在启动，等它就绪…")
+            ready = False
+            end = time.time() + TIMEOUT
+            while time.time() < end:
+                if panel_up(PORT, 0.6):
+                    ready = True
+                    break
+                splash.set("另一个启动窗口正在启动，等它就绪…（已等 %d 秒）"
+                           % int(TIMEOUT - max(0.0, end - time.time())))
+            if ready:
+                splash.set("已就绪，正在打开浏览器…")
+                splash.pump(1.0)
                 maybe_browser()
                 return 0
+            splash.close()          # 消息框是模态的，先让开
             show_error("RVC 启动较慢",
                        "面板 %d 秒内没能就绪。\n\n"
                        "可能是第一次启动（要扫模型目录），再等一会儿刷新页面试试；\n"
@@ -339,6 +452,7 @@ def main(argv=None):
 
         # 2) 前置体检：文件在 ≠ 能用
         if not os.path.isfile(PANEL):
+            splash.close()
             show_error("RVC 启动失败",
                        "找不到控制台程序：\n%s\n\n"
                        "说明安装不完整。请重新双击「一键安装.bat」补齐文件"
@@ -359,6 +473,7 @@ def main(argv=None):
                 except Exception:
                     pass
         if not python_ok(api):
+            splash.close()
             show_error("RVC 启动失败",
                        "内置 Python 运行不起来：\n%s\n\n"
                        "常见原因：\n"
@@ -375,19 +490,24 @@ def main(argv=None):
         try:
             proc = spawn_panel()
         except Exception as e:
+            splash.close()
             show_error("RVC 启动失败", "面板进程没能创建：%s\n\n日志：%s" % (e, CONSOLE_LOG))
             log_line(start_log, "[X] Popen 失败: %s" % e)
             return 4
 
         deadline = time.time() + TIMEOUT
+        splash.set("正在启动面板…")
         while time.time() < deadline:
             if panel_up(PORT, 0.6):
                 log_line(start_log, "面板就绪 pid=%s  http://127.0.0.1:%d/" % (proc.pid, PORT))
+                splash.set("已启动，正在打开浏览器…\nhttp://127.0.0.1:%d/" % PORT)
+                splash.pump(1.2)
                 maybe_browser()
                 return 0
             if proc.poll() is not None:
                 # 提前死了：多半是 8899 被别的程序占着，或依赖缺失
                 log_line(start_log, "[X] 面板提前退出 rc=%s" % proc.returncode)
+                splash.close()      # 消息框是模态的，先让开
                 show_error("RVC 面板启动失败",
                            "面板进程刚起来就退出了（退出码 %s）。\n\n"
                            "最常见是 8899 端口被别的程序占着：\n"
@@ -397,9 +517,12 @@ def main(argv=None):
                            "面板日志：\n%s" % (proc.returncode, tail(CONSOLE_LOG, 10)),
                            kind="warn")
                 return 5
+            splash.set("正在启动面板…（首次启动要扫模型目录，约 10~30 秒）\n已等待 %d 秒"
+                       % int(TIMEOUT - max(0.0, deadline - time.time())))
             time.sleep(0.3)
 
         log_line(start_log, "[X] %.0f 秒内端口未就绪" % TIMEOUT)
+        splash.close()
         show_error("RVC 启动较慢",
                    "面板 %d 秒内还没就绪。\n\n"
                    "第一次启动要扫模型目录，机械硬盘上可能久一点：\n"

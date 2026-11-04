@@ -1,9 +1,87 @@
 import os
+import sys
 import shutil
 import html
 import copy
 import re
+import socket
 import warnings
+
+# --------------------------------------------------------------- 单实例守卫
+# 有意放在最前面（还没 import torch / gradio）：端口被占这件事几毫秒就能判
+# 出来，没必要让第二个实例先花一分半加载 torch 再退出 —— 那样用户看到的
+# 是「双击后卡了一分半，才被告知已经在运行」。
+def _webui_answers(port, host="127.0.0.1", timeout=1.2):
+    """这个端口上是不是已经有一个 WebUI 在服务。
+
+    只探 TCP 会把「别的程序占着 7865」当成「WebUI 已经起好了」，用户点开
+    就是白页。所以真发一条 HTTP 请求，认 gradio 的响应头/页面特征。
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(
+                b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            head = sock.recv(4096)
+    except OSError:
+        return False
+    return head.startswith(b"HTTP/") and (
+        b"gradio" in head.lower() or b"text/html" in head.lower()
+    )
+
+
+def _argv_port(default=7865):
+    """命令行里的 --port（默认值与 configs/config.py 的 argparse 一致）。"""
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                return default
+        if arg.startswith("--port="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                return default
+    return default
+
+
+def guard_single_instance(port):
+    """同一个端口只允许跑一个 WebUI；端口被占就退出，绝不换端口另起一个。
+
+    upstream 的做法是「端口被占就自动 +1 继续起」，在本产品里是有害的：
+    后端 RVCSVC-API 把 RVC_API_BASE 写死成 http://127.0.0.1:7865，飘到
+    7866 的那个实例没有任何调用方，唯一的效果是把 hubert + rmvpe + net_g
+    再往显存里塞一份。叠到第三份就是 CUDA out of memory；而且一次 OOM
+    之后该进程的 CUDA context 彻底报废（后续请求全是 "CUDA error:
+    unknown error"），只能重启进程 —— 用户体感就是「昨天还好好的」。
+
+    要故意并行多开（压测、调试）时设 RVC_WEBUI_ALLOW_MULTI=1。
+    """
+    if os.environ.get("RVC_WEBUI_ALLOW_MULTI") == "1":
+        return
+    if not _webui_answers(port):
+        return
+    print(
+        "\n================ WebUI 已经在运行 ================\n"
+        "端口 %d 上已经有一个 WebUI 在服务，本次启动直接退出。\n\n"
+        "为什么不允许再开一个：\n"
+        "  两个实例会各往显存里装一份模型，叠起来就是 CUDA 显存不足；\n"
+        "  显存一爆，这个进程的 CUDA 上下文就废了，只能重启。\n\n"
+        "现在就能用：http://127.0.0.1:%d/\n"
+        "没有反应就重启它：双击 停止RVC.bat，再双击 启动RVC.bat\n"
+        "确实要并行多开：设环境变量 RVC_WEBUI_ALLOW_MULTI=1\n"
+        "==================================================" % (port, port),
+        flush=True,
+    )
+    sys.exit(0)
+
+
+guard_single_instance(_argv_port())
+
 
 warnings.filterwarnings(
     "ignore",
@@ -154,12 +232,21 @@ def _start_rmvpe_prewarm(config):
 
 
 def launch_webui_with_port_fallback(app, config):
-    """Launch Gradio, increasing the requested port until startup succeeds."""
+    """Launch Gradio.
+
+    默认**不**换端口：后端 RVCSVC-API 把 RVC_API_BASE 写死成
+    http://127.0.0.1:7865，被挤到 7866 的实例没有任何调用方，只会再占一份
+    显存（见 guard_single_instance）。独立部署或压测确实要「端口被占就往上
+    找」时，设 RVC_WEBUI_ALLOW_PORT_FALLBACK=1 恢复旧行为。
+    """
+    allow_fallback = os.environ.get("RVC_WEBUI_ALLOW_PORT_FALLBACK") == "1"
     next_port = config.listen_port
     queued_app = app.queue(concurrency_count=511, max_size=1022)
     _start_rmvpe_prewarm(config)
     while True:
-        config.listen_port = find_available_port(next_port)
+        config.listen_port = (
+            find_available_port(next_port) if allow_fallback else next_port
+        )
         if config.listen_port != next_port:
             logger.warning(
                 "Port %s is occupied; trying port %s instead.",
@@ -179,6 +266,12 @@ def launch_webui_with_port_fallback(app, config):
         except OSError as error:
             if not is_gradio_port_in_use_error(error, config.listen_port):
                 raise
+            if not allow_fallback:
+                raise OSError(
+                    "端口 %d 已被占用，WebUI 没有启动。同一个端口只留一个实例"
+                    "（多份模型会各占一份显存）；先双击 停止RVC.bat 清干净再启动。"
+                    % config.listen_port
+                ) from error
             if config.listen_port == 65535:
                 raise OSError(
                     "No available TCP port through 65535; WebUI was not started."
@@ -207,6 +300,11 @@ torch.manual_seed(114514)
 
 
 config = Config()
+
+# 单实例守卫必须放在建 VC 之前：VC() 会往显存里装 hubert / rmvpe / net_g，
+# 晚了就白守 —— 第二个实例已经把显存吃掉一份，正是 OOM 的来源。
+guard_single_instance(config.listen_port)
+
 vc = VC(config)
 
 

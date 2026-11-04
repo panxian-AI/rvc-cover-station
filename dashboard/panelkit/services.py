@@ -12,7 +12,7 @@ import time
 from .core import *          # noqa: F401,F403
 from . import core, sysinfo
 from .sysinfo import (_cache, _lock, listening_map, ncm_preflight, pids_on_port,
-                      proc_name, webui_preflight)
+                      proc_cmdline, proc_name, python_pids, webui_preflight)
 
 
 # ---------------- 启停 ----------------
@@ -131,11 +131,24 @@ def start(target):
     cfg = SERVICES.get(target)
     if not cfg:
         return False, "未知服务: %s" % target
+
+    def _n(msg):
+        return ("%s；%s" % (note, msg)) if note else msg
+
+    # WebUI 特殊：先把「多个实例」收敛成一个。它最贵 —— 每个实例都往显存里
+    # 装一份模型，多一个就多一份 OOM 风险；而且被挤到 7866 的实例后端根本
+    # 连不上（RVC_API_BASE 写死 7865），纯属白占显存。
+    note = ""
+    if target == "webui":
+        okd, note = _dedupe_webui()
+        if not okd:
+            return False, note
+
     # 已经在跑就别再拉一个：Windows 允许多个进程抢同一端口，重复点「启动」
     # 会叠出两套后端，互相抢 GPU / 端口，stop 还得靠按端口杀全部才收得回来。
     p = cfg.get("port")
     if p and port_open(p):
-        return True, "%s 已经在运行（端口 %d 已就绪），没有重复启动" % (target, p)
+        return True, _n("%s 已经在运行（端口 %d 已就绪），没有重复启动" % (target, p))
     if os.path.isfile(cfg["exe"]):
         env = os.environ.copy()
         env.update(perf_mod.env() if perf_mod else {})   # 线程数按物理核给，别让 BLAS 开满 32 个抢核心
@@ -173,7 +186,7 @@ def start(target):
                     pass
             with _spawn_lock:
                 _SPAWNED[target] = proc.pid
-            return True, "已启动 %s，约 30~60 秒后端口就绪" % target
+            return True, _n("已启动 %s，约 30~60 秒后端口就绪" % target)
         except Exception as e:
             return False, "启动失败: %s" % e
     # 兜底：直接跑 bat
@@ -188,8 +201,8 @@ def start(target):
                              stderr=subprocess.DEVNULL, close_fds=True,
                              startupinfo=hidden_startup(),
                              creationflags=detach_flags())
-            return True, "已通过脚本启动 %s（若几十秒后端口仍关闭，请手动双击 %s）" % (
-                target, os.path.basename(cfg["bat"]))
+            return True, _n("已通过脚本启动 %s（若几十秒后端口仍关闭，请手动双击 %s）" % (
+                target, os.path.basename(cfg["bat"])))
         except Exception as e:
             return False, "启动失败: %s" % e
     return False, "找不到解释器或启动脚本"
@@ -271,6 +284,90 @@ STOP_ORDER = [("api", 3333), ("ncm", 3002), ("webui", 7865)]
 # 服务 → 端口。单独抽出来，测试可以直接替换成临时端口，
 # 不用真的去停用户正在跑的后端。
 SERVICE_PORTS = {"api": 3333, "webui": 7865, "ncm": 3002}
+
+# WebUI 端口段。7865 是标准端口；upstream 以前「端口被占就 +1 继续起」，
+# 会把实例悄悄挤到 7866/7867…，而后端 RVC_API_BASE 写死连 7865 ——
+# 那些飘出去的实例没有任何调用方，唯一的副作用是各占一份显存。
+WEBUI_PORT = 7865
+WEBUI_PORT_SPAN = 16          # 7865 ~ 7880
+
+
+def webui_instances():
+    """所有还活着的 WebUI 实例：{实际端口 or 7865: [pid, ...]}。
+
+    两条线索都要，缺一不可：
+    - 端口段 7865~7880：正常在服务的实例，端口是权威信息；
+    - 命令行含 webui.py：**没绑上端口的僵尸** —— 加载到一半崩掉、
+      gradio 已退出但进程还活着，照样占着显存。实测出现过两个这样的：
+      不监听任何端口，却各自占着 500MB 工作集，只按端口永远找不到它们。
+
+    别用命令行里的 --port 分组：三个实例的命令行都写着 7865，
+    真正被挤到 7866 的那个命令行也没变。以实际监听端口为准，没监听
+    的统一归到 WEBUI_PORT 桶里。
+    """
+    found = {}
+    for idx, port in enumerate(range(WEBUI_PORT, WEBUI_PORT + WEBUI_PORT_SPAN)):
+        # 第一轮强制重读 netstat，后面几轮复用同一份缓存（4 秒有效）
+        pids = pids_on_port(port, fresh=(idx == 0))
+        if not pids:
+            continue
+        keep = [p for p in pids
+                if (proc_name(p) or "").lower() in ("python.exe", "pythonw.exe")]
+        if keep:
+            found.setdefault(port, []).extend(keep)
+
+    listened = {p for v in found.values() for p in v}
+    for pid in python_pids():
+        if pid in listened:
+            continue
+        if "webui.py" not in proc_cmdline(pid).lower():
+            continue
+        found.setdefault(WEBUI_PORT, []).append(pid)
+    return found
+
+
+def _dedupe_webui():
+    """把 WebUI 收敛成「一个实例、且在 7865」。返回 (ok, note)。
+
+    只留一个不是洁癖：每个实例都会把 hubert + rmvpe + net_g 各装一份进
+    显存，叠到第三份就是 CUDA out of memory；而且一次 OOM 之后那个进程
+    的 CUDA 上下文就废了（后续请求全是 "CUDA error: unknown error"），
+    只能重启进程。用户看到的是「昨天还好好的，今天一推理就失败」，
+    根因却是自己多双击了几次。
+
+    发现重复就全杀、让调用方重新起一个干净的 —— 因为没法判断哪个实例的
+    CUDA 上下文还是好的，留着坏的反而继续占显存。
+    """
+    inst = webui_instances()
+    if not inst:
+        return True, ""
+    all_pids = [p for v in inst.values() for p in v]
+    # venv 的 pythonw 只是「转手壳」（启动真解释器后就退），不加载模型、
+    # 不占显存；真正吃显存的是命令行里那个 runtime 解释器。健康形态 =
+    # 恰好一个真身、且在 7865 上（shim 有没有都行）。
+    shims = {p for p in all_pids if "\\.venv\\" in proc_cmdline(p).lower()}
+    reals = [p for p in all_pids if p not in shims]
+    if set(inst) == {WEBUI_PORT} and len(reals) == 1:
+        return True, ""
+    ports = sorted(inst)
+    victims = [pid for port in ports for pid in inst[port]]
+    for pid in victims:
+        try:
+            _kill_tree(pid)
+        except Exception:
+            pass
+    t0 = time.time()
+    while time.time() - t0 < 8 and any(port_open(p) for p in ports):
+        time.sleep(0.3)
+    left = webui_instances()
+    if left:
+        return False, ("有 %d 个 WebUI 实例清不掉（端口 %s），"
+                       "先手动双击 停止RVC.bat 再来"
+                       % (sum(len(v) for v in left.values()),
+                          ",".join(str(p) for p in sorted(left))))
+    return True, "已清理 %d 个重复/错位的 WebUI 实例（端口 %s）" % (
+        len(victims), ",".join(str(p) for p in ports))
+
 
 
 def _kill_tree(pid):
@@ -419,8 +516,17 @@ def stop(target):
     if not port:
         return False, "未知服务: %s" % target
 
-    pids = pids_on_port(port, fresh=True) if port_open(port) else []
+    pids = []
     how = "端口 %d" % port
+    if target == "webui":
+        # WebUI 可能被挤到 7866/7867…：只按 7865 找会留下仍在吃显存的孤儿，
+        # 用户点「停止」看到的是「已停止」，但显存还是满的、下次推理照样 OOM。
+        inst = webui_instances()
+        pids = [pid for v in inst.values() for pid in v]
+        if inst:
+            how = "端口 %s" % ",".join(str(p) for p in sorted(inst))
+    if not pids and port_open(port):
+        pids = pids_on_port(port, fresh=True)
     if not pids:
         # 端口还没起来（刚启动 20 秒内点退出）——用自己拉起的 PID
         with _spawn_lock:
@@ -444,7 +550,10 @@ def stop(target):
         time.sleep(0.5)
         with _lock:
             _cache["netstat"] = (0, {})
-        pids = pids_on_port(port, fresh=True) if port_open(port) else []
+        if target == "webui":
+            pids = [p for v in webui_instances().values() for p in v]
+        else:
+            pids = pids_on_port(port, fresh=True) if port_open(port) else []
         if not pids:
             break
     with _spawn_lock:

@@ -332,7 +332,15 @@ class VC:
         except Exception:
             info = traceback.format_exc()
             logger.warning(info)
-            return inference_status("单次推理", "失败", info), (None, None)
+            # 不能返回 (None, None)：gradio 的 Audio 后处理会去读 .dtype，
+            # 直接炸成 AttributeError: 'NoneType' object has no attribute
+            # 'dtype'，把真正的报错（CUDA 显存不足、配置不匹配…）整条埋掉 ——
+            # 用户在页面上、后端抓到的日志尾部，看到的全是这个假错误。
+            # 给一段 1 个采样的静音，让 inference_status 里的真因显示出来。
+            return (
+                inference_status("单次推理", "失败", info),
+                (self.tgt_sr or 40000, np.zeros(1, dtype=np.float32)),
+            )
 
     def vc_multi(
         self,

@@ -115,8 +115,12 @@ def main():
 
     try:
         print("\n== 1. 版本号解析 ==")
-        chk("_tuple 认识 v 前缀", updater._tuple("v1.2.3") == (1, 2, 3), updater._tuple("v1.2.3"))
-        chk("_tuple 补零", updater._tuple("1.2") == (1, 2, 0), updater._tuple("1.2"))
+        # 归一成四段：三段版本在第四段补 0，第四段存在的版本才比得出来（v2.1.0 修）
+        chk("_tuple 认识 v 前缀", updater._tuple("v1.2.3") == (1, 2, 3, 0), updater._tuple("v1.2.3"))
+        chk("_tuple 补零", updater._tuple("1.2") == (1, 2, 0, 0), updater._tuple("1.2"))
+        chk("_tuple 保留第四段", updater._tuple("2.0.1.5") == (2, 0, 1, 5), updater._tuple("2.0.1.5"))
+        chk("2.0.1.5 比 2.0.1 新（四段才发得出去）", updater.is_newer("2.0.1.5", "2.0.1"))
+        chk("2.0.1 不比 2.0.1.5 新", not updater.is_newer("2.0.1", "2.0.1.5"))
         chk("1.0.6 比 1.0.5 新", updater.is_newer("1.0.6", "1.0.5"))
         chk("1.0.5 不比 1.0.5 新", not updater.is_newer("1.0.5", "1.0.5"))
         chk("1.0.10 比 1.0.9 新（不是字符串比较）", updater.is_newer("1.0.10", "1.0.9"))

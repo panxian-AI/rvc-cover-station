@@ -34,7 +34,7 @@ from paths import DATA, DASH, PROJ, RVC_ROOT
 import speed
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "2.1.0"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "2.1.1"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")

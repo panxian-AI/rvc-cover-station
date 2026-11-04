@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.1.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -126,7 +126,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 18 套回归测试共 939 项断言（`dashboard/e2e_*.py`）
+- 附带 19 套回归测试共 972 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

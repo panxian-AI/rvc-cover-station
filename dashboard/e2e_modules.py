@@ -286,6 +286,47 @@ def test_release_plumbing():
         "保留脏标记" in gsrc or "_dirty = True" in gsrc)
 
 
+def _repo_root():
+    """仓库根（含 install/ai_install.ps1）。安装目录里没有它，返回空串。"""
+    d = HERE
+    for _ in range(4):
+        if os.path.isfile(os.path.join(d, "install", "ai_install.ps1")):
+            return d
+        d = os.path.dirname(d)
+    return ""
+
+
+def test_ci():
+    """CI 与夹具本身也要被守住：删掉 workflow、去掉 --strict、或者把
+    ci_fixture 的安全闸拆了，都不该悄悄发生（这类改动没有任何运行时症状）。"""
+    print("\n== E. CI 门禁（每次 push 都跑全量回归） ==")
+    root = _repo_root()
+    if not root:
+        print("  （本机是安装目录，没有 .github/ 与 install/，跳过 CI 断言）")
+        return
+
+    wf = os.path.join(root, ".github", "workflows", "e2e.yml")
+    chk("CI 工作流存在", os.path.isfile(wf), wf)
+    if os.path.isfile(wf):
+        y = open(wf, encoding="utf-8").read().replace("\r\n", "\n")
+        chk("CI 跑的是全量回归（--strict）", "run_e2e.py --strict" in y)
+        chk("CI 在中文代码页下跑（安装器回归是 GBK bat）", "chcp 936" in y)
+        chk("CI 失败也留日志", "if: always()" in y and "upload-artifact" in y)
+        chk("CI 先造夹具再跑",
+            "ci_fixture.py" in y
+            and y.index("name: 造运行夹具") < y.index("name: 全量回归"))
+
+    fx = os.path.join(HERE, "ci_fixture.py")
+    chk("夹具脚本存在", os.path.isfile(fx), fx)
+    if os.path.isfile(fx):
+        fs = open(fx, encoding="utf-8").read().replace("\r\n", "\n")
+        chk("夹具会拒绝写真实安装目录",
+            "_real_install" in fs and "不造夹具" in fs)
+        for fn in ("make_voice", "make_cover", "link_runtime",
+                   "link_webui", "make_ncm_cookie"):
+            chk("夹具覆盖 %s" % fn, ("def %s(" % fn) in fs)
+
+
 def _missing_globals(path):
     """模块里「函数当成全局用、但模块没定义也没 import」的名字。
 
@@ -374,6 +415,7 @@ def main():
     test_deps()
     test_release_plumbing()
     test_dataio_pkg()
+    test_ci()
     print("\n" + "=" * 52)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

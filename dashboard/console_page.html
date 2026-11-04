@@ -69,6 +69,10 @@ border:1px solid #4c3a7a;border-radius:7px;padding:2px 8px;min-width:32px;text-a
 .qrow button{padding:5px 10px;font-size:12px;font-weight:500}
 .qrun{border-color:#22406e;background:#12213a}
 .qrun .pos{color:#7fb4ff;background:#12213a;border-color:#22406e}
+/* 进度条：正在做的单按「平均耗时」估算，封顶 92%，别演成做完了 */
+.pbar{height:4px;width:120px;border-radius:3px;background:#1b2740;overflow:hidden}
+.pbar span{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22c55e);transition:width .6s}
+.qrow .eta{color:#c4b5fd}
 /* 记录表 */
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th,td{text-align:left;padding:8px 9px;border-bottom:1px solid #1c283c;vertical-align:top}
@@ -183,7 +187,7 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
   <div class="card">
     <h2>制作队列 <span id="qSum" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="queue"><div class="empty">读取中…</div></div>
-    <div class="hint">GPU 一次只跑一单，做完自动接力下一单。默认先到先来，可以手动置顶 / 上移 / 下移；「移出」等于拒绝。</div>
+    <div class="hint">GPU 一次只跑一单，做完自动接力下一单。默认先到先来，可以手动置顶 / 上移 / 下移；「移出」等于拒绝。<b>前面几单、预计多久开始</b>都是按队列真实位次和最近成品的实际耗时算的（同时制作数量在「高级设置」里改，改完预计会跟着变）。</div>
   </div>
 
   <div class="card">
@@ -390,19 +394,32 @@ async function loadQueue(){
   const n = d.total || 0;
   const runTitles = (d.running_all && d.running_all.length) ? d.running_all
                                                              : (d.running ? [d.running] : []);
+  const runs = d.running_detail || [];
   const cap = d.cap || 1;
+  const avgTxt = d.avg_job_text ? (' · 单均约 ' + d.avg_job_text) : '';
   $('#qSum').textContent = (n ? ('· 排队 ' + n + ' 单') : '')
     + (runTitles.length ? (' · 正在做 ' + runTitles.length + '/' + cap + ' 单') : '');
   let html = `<div class="qbar">正在做：<b>${runTitles.length ? runTitles.map(esc).join(' / ') : '（空闲）'}</b>
-    · 排队 ${n} 单 · 同时上限 ${cap} 单${d.cooldown ? `　<span style="color:#f0c674">冷却 ${d.cooldown}s</span>` : ''}
+    · 排队 ${n} 单 · 同时上限 ${cap} 单${avgTxt}${d.cooldown ? `　<span style="color:#f0c674">冷却 ${d.cooldown}s</span>` : ''}
     <button class="gray mini" style="margin-left:auto" onclick="pumpNow()">▶ 立即开始下一单</button></div>`;
+  // 正在做的每一单单独一行：阶段 + 已用 + 预计剩余，比只列标题有用得多
+  if(runs.length){
+    html += runs.map(r => `<div class="qrow qrun">
+      <span class="pos">▶</span>
+      <div class="t"><b>${r.type==='tts'?'🗣':'🎤'} ${esc(r.title)||'(未命名)'}</b>
+        <span>${esc(r.stage_label || '制作中')}${r.acapella?' · 清唱':''}${r.model?(' · '+esc(r.model)):''}
+          · 已用 ${esc(r.elapsed_text || '0 秒')}${!r.left_text?'' : (r.left_text==='快好了' ? ' · 快好了' : ' · 预计还剩约 '+esc(r.left_text))}</span></div>
+      ${r.pct ? `<div class="pbar" title="按最近成品耗时估算"><span style="width:${Math.max(3,Math.min(92,r.pct))}%"></span></div>` : ''}
+    </div>`).join('');
+  }
   if(!n){
     html += '<div class="empty">队列是空的 · 批准后会自动排到这里</div>';
   }else{
     html += d.queue.map(q => `<div class="qrow ${q.pos===1?'qrun':''}">
       <span class="pos">#${q.pos}</span>
       <div class="t"><b>${q.type==='tts'?'🗣':'🎤'} ${esc(q.title)}</b>
-        <span>${esc(q.artist)||'-'}${q.acapella?' · 清唱':''} · 提交 ${esc(q.created)}</span></div>
+        <span>${esc(q.artist)||'-'}${q.acapella?' · 清唱':''} · 提交 ${esc(q.created)}
+          · <b style="color:#c4b5fd">${q.q_ahead ? ('前面 '+q.q_ahead+' 单') : '下一个就做'}</b>${q.eta_text?` · <span class="eta">预计约 ${esc(q.eta_text)}开始</span>`:''}</span></div>
       <button class="gray" onclick="moveQ('${esc(q.id)}','top')" ${q.pos===1?'disabled':''}>⤒</button>
       <button class="gray" onclick="moveQ('${esc(q.id)}','up')" ${q.pos===1?'disabled':''}>↑</button>
       <button class="gray" onclick="moveQ('${esc(q.id)}','down')" ${q.pos===d.total?'disabled':''}>↓</button>
@@ -446,7 +463,8 @@ async function loadCoverJobs(){
     html += run.map(j => `<div class="qrow qrun">
       <span class="pos">▶</span>
       <div class="t"><b>🎤 ${esc(j.title)}</b>
-        <span>${sub(j)} · ${esc(j.stage || '制作中')} · 已用 ${Math.round(j.elapsed)}s</span></div>
+        <span>${sub(j)} · ${esc(j.stage || '制作中')} · 已用 ${Math.round(j.elapsed)}s${j.left_text?((j.left_text==='快好了'?' · 快好了':' · 预计还剩约 '+esc(j.left_text))):''}</span></div>
+      ${j.pct ? `<div class="pbar" title="按最近成品耗时估算"><span style="width:${Math.max(3,Math.min(92,j.pct))}%"></span></div>` : ''}
     </div>`).join('');
   }else{
     html += '<div class="empty">现在没有在做的自助翻唱</div>';
@@ -515,12 +533,18 @@ async function loadReqs(){
         op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">重试</a>`;
       else if(r.state === 'pending')
         op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">批准</a>`;
+      // 状态列不只写「排队中/制作中」，把位次和阶段也带上，一眼知道卡在哪
+      let stHtml = `<span class="badge ${cls}">${esc(st)}</span>`;
+      if(r.state === 'queued' && r.q_pos)
+        stHtml += `<div style="color:#c4b5fd;font-size:11.5px;margin-top:4px">第 ${r.q_pos} 位${r.q_ahead?(' · 前 '+r.q_ahead+' 单'):' · 下一个就做'}</div>`;
+      else if(r.state === 'running')
+        stHtml += `<div style="color:#7fb4ff;font-size:11.5px;margin-top:4px">${esc(r.stage_label||'制作中')}${r.elapsed_text?(' · 已用 '+esc(r.elapsed_text)):''}</div>`;
       return `<tr>
         <td style="color:#75869f;white-space:nowrap">${esc(r.created)}</td>
         <td><b>${isTts?'🗣':'🎤'} ${esc(String(r.title||'').replace(/^朗读：/,''))}</b>
           ${r.artist?'<div style="color:#75869f;font-size:11.5px">'+esc(r.artist)+'</div>':''}</td>
         <td>${sub}${r.reuse?'<div style="color:#22c55e;font-size:11.5px">复用成品</div>':''}</td>
-        <td><span class="badge ${cls}">${esc(st)}</span></td>
+        <td>${stHtml}</td>
         <td>${op}</td></tr>`;
     }).join('') + `</table>`;
 }

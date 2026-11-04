@@ -162,15 +162,37 @@ def jobs_snapshot(recent=5):
     run.sort(key=lambda r: r["created"])
     queued.sort(key=lambda r: r["created"])
     done.sort(key=lambda r: (r["ended"] or r["created"]), reverse=True)
+    # 进度条用的平均耗时：拿最近跑完的真实时长取中位数（异常值不参与）
+    durs = sorted([r["elapsed"] for r in done
+                   if r["elapsed"] and 5 <= r["elapsed"] <= 900])[-12:]
+    avg = durs[len(durs) // 2] if durs else 60.0
+    for r in run:
+        el = float(r.get("elapsed") or 0)
+        r["pct"] = int(min(92, max(3, el / avg * 100)))
+        left = max(0.0, avg - el)
+        r["left_text"] = "快好了" if left <= 5 else _dur_text(left)
     try:
         cap = max(1, settings_mod.concurrency())
     except Exception:
         cap = 1
     return {"ok": True, "running": run, "queued": queued, "recent": done[:recent],
-            "used": slots_used(), "cap": cap, "total": len(run) + len(queued)}
+            "used": slots_used(), "cap": cap, "total": len(run) + len(queued),
+            "avg_sec": round(avg, 1), "avg_text": _dur_text(avg)}
 
 
 # ---------------- 工具 ----------------
+def _dur_text(sec):
+    """秒数说成人话：45 秒 / 2 分 5 秒 / 1 分（进度条旁边的「还剩多久」用它）。"""
+    try:
+        n = int(round(max(0, float(sec))))
+    except Exception:
+        return ""
+    if n < 60:
+        return "%d 秒" % n
+    m, s = divmod(n, 60)
+    return ("%d 分 %d 秒" % (m, s)) if s else ("%d 分" % m)
+
+
 def _json_get(url: str, timeout=40):
     with _OPENER.open(url, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))

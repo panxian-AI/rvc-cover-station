@@ -327,6 +327,115 @@ def visits():
     return {"ok": True, "visits": items, "total": len(items)}
 
 
+# ---------------- 进度 / 位次 ----------------
+# 访客最想知道的就两件事：我排第几、还要多久。位次是准的（队列里的真实下标），
+# 时间只能是估算 —— 所以对外文案一律写「预计约」，而且永远按最近的真实耗时算，
+# 不写死常数（换硬件、调并发、换模型都会让这数变）。
+_DEFAULT_JOB_SEC = 45.0
+
+
+def _dur_text(sec):
+    """把秒数说成人话：45 秒 / 2 分 30 秒 / 1 分。"""
+    try:
+        n = int(round(max(0, float(sec))))
+    except Exception:
+        return ""
+    if n < 60:
+        return "%d 秒" % n
+    m, s = divmod(n, 60)
+    return ("%d 分 %d 秒" % (m, s)) if s else ("%d 分" % m)
+
+
+def _avg_job_sec():
+    """最近若干单的真实制作耗时（开始推理 → 出成品）取中位数。
+
+    用中位数而不是平均数：偶尔一单卡死（WATCH_TIMEOUT 那个量级）会把均值拉烂。
+    数据不够就退回默认值，别让界面写着「预计约 0 秒」。
+    """
+    durs = []
+    for r in _db.get("requests") or []:
+        if r.get("state") not in (STATE_DONE, STATE_ERROR):
+            continue
+        st, en = r.get("started"), r.get("decided")
+        if not st or not en or en <= st:
+            continue
+        d = en - st
+        if 5 <= d <= 900:          # 明显异常的值（时钟跳变 / 卡死）不参与统计
+            durs.append(d)
+    if not durs:
+        return _DEFAULT_JOB_SEC
+    durs = sorted(durs[-12:])      # 只看最近 12 单，硬件或参数变了也能跟上
+    return max(10.0, min(600.0, durs[len(durs) // 2]))
+
+
+# 后端给的是工程语言，这里翻成访客听得懂的阶段名（前缀匹配，后端加字也不崩）
+_STAGE_HINTS = (
+    ("排队中", "等制作位"),
+    ("连接后端", "连接后端"),
+    ("派发任务", "下载 / 分离 / 演唱"),
+    ("归档", "收尾导出"),
+    ("复用", "命中成品库"),
+    ("完成", "已完成"),
+)
+
+
+def _stage_label(stage):
+    s = str(stage or "").strip()
+    if not s:
+        return ""
+    for key, label in _STAGE_HINTS:
+        if key in s:
+            return label
+    return s.rstrip("…").strip()
+
+
+def _eta_hint(rid, pos, total):
+    """排队中这单的预计等待。pos 是 1 起的队列下标。
+
+    简单排队模拟，比「人数除以并发」准得多：
+      · 先看正在跑的单各自还剩多久（按平均耗时估）；
+      · 空槽位算作「现在就空」；
+      · 排在自己前面的人，依次占据最早空出来的那个槽位；
+      · 自己拿到的最早空位时间 + 一单耗时 = 预计出成品。
+    """
+    cap = max(1, settings_mod.concurrency())
+    avg = _avg_job_sec()
+    now = time.time()
+    slots = []
+    for x in (_db.get("requests") or []):
+        if x.get("state") != STATE_RUNNING or x.get("id") == rid:
+            continue
+        st = x.get("started")
+        left = max(0.0, avg - (now - st)) if st else avg
+        slots.append(left)
+    slots = sorted(slots)[:cap]
+    while len(slots) < cap:            # 还有空位 = 现在就能开
+        slots.append(0.0)
+    slots.sort()
+    for _ in range(max(0, int(pos) - 1)):
+        slots.sort()
+        slots[0] += avg                # 前面那个人占掉最早空出的槽位
+    start_wait = min(slots) if slots else 0.0
+    sec = start_wait + avg
+    return {"q_ahead": max(0, int(pos) - 1), "q_total": int(total or 0),
+            "eta_sec": int(round(sec)), "eta_text": _dur_text(sec)}
+
+
+def _run_progress(r, avg=None):
+    """制作中的这单：已用多久、按平均耗时估个百分比（封顶 92%，别演成 100%）。"""
+    st = r.get("started")
+    if not st:
+        return {"elapsed": 0, "elapsed_text": "", "pct": 0, "left_text": ""}
+    el = max(0.0, time.time() - st)
+    avg = avg or _avg_job_sec()
+    pct = int(min(92, max(3, el / max(1.0, avg) * 100)))
+    left = max(0.0, avg - el)
+    # 估到「还剩 0 秒」很难看，也容易让人以为卡了；快到了就说快好了
+    left_text = "快好了" if left <= 5 else _dur_text(left)
+    return {"elapsed": int(el), "elapsed_text": _dur_text(el), "pct": pct,
+            "left_text": left_text}
+
+
 # ---------------- 申请 ----------------
 def _req_view(r, admin=False):
     out = {
@@ -339,15 +448,23 @@ def _req_view(r, admin=False):
         "error": r.get("error", ""), "file": r.get("file") or "",
         "size_text": r.get("size_text", ""), "reuse": bool(r.get("reuse")),
     }
-    # 排队中的单带上位次，访客和站长都能看到「前面还有几单」
-    if r.get("state") == STATE_QUEUED:
+    # 排队中 / 制作中都带上进度：访客问得最多的就是「我排第几、还要多久」
+    state = r.get("state")
+    if state == STATE_QUEUED:
         try:
             q = _db.get("queue") or []
-            out["q_pos"] = q.index(r["id"]) + 1 if r["id"] in q else 0
-            out["q_total"] = len(q)
+            pos = q.index(r["id"]) + 1 if r["id"] in q else 0
         except Exception:
-            out["q_pos"] = 0
-            out["q_total"] = 0
+            pos = 0
+        out["q_pos"] = pos
+        out["q_total"] = len(_db.get("queue") or [])
+        out.update(_eta_hint(r["id"], pos, out["q_total"]) if pos else
+                   {"q_ahead": 0, "eta_sec": 0, "eta_text": ""})
+    elif state == STATE_RUNNING:
+        # 阶段由 _watch 每 3 秒从任务里抄回内存（不落盘：这是瞬时状态）
+        out["stage"] = r.get("stage") or ""
+        out["stage_label"] = _stage_label(r.get("stage"))
+        out.update(_run_progress(r))
     text = r.get("text") or ""
     out["text"] = text[:200] if not admin else text
     # 朗读的显示名：套自己声线时显示「小肥鱼（肥鱼声库）」而不是 rvc:feiyu.pth
@@ -1058,25 +1175,41 @@ def _enqueue(rid):
 
 
 def queue_list():
-    """当前队列（含位置），给审批台显示。"""
+    """当前队列（含位置）+ 正在做的详情，给审批台显示。"""
     with _lock:
         _queue_alive()
+        avg = _avg_job_sec()
         out = []
         for i, rid in enumerate(_db["queue"], 1):
             r = _find(rid)
             if not r:
                 continue
-            out.append({"pos": i, "id": rid, "title": r.get("title", ""),
-                        "artist": r.get("artist", ""), "type": r.get("type", TYPE_COVER),
-                        "created": _fmt(r.get("created")),
-                        "acapella": bool(r.get("acapella")),
-                        "model": os.path.basename(str(r.get("model") or "")),
-                        "voice": r.get("voice", "")})
+            row = {"pos": i, "id": rid, "title": r.get("title", ""),
+                   "artist": r.get("artist", ""), "type": r.get("type", TYPE_COVER),
+                   "created": _fmt(r.get("created")),
+                   "acapella": bool(r.get("acapella")),
+                   "model": os.path.basename(str(r.get("model") or "")),
+                   "voice": r.get("voice", "")}
+            row.update(_eta_hint(rid, i, len(_db["queue"])))
+            out.append(row)
         running = [r for r in _db["requests"] if r.get("state") == STATE_RUNNING]
         titles = [r.get("title") or "" for r in running]
+        # 只给标题太薄：站长也要能一眼看出「卡在哪一步、跑了多久」
+        detail = []
+        for r in running:
+            d = {"id": r.get("id"), "title": r.get("title") or "",
+                 "artist": r.get("artist") or "", "type": r.get("type", TYPE_COVER),
+                 "acapella": bool(r.get("acapella")),
+                 "stage": r.get("stage") or "",
+                 "stage_label": _stage_label(r.get("stage")),
+                 "model": os.path.basename(str(r.get("model") or "")).replace(".pth", "")}
+            d.update(_run_progress(r, avg))
+            detail.append(d)
         return {"ok": True, "queue": out, "total": len(out),
                 "running": titles[0] if titles else "",
                 "running_all": titles, "running_count": len(titles),
+                "running_detail": detail,
+                "avg_job_text": _dur_text(avg),
                 "cap": max(1, settings_mod.concurrency()),
                 "cooldown": max(0, int(_cooldown_until - time.time()))}
 
@@ -1139,6 +1272,10 @@ def _launch_locked(r) -> dict:
                      size_text=st.get("size_text", ""))
             return {"ok": True, "reuse": True, "msg": "已有成品，直接发给对方（没再跑一遍）"}
     r["state"] = STATE_RUNNING
+    # started 专供「已用多久 / 预计还要多久」用；decided 仍然是「本轮结束时间」，
+    # 两者含义不同，别合并（老记录没有 started，按 0 处理，界面自然不会显示耗时）。
+    r["started"] = time.time()
+    r["stage"] = "连接后端…"
     # 挂到正在跑的同参数任务上，也算复用（同样不重复占 GPU）
     r["reuse"] = bool(res.get("shared"))
     return {"ok": True, "watch": (r["id"], res.get("job"), status_fn)}
@@ -1355,6 +1492,13 @@ def _watch(rid, jid, status_fn=None):
                     _save()
             _pump_async()
             return
+        # 把后端阶段抄回申请记录，访客/控制台才看得到「现在做到哪一步」。
+        # 只改内存不 _save()：3 秒一次落盘纯属折腾磁盘，阶段本来就是瞬时的。
+        if st.get("stage"):
+            with _lock:
+                _r0 = _find(rid)
+                if _r0 is not None:
+                    _r0["stage"] = st.get("stage")
         with _lock:
             r = _find(rid)
             if not r:

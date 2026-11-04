@@ -65,6 +65,22 @@ font-size:12.5px;color:#6fd39a;background:#10291f;border:1px solid #1f5340}
 .b-done{color:#6fd39a;border-color:#1f5340;background:#10291f}
 .b-no{color:#ff8f8f;border-color:#5c2626;background:#2a1414}
 .meta{font-size:12px;color:#7f90ac;margin-top:4px}
+/* 进度：四段小格子 + 一句人话。访客不用猜「排队中」是还没开始还是快好了 */
+.steps{display:flex;gap:5px;margin-top:9px}
+.steps i{flex:1;height:3px;border-radius:2px;background:#22304a;transition:.3s}
+.steps i.on{background:#3b82f6}
+.steps i.cur{background:#22c55e}
+.steps i.off{background:#22304a}
+.progtxt{font-size:12px;color:#9fb2cc;margin-top:6px;line-height:1.5}
+.progtxt b{color:#dce9ff;font-weight:600}
+.progtxt .eta{color:#c4b5fd}
+.pbar{height:4px;border-radius:3px;background:#1b2740;overflow:hidden;margin-top:8px}
+.pbar span{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22c55e);transition:width .6s}
+.mysum{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.mysum span{font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid #253049;
+background:#111a28;color:#9fb2cc}
+.mysum span.run{color:#7fb4ff;border-color:#22406e;background:#12213a}
+.mysum span.q{color:#c4b5fd;border-color:#3b2f5c;background:#1a1530}
 .dl{display:inline-block;margin-top:8px;font-size:13px;color:#7fb4ff;text-decoration:none;
 border:1px solid #22406e;background:#12213a;padding:6px 12px;border-radius:8px}
 .empty{color:#6f8099;font-size:13px;padding:8px 2px}
@@ -177,8 +193,9 @@ footer{text-align:center;color:#55647d;font-size:12px;margin-top:22px}
 
   <div class="card">
     <div class="label">我的申请 <span id="recov" style="color:#f0c674;display:none">· 已凭本机记录找回</span></div>
+    <div id="mySum" class="mysum" style="display:none"></div>
     <div id="mine"><div class="empty">还没有提交过</div></div>
-    <div class="hint">只要不清浏览器数据，随时关掉再打开都在（申请记录只跟着这台设备，不按网络找，别人看不到）。</div>
+    <div class="hint">只要不清浏览器数据，随时关掉再打开都在（申请记录只跟着这台设备，不按网络找，别人看不到）。<b>「预计」按最近成品的实际耗时估的</b>，GPU 忙或歌长会偏慢，位次是准的。</div>
   </div>
 
   <footer>成品仅供个人娱乐，请支持正版音乐</footer>
@@ -550,7 +567,27 @@ async function loadMine(){
   }
   const box = $('#mine');
   $('#recov').style.display = (d.ok && d.recovered) ? '' : 'none';
-  if(!d.ok || !d.requests.length){ box.innerHTML = '<div class="empty">还没有提交过</div>'; return; }
+  const sum = $('#mySum');
+  if(!d.ok || !d.requests.length){
+    box.innerHTML = '<div class="empty">还没有提交过</div>';
+    sum.style.display = 'none'; sum.innerHTML = '';
+    return;
+  }
+  // 顶部一句话总结：不用逐条数就知道自己现在什么处境
+  const runs = d.requests.filter(r=>r.state==='running');
+  const qs = d.requests.filter(r=>r.state==='queued' && r.q_pos)
+                      .sort((a,b)=>a.q_pos-b.q_pos);
+  if(runs.length || qs.length){
+    let h = '';
+    if(runs.length) h += `<span class="run">🎬 制作中 ${runs.length} 单${runs[0].stage_label?(' · '+esc(runs[0].stage_label)):''}</span>`;
+    if(qs.length){
+      const q = qs[0];
+      h += `<span class="q">🎧 排队 ${qs.length} 单 · 最快一单第 ${q.q_pos} 位${q.eta_text?(' · 预计约 '+esc(q.eta_text)):''}</span>`;
+    }
+    sum.innerHTML = h; sum.style.display = 'flex';
+  }else{
+    sum.innerHTML = ''; sum.style.display = 'none';
+  }
   box.innerHTML = d.requests.map(r=>{
     const cls = STATE_CLS[r.state] || 'b-wait';
     const st = STATE_TXT[r.state] || r.state;
@@ -560,10 +597,17 @@ async function loadMine(){
       ? esc(r.voice_label || (r.voice||'').replace(/Neural$/,'')) + (r.acapella?' · 清唱':'') + ' · ' + esc(r.created)
       : esc(r.artist) + ' · ' + esc((r.model||'').replace(/\.pth$/i,'')) + (r.acapella?' · 清唱':'') + ' · ' + esc(r.created);
     if(r.reuse) sub += ' <span style="color:#22c55e">· 复用已有成品</span>';
-    // 排队中：告诉访客前面还有几单，别以为卡住了
-    const stTxt = (r.state === 'queued' && r.q_pos) ? ('排队中 #' + r.q_pos) : st;
+    // 徽章只留最短的结论，细节放下面一行
+    let stTxt = st;
+    if(r.state === 'queued' && r.q_pos) stTxt = '排队 · 第 ' + r.q_pos + ' 位';
+    else if(r.state === 'running') stTxt = '制作中';
+
     let extra = '';
     if(isTts && r.text) extra += `<div class="ttxt" data-full="${esc(r.text)}">${esc(r.text.slice(0,120))}${r.text.length>120?'… <span class="tmore" onclick="this.parentNode.style.maxHeight=\'none\';this.style.display=\'none\'">展开</span>':''}</div>`;
+    // 四步条 + 一句人话：现在到哪、前面还有多少、大概还要多久
+    if(r.state === 'pending' || r.state === 'queued' || r.state === 'running' || r.state === 'done'){
+      extra += stepBar(r);
+    }
     if(r.state === 'done') extra += `<a class="dl" href="/api/guest/file?rid=${encodeURIComponent(r.id)}${MYGID?('&gid='+encodeURIComponent(MYGID)):''}">⬇ 下载成品${r.size_text?' · '+esc(r.size_text):''}</a>`;
     else if(r.state === 'rejected') extra += `<div class="meta">${esc(r.note || '站长没有批准这次申请')}</div>`;
     else if(r.state === 'error') extra += `<div class="meta">${esc(r.error || '制作失败')}</div>`;
@@ -573,6 +617,37 @@ async function loadMine(){
       ${extra}
     </div>`;
   }).join('');
+}
+
+/* 四步进度条（提交 → 排队 → 制作 → 完成）
+   位次和阶段都来自服务端真实数据；只有「预计」是按最近成品耗时估的。 */
+function stepBar(r){
+  const cur = r.state === 'done' ? 4 : r.state === 'running' ? 3
+            : r.state === 'queued' ? 2 : r.state === 'pending' ? 1 : 0;
+  let bars = '';
+  for(let i=1;i<=4;i++) bars += `<i class="${i<cur?'on':(i===cur?'cur':'')}"></i>`;
+  let txt = '';
+  if(r.state === 'pending'){
+    txt = '已提交 · 等站长批准后才会进队列';
+  }else if(r.state === 'queued'){
+    const ahead = Number(r.q_ahead) || 0;
+    const eta = r.eta_text ? ` · <span class="eta">预计约 ${esc(r.eta_text)}开始</span>` : '';
+    if(ahead <= 0){
+      txt = '<b>下一个就轮到你</b>' + eta;
+    }else{
+      txt = `前面还有 <b>${ahead}</b> 单 · 你在第 <b>${r.q_pos}</b> 位（共 ${r.q_total} 单）` + eta;
+    }
+  }else if(r.state === 'running'){
+    const left = !r.left_text ? '' : (r.left_text === '快好了' ? ' · <span class="eta">快好了</span>'
+                                    : ` · <span class="eta">预计还剩约 ${esc(r.left_text)}</span>`);
+    txt = `正在制作${r.stage_label?(' · <b>'+esc(r.stage_label)+'</b>'):''}`
+        + (r.elapsed_text?` · 已用 ${esc(r.elapsed_text)}`:'') + left;
+  }else if(r.state === 'done'){
+    txt = '<b>已完成</b>，点下面按钮下载';
+  }
+  const bar = (r.state === 'running' && r.pct)
+    ? `<div class="pbar"><span style="width:${Math.max(3,Math.min(92,r.pct))}%"></span></div>` : '';
+  return `<div class="steps">${bars}</div>${bar}<div class="progtxt">${txt}</div>`;
 }
 
 /* ---------- 白名单 ---------- */

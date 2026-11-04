@@ -66,6 +66,13 @@ def state_of(rid):
         return (r or {}).get("state")
 
 
+def _guest_view(rid):
+    """访客视角的单条视图（不经过 HTTP，直接走 /api/guest/my 用的那个函数）。"""
+    with guest._lock:
+        r = guest._find(rid)
+        return guest._req_view(r) if r else {}
+
+
 def wait_state(rid, want, timeout=14):
     end = time.time() + timeout
     while time.time() < end:
@@ -149,6 +156,79 @@ def main():
         chk("队列自动推进到下一单", state_of(b) == "running" or state_of(c) == "running",
             (state_of(b), state_of(c)))
         chk("推进的是排在前面那单", state_of(b) == "running", (state_of(b), state_of(c)))
+
+        print("\n== 3.5 进度可见性：位次 / 阶段 / 预计 ==")
+        s_q, q4 = jget("/api/admin/queue")
+        rows = q4.get("queue") or []
+        chk("队列每行都带「前面几单」", bool(rows) and all("q_ahead" in x for x in rows),
+            [x.get("q_ahead") for x in rows])
+        chk("第一行的前面是 0 单", rows and rows[0].get("q_ahead") == 0, rows and rows[0].get("q_ahead"))
+        chk("每行都带预计时间文案", bool(rows) and all(x.get("eta_text") for x in rows),
+            [x.get("eta_text") for x in rows])
+        rd = q4.get("running_detail") or []
+        chk("正在做的单独有阶段与已用时间",
+            bool(rd) and bool(rd[0].get("stage")) and bool(rd[0].get("elapsed_text")), rd)
+        chk("阶段已翻成访客话（不是工程原文）",
+            bool(rd) and rd[0].get("stage_label") and "（" not in rd[0].get("stage_label", ""),
+            rd and rd[0].get("stage_label"))
+        chk("进度百分比落在 3~92 之间（不假装做完）",
+            bool(rd) and 3 <= int(rd[0].get("pct") or 0) <= 92, rd and rd[0].get("pct"))
+        chk("给出了单均耗时", bool(q4.get("avg_job_text")), q4.get("avg_job_text"))
+
+        # 访客视角：同一单从 /api/guest/my 看，必须带同样的位次与阶段
+        gid_b = (guest._find(b) or {}).get("gid")
+        mine = guest.my_requests(gid_b).get("requests") or []
+        vb = [x for x in mine if x["id"] == b]
+        chk("访客能看到自己那单的阶段", bool(vb) and bool(vb[0].get("stage_label")), vb)
+        chk("访客能看到已用多久", bool(vb) and bool(vb[0].get("elapsed_text")), vb)
+        vc = _guest_view(c)
+        chk("排队中的访客看到位次与前面几单",
+            vc.get("q_pos") == 1 and vc.get("q_ahead") == 0, vc)
+        chk("排队中的访客看到预计开始时间", bool(vc.get("eta_text")), vc.get("eta_text"))
+
+        # 估算本身：秒数格式化、阶段翻译、中位数抗异常、位次越靠后越久
+        chk("秒数转人话", guest._dur_text(45) == "45 秒"
+            and guest._dur_text(125) == "2 分 5 秒" and guest._dur_text(60) == "1 分",
+            (guest._dur_text(45), guest._dur_text(125), guest._dur_text(60)))
+        chk("阶段翻译：认得后端原文，空值不炸",
+            guest._stage_label("派发任务（下载 + 人声分离 + 推理）…") == "下载 / 分离 / 演唱"
+            and guest._stage_label("归档成品…") == "收尾导出"
+            and guest._stage_label("") == "",
+            (guest._stage_label("派发任务（…）…"), guest._stage_label("")))
+        saved_db = guest._db
+        try:
+            t0 = time.time()
+            guest._db = {"queue": [], "requests": [
+                {"state": "done", "started": t0 - 200, "decided": t0 - 160},   # 40s
+                {"state": "done", "started": t0 - 200, "decided": t0 - 170},   # 30s
+                {"state": "done", "started": t0 - 200, "decided": t0 - 195},   # 5s（异常值）
+            ]}
+            chk("单均耗时取中位数（不被极短/极长的单带偏）",
+                25 <= guest._avg_job_sec() <= 35, guest._avg_job_sec())
+            guest._db = {"queue": [], "requests": [
+                {"id": "run", "state": "running", "started": t0 - 10},
+            ]}
+            e1 = guest._eta_hint("q1", 1, 3)
+            e3 = guest._eta_hint("q3", 3, 3)
+            chk("排得越后预计越久", e3["eta_sec"] > e1["eta_sec"],
+                (e1["eta_sec"], e3["eta_sec"]))
+            chk("预计文案能直接看", bool(e1["eta_text"]) and bool(e3["eta_text"]),
+                (e1["eta_text"], e3["eta_text"]))
+        finally:
+            guest._db = saved_db
+
+        print("\n== 3.6 页面接线（访客页 / 控制台）==")
+        gpage = open(os.path.join(HERE, "guest_page.html"), encoding="utf-8").read()
+        cpage = open(os.path.join(HERE, "console_page.html"), encoding="utf-8").read()
+        chk("访客页有四步进度条", "function stepBar" in gpage and gpage.count("stepBar(r)") >= 1)
+        chk("访客页顶部有「我在什么处境」摘要", 'id="mySum"' in gpage and "mySum" in gpage)
+        chk("访客页用了位次/前面几单/预计三个字段",
+            all(k in gpage for k in ("q_ahead", "q_pos", "eta_text")))
+        chk("访客页展示阶段与已用时间",
+            "stage_label" in gpage and "elapsed_text" in gpage)
+        chk("控制台展示正在做的明细", "running_detail" in cpage and "avg_job_text" in cpage)
+        chk("控制台排队行显示前面几单与预计", "q_ahead" in cpage and "eta_text" in cpage)
+        chk("控制台申请记录状态列带阶段", "stage_label" in cpage and "第 ${r.q_pos} 位" in cpage)
 
         print("\n== 4. 排队中的单可以移出 ==")
         s8, rj = jpost("/api/admin/reject", {"id": c})

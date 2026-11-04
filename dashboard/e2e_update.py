@@ -4,12 +4,14 @@
 不联网、不动真实安装目录：
     · 版本号解析与比较、VERSION 文件读取
     · 检测：有更新 / 已最新 / 网络失败 / 内存缓存 / 强制刷新
+    · **更新包 SHA-256**：正文解析、逐线路比对、被替换的包一律拒装、没公布校验值也拒装
     · 更新：目录映射、数据与模型跳过、zip 越界路径拦截、备份、VERSION 写入
     · HTTP：/api/update/check 与 /api/update/apply（桩掉网络）
     · 控制台页面：版本卡片、弹窗、按钮都在
 
     python e2e_update.py
 """
+import hashlib
 import io
 import json
 import os
@@ -87,6 +89,7 @@ def main():
         "fetch": updater._fetch_release, "download": updater._download,
         "version_file": updater.VERSION_FILE, "backup": updater.BACKUP_DIR,
         "dir_map": updater.DIR_MAP, "cache_file": updater.CACHE_FILE,
+        "get": updater._get, "rank": updater.speed.rank, "allow": updater.ALLOW_UNVERIFIED,
     }
     sandbox = os.path.join(TMP, "install")
     for d in ("dashboard", "RVCSVC-API", "ncmapi", "RVC-WebUI", "setup"):
@@ -144,10 +147,12 @@ def main():
 
         def fake_fetch():
             calls.append(1)
+            z = os.path.join(TMP, "pkg.zip")
+            sha = hashlib.sha256(open(z, "rb").read()).hexdigest() if os.path.isfile(z) else ""
             return {"tag": "v1.0.6", "version": "1.0.6", "name": "RVC 翻唱站 v1.0.6",
                     "notes": "- 修个 bug\n- 加个功能", "url": "https://example.com/rel",
                     "published_at": "2026-11-03T10:00:00Z",
-                    "asset": "", "asset_name": ""}
+                    "asset": "", "asset_name": "", "sha256": sha}
 
         updater._fetch_release = fake_fetch
         updater._cache = {"at": 0.0, "data": None}
@@ -184,12 +189,108 @@ def main():
         chk("网络失败不崩、给中文原因", (not d3.get("ok"))
             and "超时" in (d3.get("error") or ""), d3.get("error"))
 
-        print("\n== 3. 更新：映射 / 跳过 / 越界 / 备份 ==")
+        print("\n== 3. 更新包 SHA-256 校验 ==")
         zpath = os.path.join(TMP, "pkg.zip")
         mk_zip(zpath)
+        good = open(zpath, "rb").read()
+        H = hashlib.sha256(good).hexdigest()
+
+        # --- 3.1 从发布正文里取期望值 ---
+        chk("正文里能取到校验值", updater._pick_sha("update_zip_sha256: `%s`" % H) == H)
+        chk("中文/大写/代码块写法都认",
+            updater._pick_sha("更新包 SHA-256：`%s`" % H.upper()) == H)
+        chk("没有校验值时返回空", updater._pick_sha("这一版没有写校验值") == "")
+        chk("别的哈希不会被误当更新包哈希",
+            updater._pick_sha("installer SHA-256: " + "a" * 64) == "")
+        chk("哈希里的空格/换行能归一",
+            updater._norm_sha(H[:32] + "  " + H[32:] + "\n") == H)
+
+        # --- 3.2 比对本身 ---
+        chk("一致时放行", updater._sha_reason(good, H) == "")
+        chk("不一致时给中文原因", "SHA-256 不一致" in updater._sha_reason(b"tampered", H))
+        chk("没有期望值时绝不放行", updater._sha_reason(good, "") != "")
+
+        # --- 3.3 下载循环：镜像换了包要能拦住 ---
+        # 注意：必须造一个「结构合法、CRC 也算得过」的包 —— 直接改字节会被
+        # _zip_broken() 先拦下，那样测到的就不是哈希校验这条路径了。
+        tpath = os.path.join(TMP, "evil.zip")
+        with zipfile.ZipFile(zpath) as zs, zipfile.ZipFile(tpath, "w", zipfile.ZIP_DEFLATED) as zd:
+            for zi in zs.infolist():
+                blob = zs.read(zi.filename)
+                if zi.filename.endswith("/dashboard/panel.py"):
+                    blob = b"# evil\nimport os\nos.system('calc')\n"
+                zd.writestr(zi, blob)
+        tampered = open(tpath, "rb").read()
+        chk("换过的包仍是合法 zip（否则测的就不是哈希）",
+            updater._zip_broken(tampered) == "" and hashlib.sha256(tampered).hexdigest() != H)
+        updater.speed.rank = lambda cands, **kw: cands[:1]
+
+        updater._get = lambda url, timeout=0: tampered
+        try:
+            updater._download("v1.0.6", H)
+            chk("被替换的包会被拒装", False, "居然下下来了")
+        except RuntimeError as e:
+            chk("被替换的包会被拒装", "SHA-256" in str(e) and "拒绝" in str(e), str(e)[:42])
+
+        seq = [tampered, good]
+        updater.speed.rank = lambda cands, **kw: cands[:2]
+        updater._get = lambda url, timeout=0: seq.pop(0) if seq else good
+        data, _used = updater._download("v1.0.6", H)
+        chk("一条线路被换包时自动换下一条", data == good, len(data))
+
+        updater.ALLOW_UNVERIFIED = False
+        updater._get = lambda url, timeout=0: good
+        updater.speed.rank = lambda cands, **kw: cands[:1]
+        try:
+            updater._download("v1.0.6", "")
+            chk("没公布校验值就拒装", False, "放行了")
+        except RuntimeError as e:
+            chk("没公布校验值就拒装", "校验值" in str(e), str(e)[:36])
+
+        updater.ALLOW_UNVERIFIED = True
+        d_ok, _ = updater._download("v1.0.6", "")
+        chk("显式设 RVC_ALLOW_UNVERIFIED_UPDATE=1 才放行", d_ok == good)
+        updater.ALLOW_UNVERIFIED = False
+        updater._get = real["get"]
+        updater.speed.rank = real["rank"]
+
+        # --- 3.4 检测结果要暴露「这次会不会校验」 ---
         updater._fetch_release = fake_fetch
         updater._cache = {"at": 0.0, "data": None}
-        updater._download = lambda tag: (open(zpath, "rb").read(), "https://stub/pkg.zip")
+        if os.path.isfile(updater.CACHE_FILE):
+            os.remove(updater.CACHE_FILE)
+        d_ck = updater.check(force=True)
+        chk("check 暴露 verified 与 can_auto_update",
+            d_ck.get("verified") is True and d_ck.get("can_auto_update") is True, d_ck.get("sha256"))
+
+        def fetch_nosha():
+            return {"tag": "v1.0.6", "version": "1.0.6", "name": "v1.0.6", "notes": "",
+                    "url": "u", "published_at": "", "asset": "", "asset_name": ""}
+
+        updater._fetch_release = fetch_nosha
+        updater._cache = {"at": 0.0, "data": None}
+        if os.path.isfile(updater.CACHE_FILE):
+            os.remove(updater.CACHE_FILE)
+        res_nosha = updater.apply()
+        chk("发布页没校验值时 apply 直接拒绝",
+            (not res_nosha.get("ok")) and "SHA-256" in (res_nosha.get("msg") or ""),
+            res_nosha.get("msg"))
+
+        # --- 3.5 落盘前还有一道：即使 _download 被换成不校验的，也不许写盘 ---
+        updater._fetch_release = fake_fetch
+        updater._cache = {"at": 0.0, "data": None}
+        updater._download = lambda tag, expect="": (tampered, "stub")
+        res_bad = updater.apply()
+        chk("落盘前二次校验拦住被替换的包",
+            (not res_bad.get("ok")) and "SHA-256" in (res_bad.get("msg") or ""),
+            res_bad.get("msg"))
+        chk("拦下来时一个文件都没写",
+            open(old_panel, encoding="utf-8").read().strip() == "# old panel")
+
+        print("\n== 4. 更新：映射 / 跳过 / 越界 / 备份 ==")
+        updater._fetch_release = fake_fetch
+        updater._cache = {"at": 0.0, "data": None}
+        updater._download = lambda tag, expect="": (open(zpath, "rb").read(), "https://stub/pkg.zip")
         res = updater.apply()
         chk("更新执行成功", res.get("ok"), res.get("msg"))
         chk("版本号已写到 1.0.6", updater.local_version() == "1.0.6", updater.local_version())
@@ -209,8 +310,10 @@ def main():
         chk("旧文件有备份", res.get("backed_up", 0) >= 1 and os.path.isfile(
             os.path.join(res.get("backup") or "", "dashboard", "panel.py")), res.get("backup"))
         chk("提示要重启", "重启" in (res.get("msg") or ""), res.get("msg"))
+        chk("更新结果标明已校验",
+            res.get("verified") is True and len(res.get("sha256") or "") == 64, res.get("sha256"))
 
-        print("\n== 4. 已是最新时拒绝更新 ==")
+        print("\n== 5. 已是最新时拒绝更新 ==")
         updater._fetch_release = same_fetch
         updater._cache = {"at": 0.0, "data": None}
         # 让磁盘缓存也别捣乱
@@ -220,10 +323,10 @@ def main():
         chk("没有新版本就不动手", (not res2.get("ok")) and "最新" in (res2.get("msg") or ""),
             res2.get("msg"))
 
-        print("\n== 5. 更新失败要说清楚 ==")
+        print("\n== 6. 更新失败要说清楚 ==")
         with open(updater.VERSION_FILE, "w", encoding="utf-8") as f:
             f.write("1.0.5\n")      # 本地退回旧版，才会真的有更新可下
-        def bad_dl(tag):
+        def bad_dl(tag, expect=""):
             raise RuntimeError("下载更新包失败：连接 GitHub 超时（网络或代理问题），稍后再试")
 
         updater._fetch_release = fake_fetch
@@ -233,10 +336,10 @@ def main():
         chk("下载失败有中文提示", (not res3.get("ok")) and "下载" in (res3.get("msg") or ""),
             res3.get("msg"))
 
-        print("\n== 6. HTTP 接口 ==")
+        print("\n== 7. HTTP 接口 ==")
         updater._cache = {"at": 0.0, "data": None}
         updater._fetch_release = fake_fetch
-        updater._download = lambda tag: (open(zpath, "rb").read(), "https://stub/pkg.zip")
+        updater._download = lambda tag, expect="": (open(zpath, "rb").read(), "https://stub/pkg.zip")
         with open(updater.VERSION_FILE, "w", encoding="utf-8") as f:
             f.write("1.0.5\n")
         s1, r1 = jget("/api/update/check?force=1")
@@ -252,7 +355,7 @@ def main():
         s4, r4 = jpost("/api/update/apply")
         chk("再点更新给出提示", s4 == 400 and not r4.get("ok"), r4.get("msg"))
 
-        print("\n== 7. 控制台页面元素 ==")
+        print("\n== 8. 控制台页面元素 ==")
         with open(os.path.join(HERE, "console_page.html"), encoding="utf-8") as f:
             html = f.read()
         # v2.0.0：脚本搬到 assets/ 了，页面元素检查要把两边一起看
@@ -264,6 +367,8 @@ def main():
                              ("/api/update/check", "检测接口地址")]:
             chk("页面含" + label, token in html)
         chk("打开控制台会自动检测", "updCheck(false)" in html)
+        chk("页面会说清「安装前核对 SHA-256」",
+            "SHA-256" in html and "can_auto_update" in html)
     finally:
         updater._fetch_release = real["fetch"]
         updater._download = real["download"]
@@ -271,6 +376,9 @@ def main():
         updater.BACKUP_DIR = real["backup"]
         updater.DIR_MAP = real["dir_map"]
         updater.CACHE_FILE = real["cache_file"]
+        updater._get = real["get"]
+        updater.speed.rank = real["rank"]
+        updater.ALLOW_UNVERIFIED = real["allow"]
         srv.shutdown()
         shutil.rmtree(TMP, ignore_errors=True)
         print("\n=== %d 通过 / %d 失败 ===" % (len(PASS), len(FAIL)))

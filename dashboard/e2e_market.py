@@ -512,6 +512,10 @@ def main():
             raise OSError("boom")
         return zip_bytes()
 
+    # v2.1.3 起 _download 要求给出期望哈希（没有就拒装），这里按「官方包」的
+    # 真实字节算出正确的值传进去，顺便让这条用例走一遍正常校验路径。
+    good_sha = hashlib.sha256(zip_bytes()).hexdigest()
+
     real_get, real_rank = updater._get, updater.speed.rank
     updater._get = fake_get
 
@@ -524,7 +528,7 @@ def main():
         return out
 
     updater.speed.rank = fake_rank
-    data, used = updater._download("v9.9.9")
+    data, used = updater._download("v9.9.9", good_sha)
     chk("按测速顺序优先用最快的线路", "ghfast.top" in used, used)
     chk("下载成功返回 PK 开头的数据", data[:2] == b"PK")
     chk("记录了线路测速明细", len(updater._last_download.get("lines") or []) == 8,
@@ -541,7 +545,7 @@ def main():
         return zip_bytes()
 
     updater._get = fake_get2
-    data, used = updater._download("v9.9.9")
+    data, used = updater._download("v9.9.9", good_sha)
     chk("最快线路失败后自动换线", used and "ghfast" not in used, used)
     chk("失败后仍能拿到数据", data[:2] == b"PK")
 
@@ -555,7 +559,7 @@ def main():
         return zip_bytes()
 
     updater._get = fake_get_bad
-    data, used = updater._download("v9.9.9")
+    data, used = updater._download("v9.9.9", good_sha)
     chk("坏包不会被当成好包用", "ghfast" not in used, used)
     chk("坏包之后换了别的线路", len(seen) >= 2 and data[:2] == b"PK")
 
@@ -565,7 +569,7 @@ def main():
 
     updater._get = fake_get3
     try:
-        updater._download("v9.9.9")
+        updater._download("v9.9.9", good_sha)
         chk("所有线路都失败时抛中文错误", False)
     except RuntimeError as e:
         chk("所有线路都失败时抛中文错误", "下载更新包失败" in str(e), str(e))

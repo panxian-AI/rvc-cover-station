@@ -257,6 +257,14 @@ def test_release_plumbing():
     chk("压根不是 zip 的也判坏", bool(updater._zip_broken(b"not a zip at all")))
     chk("下载流程里真的调了校验", "broken = _zip_broken(data)" in usrc)
 
+    # v2.1.3：CRC 只防传输损坏，防篡改靠 SHA-256；两条路都必须真的接上
+    chk("下载时比对 SHA-256（不只是 CRC）",
+        "_sha_reason(data, want)" in usrc and "_pick_sha(" in usrc)
+    chk("正文里的校验值有锚点可解析", "update[ _-]?zip[ _-]?sha-?256" in usrc)
+    chk("没公布校验值时默认拒装",
+        "ALLOW_UNVERIFIED" in usrc and "RVC_ALLOW_UNVERIFIED_UPDATE" in usrc)
+    chk("落盘前还有第二道校验", usrc.count("_sha_reason(data,") >= 2)
+
     missing = os.path.join(HERE, "_nope_requirements.txt")
     r = deps.check(force=True, path=missing)
     chk("清单缺失时不再假装 ok", r.get("ok") is False and bool(r.get("missing_file")),

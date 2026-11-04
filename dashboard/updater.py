@@ -13,10 +13,14 @@
       ncmapi / setup / RVC-WebUI），**用户数据与模型一律不碰**（它们在 .gitignore 里，
       zip 里根本没有；另外还有一层白名单外的跳过规则兜底）；
     · 覆盖前把要改的文件备份到 _update_backup/<时间戳>/，出问题能手工找回；
+    · **下完先核 SHA-256**：期望值取自 Release 正文（api.github.com，HTTPS，镜像改不了），
+      和实际字节对不上就换线路，所有线路都对不上就拒装 —— 否则一个快的恶意镜像
+      就能给所有已装机器下发任意代码（安装器里那 7 个加速前缀不受我们控制）；
     · 失败一律返回 {ok: False, msg: 中文原因}，绝不抛异常到路由层。
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -34,7 +38,7 @@ from paths import DATA, DASH, PROJ, RVC_ROOT
 import speed
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "2.1.2"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "2.1.3"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")
@@ -42,6 +46,11 @@ BACKUP_DIR = os.path.join(PROJ, "_update_backup")
 CACHE_TTL = 600                      # 秒：同一个结果 10 分钟内不重复查
 HTTP_TIMEOUT = 12
 MAX_ZIP = 220 * 1024 * 1024          # 更新包大小上限，防被塞大文件
+
+# 发布页没公布校验值时是否放行。默认不放行（fail closed）：
+# 唯一能证明「这个包是我发的那一个」的东西就是正文里的 SHA-256，
+# 没有它就等于把安装器的 7 个第三方加速前缀当成可信源。
+ALLOW_UNVERIFIED = os.environ.get("RVC_ALLOW_UNVERIFIED_UPDATE", "") == "1"
 
 _UA = {"User-Agent": "rvc-cover-station-updater"}
 
@@ -123,11 +132,15 @@ def _fetch_release() -> dict:
     tag = str(d.get("tag_name") or "").strip()
     if not tag:
         raise ValueError("GitHub 没有返回版本号")
+    body = d.get("body") or ""
     return {
         "tag": tag,
         "version": tag.lstrip("vV"),
         "name": d.get("name") or tag,
-        "notes": d.get("body") or "",
+        "notes": body,
+        # 更新包的期望哈希：只能从正文来。api.github.com 是 HTTPS，镜像动不了；
+        # 而正文是随 Release 一起创建的，改它需要仓库写权限。
+        "sha256": _pick_sha(body),
         "url": d.get("html_url") or ("https://github.com/%s/releases/tag/%s" % (REPO, tag)),
         "published_at": d.get("published_at") or "",
         "asset": (d.get("assets") or [{}])[0].get("browser_download_url") or "",
@@ -169,7 +182,7 @@ def check(force: bool = False) -> dict:
         disk = _load_disk_cache()
         if disk:
             rel = {k: disk.get(k) for k in ("tag", "version", "name", "notes", "url",
-                                            "published_at", "asset", "asset_name")}
+                                            "published_at", "asset", "asset_name", "sha256")}
     if rel is None:
         try:
             rel = _fetch_release()
@@ -189,9 +202,15 @@ def check(force: bool = False) -> dict:
 
 def _wrap(current: str, rel: dict, cached: bool) -> dict:
     latest = rel.get("version") or ""
+    sha = _norm_sha(rel.get("sha256"))
     return {"ok": True, "current": current, "latest": latest, "tag": rel.get("tag"),
             "name": rel.get("name"), "notes": rel.get("notes") or "",
             "url": rel.get("url"), "published_at": rel.get("published_at") or "",
+            "sha256": sha,
+            # verified = 发布页公布了校验值，这次更新会逐字节核对；
+            # can_auto_update = 能不能点「立即更新」（没校验值且没显式放行就不让点）
+            "verified": bool(sha),
+            "can_auto_update": bool(sha) or ALLOW_UNVERIFIED,
             "has_update": bool(latest) and is_newer(latest, current),
             "cached": cached, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -235,12 +254,48 @@ def _line_name(url: str) -> str:
 _last_download = {"url": "", "lines": [], "speed": 0.0}
 
 
+# ---------------- 校验值 ----------------
+# 发布正文里的锚点，两种写法都认（英文给机器看，中文给人看）
+_SHA_IN_BODY = re.compile(
+    r"(?:update[ _-]?zip[ _-]?sha-?256|更新包\s*sha-?256)[^0-9a-fA-F]{0,24}([0-9a-fA-F]{64})",
+    re.I)
+
+
+def _norm_sha(s) -> str:
+    """把可能带前缀 / 空格 / 大写的哈希归一成 64 位小写；不像哈希就返回 ""。"""
+    t = str(s or "").strip().lower()
+    t = re.sub(r"^sha-?256\s*:\s*", "", t)
+    t = re.sub(r"^0x", "", t)
+    t = re.sub(r"[\s:_-]", "", t)
+    return t if re.fullmatch(r"[0-9a-f]{64}", t) else ""
+
+
+def _pick_sha(text) -> str:
+    """从 Release 正文里取更新包校验值，取不到返回 ""。"""
+    m = _SHA_IN_BODY.search(str(text or ""))
+    return _norm_sha(m.group(1)) if m else ""
+
+
+def _sha_reason(data: bytes, expect: str) -> str:
+    """比对实际字节与期望值。通过返回 ""，不通过返回中文原因。"""
+    want = _norm_sha(expect)
+    if not want:
+        return "没有可比对的校验值"
+    got = hashlib.sha256(data).hexdigest()
+    if got == want:
+        return ""
+    return "SHA-256 不一致（期望 %s…，实际 %s…）" % (want[:12], got[:12])
+
+
 def _zip_broken(data: bytes) -> str:
     """整包 CRC 校验。返回出问题的条目名或异常描述，全好返回 ""。
 
     为什么必须做：apply() 是边解压边覆盖，包里有一处坏，前面几十个文件已经写进
     去了，走到坏的那一条才抛异常——留下一半新一半旧的代码，还得靠 _update_backup
     手工恢复。这里先验一遍，坏包直接换线路。
+
+    注意：CRC 只防「传输损坏」，不防「有人故意换包」——篡改过的包自己也带着
+    算得过的 CRC。防篡改靠 _sha_reason()，两者都要过。
     """
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -250,13 +305,23 @@ def _zip_broken(data: bytes) -> str:
         return "%s: %s" % (type(e).__name__, e)
 
 
-def _download(tag: str) -> tuple[bytes, str]:
-    """先给所有线路测速，再按实测速度从上到下试。
+def _download(tag: str, expect: str = "") -> tuple[bytes, str]:
+    """先给所有线路测速，再按实测速度从上到下试；每条都要过 CRC 与 SHA-256。
 
     为什么不是「按固定顺序逐个试」：加速镜像有的快有的半死，固定顺序要等到
     超时（每条 60 秒）才换下一条，用户体感就是「点了更新一直转圈」。这里先花
     一两秒并行探 128KB，直接挑最快的，失败再降级到次快的。
+
+    为什么速度快的也要先验哈希：测速排名意味着「谁快听谁的」，而加速前缀
+    是第三方服务。只靠 CRC 的话，控制了任一镜像的人把包换掉，CRC 照样过，
+    于是能发给所有已装机器。期望值来自 Release 正文（HTTPS API），镜像改不了。
     """
+    want = _norm_sha(expect)
+    if not want and not ALLOW_UNVERIFIED:
+        raise RuntimeError(
+            "发布页没有公布更新包的 SHA-256 校验值，无法确认下载到的是官方包，"
+            "已拒绝自动更新。请到 Release 页面手动下载完整安装包安装。")
+
     urls = _zip_urls(tag)
     cands = [{"label": _line_name(u), "url": u} for u in urls]
     ranked = []
@@ -265,31 +330,45 @@ def _download(tag: str) -> tuple[bytes, str]:
     except Exception:
         ranked = []
     order = ranked or cands
-    _last_download["lines"] = [
-        {"label": c["label"], "ok": bool(c.get("ok")), "kbps": c.get("kbps") or 0,
-         "ms": c.get("ms") or 0} for c in order]
+    lines = [{"label": c["label"], "ok": bool(c.get("ok")), "kbps": c.get("kbps") or 0,
+              "ms": c.get("ms") or 0, "why": ""} for c in order]
+    _last_download["lines"] = lines
 
     last = ""
+    mismatch = 0
     for i, c in enumerate(order):
         u = c["url"]
         try:
             data = _get(u, timeout=90)
             if len(data) < 1024 or data[:2] != b"PK":
-                last = "返回内容不是 zip"
+                last = lines[i]["why"] = "返回内容不是 zip"
                 continue
             if len(data) > MAX_ZIP:
-                last = "更新包过大（%d 字节），已放弃" % len(data)
+                last = lines[i]["why"] = "包过大（%d 字节）" % len(data)
                 continue
             broken = _zip_broken(data)
             if broken:
-                last = "更新包不完整（%s），换线路重试" % broken
+                last = lines[i]["why"] = "包不完整（%s）" % broken
+                continue
+            bad = _sha_reason(data, want) if want else ""
+            if bad:
+                mismatch += 1
+                last = lines[i]["why"] = "校验失败：" + bad
                 continue
             _last_download["url"] = u
             _last_download["speed"] = c.get("kbps") or 0
             _last_download["tries"] = i + 1
+            _last_download["sha256"] = hashlib.sha256(data).hexdigest()
+            lines[i]["why"] = "校验通过"
             return data, u
         except Exception as e:
-            last = _explain(e)
+            last = lines[i]["why"] = _explain(e)
+
+    if mismatch and mismatch == len(order):
+        raise RuntimeError(
+            "所有线路给出的更新包都与发布页公布的 SHA-256 对不上，已拒绝安装。"
+            "这通常意味着某个加速镜像返回了被替换的内容；"
+            "请到 Release 页面手动下载完整安装包安装。")
     raise RuntimeError("下载更新包失败：%s" % (last or "所有线路都不通"))
 
 
@@ -359,10 +438,23 @@ def _apply_locked() -> dict:
     if not info.get("has_update"):
         return {"ok": False, "msg": "已经是最新版（%s），不需要更新" % info.get("current")}
 
+    expect = _norm_sha(info.get("sha256"))
+    if not expect and not ALLOW_UNVERIFIED:
+        return {"ok": False, "msg": "发布页没有公布更新包的 SHA-256 校验值，"
+                                    "没法确认下载到的是官方包，已拒绝自动更新。"
+                                    "请到 Release 页面手动下载完整安装包安装。"}
+
     try:
-        data, used = _download(tag)
+        data, used = _download(tag, expect)
     except Exception as e:
         return {"ok": False, "msg": str(e)}
+
+    # 落盘前再核一次。_download 已经验过，这里是为了「以后有人重构
+    # _download、把校验弄丢了」也不至于直接写坏盘——解压是会覆盖文件的。
+    if expect:
+        bad = _sha_reason(data, expect)
+        if bad:
+            return {"ok": False, "msg": "更新包校验未通过（%s），已拒绝写入磁盘。" % bad}
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = os.path.join(BACKUP_DIR, stamp)
@@ -450,8 +542,10 @@ def _apply_locked() -> dict:
     return {"ok": True, "from": info.get("current"), "to": new_ver,
             "written": written, "backed_up": backed, "skipped": skipped,
             "backup": backup if backed else "", "source": used,
+            "sha256": expect or _last_download.get("sha256") or "",
+            "verified": bool(expect),
             "lines": _last_download.get("lines") or [],
             "speed_kbps": _last_download.get("speed") or 0,
             "tries": _last_download.get("tries") or 1,
-            "msg": "已更新到 %s（替换 %d 个文件）。重启面板生效："
+            "msg": "已更新到 %s（替换 %d 个文件，已核对 SHA-256）。重启面板生效："
                    "关掉这个窗口，重新双击 启动RVC.bat" % (new_ver, written)}

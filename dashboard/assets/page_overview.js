@@ -151,12 +151,18 @@ async function updCheck(force){
     }
     $('#verLatest').textContent = 'v' + (d.latest || '?');
     if(d.has_update){
-      st.className = 'vtag new'; st.textContent = '有新版本';
-      $('#btnUpd').style.display = '';
+      const canAuto = d.can_auto_update !== false;
+      st.className = 'vtag new';
+      st.textContent = canAuto ? '有新版本' : '有新版本（需手动装）';
+      $('#btnUpd').style.display = canAuto ? '' : 'none';
       const day = String(d.published_at || '').slice(0, 10);
+      // 没有校验值就明说，别让「立即更新」变成一个装什么都不知道的按钮
+      const safe = d.verified ? '安装前会逐字节核对 SHA-256'
+                              : '发布页没公布校验值，只能手动下载安装包';
       $('#verNote').textContent = (d.name ? d.name + ' · ' : '') + (day ? '发布于 ' + day + ' · ' : '')
-        + '点「立即更新」先看更新内容，确认后只替换代码（不动模型和个人数据）';
-      if(!UPD_POPPED){ UPD_POPPED = true; updShowModal(); }   // 每次打开控制台弹一次
+        + (canAuto ? '点「立即更新」先看更新内容，确认后只替换代码（不动模型和个人数据）；' : '')
+        + safe;
+      if(canAuto && !UPD_POPPED){ UPD_POPPED = true; updShowModal(); }   // 每次打开控制台弹一次
     }else{
       st.className = 'vtag'; st.textContent = '已是最新';
       $('#btnUpd').style.display = 'none';
@@ -238,7 +244,14 @@ function updShowModal(){
   if(!UPD || !UPD.has_update){ toast('当前已经是最新版'); return; }
   $('#updTitle').textContent = '发现新版本 v' + UPD.latest + '（当前 v' + UPD.current + '）';
   $('#updMeta').textContent = (UPD.name || '') + (UPD.published_at
-    ? ' · 发布于 ' + String(UPD.published_at).slice(0, 10) : '');
+    ? ' · 发布于 ' + String(UPD.published_at).slice(0, 10) : '')
+    + (UPD.verified ? ' · 安装包 SHA-256 ' + String(UPD.sha256).slice(0, 12) + '…' : '');
+  const go = $('#updGo');
+  if(go){
+    // 没公布校验值就不给「一键装」，否则等于闭着眼睛覆盖代码
+    go.disabled = UPD.can_auto_update === false;
+    go.textContent = UPD.can_auto_update === false ? '需手动下载安装包' : '⬆ 立即更新';
+  }
   $('#updBody').innerHTML = mdRender(UPD.notes || '（这一版没有写更新说明）');
   $('#updLink').href = UPD.url || '#';
   $('#updBody').scrollTop = 0;
@@ -260,7 +273,9 @@ async function updApply(){
     if(d.ok){
       const extra = d.source ? '\n\n下载线路：' + d.source
         + (d.speed_kbps ? '（实测约 ' + Math.round(d.speed_kbps) + ' KB/s）' : '') : '';
-      alert(d.msg + extra + (d.backup ? '\n\n改动前的文件已备份到：\n' + d.backup : ''));
+      const sha = d.verified && d.sha256
+        ? '\n\n安装包 SHA-256 已核对：' + String(d.sha256).slice(0, 16) + '…' : '';
+      alert(d.msg + sha + extra + (d.backup ? '\n\n改动前的文件已备份到：\n' + d.backup : ''));
       toast('已更新到 v' + (d.to || ''));
     }else{
       alert(d.msg || '更新失败');

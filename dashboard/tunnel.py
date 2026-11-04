@@ -46,7 +46,9 @@ def run():
     print("正在建立隧道（约 5~15 秒）…")
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          stdin=subprocess.DEVNULL, bufsize=1, text=True,
-                         encoding="utf-8", errors="replace")
+                         encoding="utf-8", errors="replace",
+                         # cloudflared 是控制台程序，不指定这个就会多一个黑窗口
+                         creationflags=0x08000000)
     shown = False
     try:
         for line in p.stdout:

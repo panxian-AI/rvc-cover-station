@@ -1,4 +1,5 @@
 import os,sys
+import subprocess
 parent_directory = os.path.dirname(os.path.abspath(__file__))
 import gc
 import logging,pdb
@@ -12,6 +13,20 @@ from uvr5.lib.lib_v5 import nets_61968KB as Nets
 from uvr5.lib.lib_v5 import spec_utils
 from uvr5.lib.lib_v5.model_param_init import ModelParameters
 from uvr5.lib.utils import inference
+
+
+def _quiet(cmd):
+    """静默跑外部命令（这里是 ffmpeg 转码）。
+
+    原来用 os.system：在没有控制台的进程里（控制台以静默方式启动时就是这种），
+    Windows 会给 cmd.exe 新分配一个黑窗口，用户面前就闪一下。
+    """
+    try:
+        subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=0x08000000 if os.name == "nt" else 0)
+    except Exception:
+        pass
 
 
 class AudioPre:
@@ -161,7 +176,7 @@ class AudioPre:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    os.system("ffmpeg -i %s -vn %s -q:a 2 -y" % (path, opt_format_path))
+                    _quiet("ffmpeg -i %s -vn %s -q:a 2 -y" % (path, opt_format_path))
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)
@@ -206,7 +221,7 @@ class AudioPre:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    os.system("ffmpeg -i %s -vn %s -q:a 2 -y" % (path, opt_format_path))
+                    _quiet("ffmpeg -i %s -vn %s -q:a 2 -y" % (path, opt_format_path))
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)

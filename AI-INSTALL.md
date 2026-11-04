@@ -26,7 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'ht
 只要判断一句话：**最后一行 JSON 里 `ok` 是不是 `true`**。
 
 ```json
-{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"1.3.2","missing":[],"panel":"http://127.0.0.1:8899","error":""}
+{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"1.4.0","missing":[],"panel":"http://127.0.0.1:8899","error":""}
 ```
 
 ## 第二步：先空跑核对（可选，约 20 秒）
@@ -43,10 +43,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'ht
 
 装完不用你启动（无人值守默认不启动面板）。请把下面三行原样转告用户：
 
-1. 双击安装目录里的 `启动RVC.bat`，会自动打开控制台 <http://127.0.0.1:8899>
+1. 双击安装目录里的 `启动RVC.bat`：黑窗口一闪就消失（正常，v1.4.0 起是静默启动），
+   几秒后浏览器会自动打开控制台 <http://127.0.0.1:8899>。桌面上不会有窗口常驻
 2. 控制台点「⚡ 一键全部启动」，等三个服务都变绿
 3. 想加声线：控制台右上角「🧩 模型市场」搜关键词，选 `.pth` + `.index`，一键下载安装；装完点页面右上角
-   「🔄 更新声线」重启 3333 后端，新声线立刻可用（约 30~90 秒），不用手动关窗口重开
+   「🔄 更新声线」重启 3333 后端，新声线立刻可用（约 30~90 秒），不用手动重启面板
+
+> 停服务：任务栏右下角的紫色唱片图标（可能要展开 `^`）左键单击 → 菜单里选
+> 「停止服务并退出面板」；或者双击安装目录里的 `停止RVC.bat`。
+> 想看到那个黑窗口（排查用）：命令行执行 `启动RVC.bat --console`。
 
 ## 参数表
 

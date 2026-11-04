@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.3.2-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v1.4.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -59,6 +59,15 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
 - 🧵 **翻唱提速**（v1.3.2）：伴奏变调与推理并行、同一模型不再重复加载，
   每首歌再省 5~10 秒；后端日志会打「本首耗时」分段账
+- 🪟 **静默启动**（v1.4.0）：双击 `启动RVC.bat` 不再挂着黑窗口——由 `pythonw`
+  在后台拉起面板、自动开浏览器，窗口一闪即走；出错不闷掉，弹原生消息框说清
+  原因和下一步。排障想看窗口就 `启动RVC.bat --console`（或 `set RVC_CONSOLE=1`）
+- 🖱 **任务栏图标**（v1.4.0）：通知区常驻一个图标，**左键单击呼出菜单**——打开
+  控制台 / 打开安装目录 / 一键开启服务 / 停止全部服务 / 停止服务并退出面板；
+  左键双击直接开控制台。黑窗口没了也能一键收摊
+- 📜 **启动日志进控制台**（v1.4.0）：静默之后面板自己的输出落在
+  `dashboard/panel_console.log`，控制台「服务状态」里点「📜 启动日志」就能看，
+  超 2MB 自动轮转；再也没有「窗口一闪，什么都没看见」
 - 🔄 版本更新：打开控制台自动查最新版，有新版本弹窗显示更新内容，一键更新代码
   （**8 条线路先并行测速再挑最快的下**，失败自动换线；旧文件自动备份；
   模型、成品、访客记录、白名单、设置都不动）
@@ -78,7 +87,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 15 套回归测试共 670 项断言（`dashboard/e2e_*.py`）
+- 附带 16 套回归测试共 729 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

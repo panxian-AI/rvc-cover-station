@@ -127,13 +127,19 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
     <div class="svc" id="svc"></div>
     <div id="perfLine" class="hint" style="margin-top:8px">性能档位：读取中…</div>
     <div id="ncmCfg" class="hint" style="margin-top:8px">网易云配置：读取中…</div>
+    <div id="silentLine" class="hint" style="margin-top:8px;display:none"></div>
     <div class="row">
       <button class="green" id="btnStart" onclick="act('start_all')">⚡ 一键开启服务</button>
       <button class="red" id="btnStop" onclick="act('stop_all')">⏹ 全部停止（面板留着）</button>
       <span class="sp"></span>
       <button class="gray" onclick="refresh()">刷新</button>
     </div>
-    <div class="hint">开启后要等 1~2 分钟（后端要 20 秒以上才监听）。这里的「全部停止」只停后端服务，面板和公网隧道都留着；要连面板和隧道一起关，去「监控面板」用一键退出，或双击根目录的「停止RVC.bat」。</div>
+    <div class="row" style="margin-top:8px">
+      <button class="gray mini" id="btnLog" onclick="logToggle()">📜 启动日志</button>
+      <span class="hint" style="margin-top:0">静默启动没有终端窗口；面板自己的输出都在这里</span>
+    </div>
+    <pre id="logPre" style="display:none;max-height:280px;overflow:auto;background:#0c1220;border:1px solid #1e2a40;border-radius:8px;padding:10px;font-size:11.5px;line-height:1.6;color:#b7c6dd;margin-top:8px;white-space:pre-wrap;word-break:break-all"></pre>
+    <div class="hint">开启后要等 1~2 分钟（后端要 20 秒以上才监听）。这里的「全部停止」只停后端服务，面板和公网隧道都留着；要连面板和隧道一起关，去「监控面板」用一键退出，或双击根目录的「停止RVC.bat」，也可以点任务栏图标选「停止服务并退出面板」。</div>
   </div>
 
   <div class="card">
@@ -298,7 +304,40 @@ async function loadStatus(){
                      + '双击 <b>RVCSVC\\ncmapi\\设置网易云Cookie.bat</b>，登录后复制 Cookie 粘贴进去，再重启网易云。</span>');
     const pl = $('#perfLine');
     if(pl && d.perf_text) pl.textContent = '性能档位：' + d.perf_text;
+    const sl = $('#silentLine');
+    if(sl){
+      if(d.silent || d.tray){
+        sl.style.display = '';
+        sl.innerHTML = (d.silent ? '启动方式：<b>静默</b>（没有终端窗口，浏览器已自动打开）' : '启动方式：带窗口（排查模式）')
+          + (d.tray
+              ? ' · 任务栏图标已就绪：<b>左键单击呼出菜单</b>（可停服务、开目录），左键双击打开本页'
+              : ' · <span style="color:#f0c674">任务栏图标没挂上</span>，停服务请双击根目录的 停止RVC.bat');
+      }else{
+        sl.style.display = 'none';
+      }
+    }
   }catch(e){ $('#svc').innerHTML = '<div class="s">状态读取失败</div>'; }
+}
+
+/* ---------- 启动日志（静默模式下原本在黑窗口里的那些输出） ---------- */
+let LOG_OPEN = false;
+async function logToggle(){
+  const pre = $('#logPre'), btn = $('#btnLog');
+  LOG_OPEN = !LOG_OPEN;
+  if(!LOG_OPEN){ pre.style.display='none'; btn.textContent='📜 启动日志'; return; }
+  pre.style.display = '';
+  btn.textContent = '📜 收起日志';
+  await logLoad();
+}
+async function logLoad(){
+  const pre = $('#logPre');
+  if(!pre || !LOG_OPEN) return;
+  try{
+    const d = await (await fetch('/api/panel_log', {cache:'no-store'})).json();
+    const body = (d.lines||[]).join('\n');
+    pre.textContent = body || '（还没有日志：带窗口启动时输出在终端里，不在这个文件）';
+    pre.scrollTop = pre.scrollHeight;
+  }catch(e){ pre.textContent = '读取失败：' + e; }
 }
 
 async function loadPublic(){
@@ -966,7 +1005,7 @@ async function updApply(){
   finally{ UPD_BUSY = false; btn.disabled = false; btn.textContent = '⬆ 立即更新'; }
 }
 
-function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadUnlock(); loadAdv(); loadSec(); loadMarket(); }
+function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadUnlock(); loadAdv(); loadSec(); loadMarket(); logLoad(); }
 refresh(); setInterval(refresh, 8000);
 updCheck(false);          // 每次打开控制台都查一次（服务端 10 分钟缓存，不会刷爆额度）
 

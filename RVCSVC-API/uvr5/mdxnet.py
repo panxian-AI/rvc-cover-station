@@ -1,4 +1,5 @@
 import os
+import subprocess
 import logging
 import traceback
 logger = logging.getLogger(__name__)
@@ -11,6 +12,21 @@ from tqdm import tqdm
 
 cpu = 'cuda' if torch.cuda.is_available() else 'cpu'
 is_half = cpu == torch.device("cuda")
+
+
+def _quiet(cmd):
+    """静默跑外部命令。
+
+    原来用 os.system：进程没有控制台时（静默启动就是这种），Windows 会给
+    cmd.exe 新分配一个黑窗口，桌面上闪一下。
+    """
+    try:
+        subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=0x08000000 if os.name == "nt" else 0)
+    except Exception:
+        pass
+
 
 class ConvTDFNetTrim:
     def __init__(
@@ -226,7 +242,7 @@ class Predictor:
             opt_path_vocal = path_vocal[:-4] + ".%s" % format
             opt_path_other = path_other[:-4] + ".%s" % format
             if os.path.exists(path_vocal):
-                os.system(
+                _quiet(
                     "ffmpeg -i %s -vn %s -q:a 2 -y" % (path_vocal, opt_path_vocal)
                 )
                 if os.path.exists(opt_path_vocal):
@@ -235,7 +251,7 @@ class Predictor:
                     except:
                         pass
             if os.path.exists(path_other):
-                os.system(
+                _quiet(
                     "ffmpeg -i %s -vn %s -q:a 2 -y" % (path_other, opt_path_other)
                 )
                 if os.path.exists(opt_path_other):
@@ -279,7 +295,7 @@ class MDXNetDereverb:
                 os.path.join(os.environ["TEMP"]),
                 os.path.basename(input),
             )
-            os.system(
+            _quiet(
                 f'ffmpeg -i "{input}" -vn -acodec pcm_s16le -ac 2 -ar 44100 "{tmp_path}" -y'
             )
             input = tmp_path

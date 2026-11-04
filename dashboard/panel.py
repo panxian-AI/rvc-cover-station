@@ -41,6 +41,22 @@ except Exception as _e:      # 极端情况下没有 perf.py，退回全默认
     perf_mod = None
     print("⚠️ 性能档位模块未加载: %s" % _e)
 
+# 任务栏通知区图标：静默启动后没有黑窗口，托盘就是用户唯一的常驻入口。
+# 起不来（无桌面 / 远程会话限制）只打一行日志，绝不能拦住面板。
+try:
+    import tray as tray_mod
+except Exception as _e:
+    tray_mod = None
+    print("⚠️ 托盘模块未加载: %s" % _e)
+
+_TRAY = {"obj": None}
+
+
+def tray_up():
+    """托盘是否真的挂上了（控制台据此显示「托盘已就绪」）。"""
+    obj = _TRAY.get("obj")
+    return bool(obj and obj.hwnd)
+
 # 翻唱页（搜歌 / 选模型 / 成品库 / 缓存管理），同端口挂在 /cover
 try:
     import cover as cover_mod
@@ -470,6 +486,27 @@ def log_tail(n=14):
         return {"file": os.path.basename(p), "lines": ["读取失败: %s" % e]}
 
 
+def panel_log_tail(n=120):
+    """面板自己的控制台输出（静默启动时它落在 dashboard/panel_console.log）。
+
+    静默模式的代价是看不到黑窗口里的启动横幅；有了这个接口，控制台上点开
+    「启动日志」就能看到同样的内容，排障不用再去找窗口。
+    """
+    p = os.path.join(HERE, "panel_console.log")
+    if not os.path.isfile(p):
+        return {"file": None, "lines": [], "size": 0}
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 64000))
+            data = f.read().decode("utf-8", "replace")
+        lines = [l for l in data.splitlines() if l.strip()][-n:]
+        return {"file": os.path.basename(p), "lines": lines, "size": size}
+    except Exception as e:
+        return {"file": os.path.basename(p), "lines": ["读取失败: %s" % e], "size": 0}
+
+
 def active_index_from_log():
     """从后端日志里抓当前生效的 index（能顺便验证索引有没有真的接上）"""
     p = newest_api_log()
@@ -552,6 +589,8 @@ def collect():
         "ncm_preflight": ncm_preflight(),
         "perf": perf_mod.probe() if perf_mod else {},
         "perf_text": perf_mod.describe() if perf_mod else "",
+        "silent": os.environ.get("RVC_PANEL_SILENT") == "1",
+        "tray": tray_up(),
         "log": log_tail(),
     }
 
@@ -667,7 +706,14 @@ def start(target):
     # 兜底：直接跑 bat
     if os.path.isfile(cfg["bat"]):
         try:
-            os.startfile(cfg["bat"])
+            # 仍然要静默：这条路径只在解释器缺失（安装不完整）时才会走到，
+            # 但一旦弹窗，用户就会看到「点了下服务，桌面多出几个黑窗口」。
+            # stdin 接空设备是有意的 —— 这些 bat 结尾的 pause 会立刻返回，
+            # 不会留下一个看不见的进程挂在那里等按键。
+            subprocess.Popen(["cmd", "/c", cfg["bat"]], cwd=os.path.dirname(cfg["bat"]),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, close_fds=True,
+                             creationflags=0x00000008 | 0x00000200 | 0x08000000)
             return True, "已通过脚本启动 %s（若几十秒后端口仍关闭，请手动双击 %s）" % (
                 target, os.path.basename(cfg["bat"]))
         except Exception as e:
@@ -1349,6 +1395,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, json.dumps(public_info(), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({"ok": False, "msg": str(e)}, ensure_ascii=False))
+        elif path == "/api/panel_log":
+            try:
+                self._send(200, json.dumps(panel_log_tail(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({"file": None, "lines": [str(e)], "size": 0},
+                                           ensure_ascii=False))
         elif path == "/favicon.ico":
             self._send(204, b"")
         else:
@@ -1949,8 +2001,101 @@ MARKET_PAGE = _read_page("market_page.html",
                          "<h1>模型市场页面缺失</h1><p>dashboard/market_page.html 不见了</p>")
 
 
+def _open_dir(path):
+    """用资源管理器打开目录（不是控制台，不会弹黑窗）。"""
+    try:
+        os.startfile(path)
+    except Exception:
+        pass
+
+
+def _tray_shutdown():
+    """托盘菜单的「停止服务并退出面板」。"""
+    try:
+        stop_all()
+    except Exception:
+        pass
+    stop_tray()
+    time.sleep(0.5)
+    os._exit(0)
+
+
+def tray_items():
+    """托盘菜单。顺序按「最常点的放上面」，危险动作放最后并有提示。"""
+    url = "http://127.0.0.1:%d/" % PORT
+    return [
+        ("打开控制台", lambda: webbrowser.open(url)),
+        ("打开安装目录", lambda: _open_dir(STACK)),
+        None,
+        ("一键开启服务", start_all),
+        ("停止全部服务（面板留着）", lambda: stop_all(include_tunnel=False)),
+        None,
+        ("停止服务并退出面板", _tray_shutdown),
+    ]
+
+
+def start_tray():
+    if not tray_mod or not tray_mod.should_start():
+        return None
+    try:
+        obj = tray_mod.start("RVC 翻唱站 · 左键呼出菜单 · 控制台 %s" % ("127.0.0.1:%d" % PORT),
+                             tray_items(),
+                             on_double=lambda: webbrowser.open("http://127.0.0.1:%d/" % PORT))
+    except Exception as e:
+        print("托盘图标启动失败（不影响网页控制台）: %s" % e)
+        return None
+    if obj.hwnd:
+        _TRAY["obj"] = obj
+        print("  任务栏图标: 已放置（左键单击呼出菜单，左键双击打开控制台）")
+    else:
+        print("  任务栏图标: 没放上（%s），网页控制台照常可用" % (obj.error or "未知原因"))
+    return obj
+
+
+def stop_tray():
+    obj = _TRAY.get("obj")
+    if obj:
+        try:
+            obj.stop()
+        except Exception:
+            pass
+        _TRAY["obj"] = None
+
+
+def _enable_ansi():
+    """让 Windows 控制台认识 ANSI 颜色。
+
+    以前是 `os.system("")` —— 一个空命令，副作用是让 cmd 打开 VT 处理。
+    但静默启动时面板**没有控制台**，那一下会凭空新开一个看到就消失的黑窗口
+    （正是这一版要消灭的东西）。改成直接调 SetConsoleMode，没控制台就静默失败。
+    """
+    if os.name != "nt":
+        return
+    try:
+        k32 = ctypes.windll.kernel32
+        for h in (-11, -12):                       # STD_OUTPUT / STD_ERROR
+            k32.SetConsoleMode(k32.GetStdHandle(h), 7)
+    except Exception:
+        pass
+
+
+def _wait_enter(prompt="按回车退出…"):
+    """只在真控制台里等按键。静默启动时 stdin 是空设备，input() 会抛
+    EOFError 把整个进程带成一段 traceback。"""
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+    except Exception:
+        return
+    try:
+        input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 def main():
-    os.system("")  # 让 Windows 控制台支持 ANSI
+    _enable_ansi()
+
     try:
         httpd = PanelServer(("0.0.0.0", PORT), Handler)
     except OSError as e:
@@ -1963,18 +2108,19 @@ def main():
             print("  不会再起第二个实例，正为你打开已在运行的面板…")
             print()
             print("  要让它加载最新的代码：")
-            print("    1. 关掉那个面板黑窗口")
-            print("    2. 再双击一次启动脚本")
+            print("    1. 双击 停止RVC.bat（连面板一起清干净）")
+            print("    2. 再双击一次 启动RVC.bat")
             print("=" * 56)
-            try:
-                webbrowser.open("http://127.0.0.1:%d/" % PORT)
-            except Exception:
-                pass
+            if os.environ.get("RVC_NO_BROWSER") != "1":
+                try:
+                    webbrowser.open("http://127.0.0.1:%d/" % PORT)
+                except Exception:
+                    pass
             time.sleep(3)
-            return
+            return 0
         print("端口 %d 启动失败（可能已被其它程序占用）: %s" % (PORT, e))
-        input("按回车退出…")
-        return
+        _wait_enter()
+        return 1
     ips = lan_ips()
     d = next((x["ip"] for x in ips if x.get("default")), ips[0]["ip"] if ips else "127.0.0.1")
     print("=" * 56)
@@ -1985,14 +2131,24 @@ def main():
     print("  访客页:     http://127.0.0.1:%d/guest     （公网地址打开也是这个）" % PORT)
     print("  局域网/手机: http://%s:%d  → 只能看到访客页，管理功能已关闭" % (d, PORT))
     print("  管理没有密码这层：只认插网线/本机那台电脑的 127.0.0.1")
-    print("  （关闭此窗口即停止面板，后端不受影响）")
+    print("  （静默启动时没有本窗口；要停面板双击 停止RVC.bat，或用任务栏图标）")
     print("=" * 56)
-    threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:%d/" % PORT)).start()
+    try:
+        start_tray()
+    except Exception as e:
+        print("  任务栏图标异常（不影响使用）: %s" % e)
+    # 静默启动（RVC_NO_BROWSER=1）由启动器在端口确认就绪后开浏览器，
+    # 这里再开一次就会多出一个重复标签页。
+    if os.environ.get("RVC_NO_BROWSER") != "1":
+        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:%d/" % PORT)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")
+    finally:
+        stop_tray()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

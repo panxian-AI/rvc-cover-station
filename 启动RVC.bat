@@ -5,7 +5,6 @@ setlocal
 set "BASE=%~dp0"
 if "%BASE:~-1%"=="\" set "BASE=%BASE:~0,-1%"
 set "LOG=%BASE%\_启动日志.txt"
-del "%LOG%" >nul 2>nul
 
 rem ============================================================
 rem  自适应找安装根目录：含 runtime\python312\python.exe 的那一层
@@ -22,16 +21,50 @@ if not defined STACK goto :no_runtime
 set "PYRT=%STACK%\runtime\python312\python.exe"
 set "APIPY=%STACK%\RVCSVC\apienv\Scripts\python.exe"
 set "DASH=%STACK%\RVCSVC\dashboard"
+set "LAUNCH=%DASH%\launch_silent.py"
 set "FIX="
 call :try_fix "%STACK%\runtime\fix_paths.py"
 call :try_fix "%STACK%\RVCSVC\setup\fix_paths.py"
 call :try_fix "%STACK%\setup\fix_paths.py"
 
+>> "%LOG%" echo ------------------------------------------------------------------
 >> "%LOG%" echo RVC 启动 %date% %time%
 >> "%LOG%" echo BASE  = %BASE%
 >> "%LOG%" echo STACK = %STACK%
 >> "%LOG%" echo APIPY = %APIPY%
->> "%LOG%" echo FIX   = %FIX%
+>> "%LOG%" echo LAUNCH= %LAUNCH%
+
+rem ============================================================
+rem  默认静默启动
+rem  ------------------------------------------------------------
+rem  python.exe 是控制台程序，让它在窗口里跑，桌面上就一直挂着一个黑窗口。
+rem  这里改成 start 一个 pythonw.exe（GUI 子系统，天生没有控制台），由它
+rem  在后台把面板拉起来、再用浏览器打开控制台页面。本窗口 start 完就退，
+rem  一闪而过（不到 1 秒）。
+rem
+rem  要看窗口排查：命令行里加 --console，或者先 set RVC_CONSOLE=1。
+rem  找不到 pythonw.exe / launch_silent.py 时也会自动退回可见窗口，
+rem  不会出现「双击了什么都没发生」。
+rem ============================================================
+if /i "%~1"=="--console" goto :visible
+if /i "%RVC_CONSOLE%"=="1" goto :visible
+if not exist "%LAUNCH%" goto :visible
+if not exist "%APIPY%" goto :visible
+set "PYW=%STACK%\RVCSVC\apienv\Scripts\pythonw.exe"
+if not exist "%PYW%" set "PYW=%STACK%\runtime\python312\pythonw.exe"
+if not exist "%PYW%" goto :visible
+
+cd /d "%DASH%"
+start "" "%PYW%" "%LAUNCH%" --log "%LOG%"
+>> "%LOG%" echo 已交给静默启动器 pythonw，本窗口退出
+exit /b
+
+rem ============================================================
+rem  以下是可见窗口模式（排障用）：把面板跑在这个窗口里，
+rem  关窗口 = 停面板，出错会停在窗口里等你按键。
+rem ============================================================
+:visible
+>> "%LOG%" echo [可见模式] 走控制台窗口
 
 echo ================================================
 echo   RVC 翻唱站
@@ -114,19 +147,19 @@ goto :eof
 
 :no_runtime
 echo ================================================
-echo [X] 没找到内置 Python 运行时
+echo [X] 没找到内置 Python 解释器
 echo ================================================
-echo   应该有: runtime\python312\python.exe
+echo   应该在: runtime\python312\python.exe
 echo   本文件位置: %BASE%
-echo   已试过:
+echo   试过:
 echo     %BASE%
 echo     %BASE%\RVC-Data
 echo     上一级目录及其 RVC-Data
 echo.
-echo   多半是安装没走完，或文件夹被挪动了。
-echo   重新双击安装目录里的 一键安装.bat（可断点续装）。
+echo   多半是安装没跑完，或文件夹被挪动了。
+echo   解决：双击安装目录里的 一键安装.bat（可断点续装）。
 echo.
->> "%LOG%" echo [X] 没找到运行时 BASE=%BASE%
+>> "%LOG%" echo [X] 没找到解释器 BASE=%BASE%
 echo 按任意键关闭窗口。
 pause >nul
 goto :eof
@@ -135,8 +168,8 @@ goto :eof
 echo ================================================
 echo [X] 没找到后端运行环境 (RVCSVC\apienv)
 echo ================================================
-echo   根目录认成了: %STACK%
-echo   重跑一次 一键安装.bat 可以补齐依赖。
+echo   根目录上称是: %STACK%
+echo   重跑一次 一键安装.bat 可以补上这个环境。
 echo.
 >> "%LOG%" echo [X] 没找到 apienv STACK=%STACK%
 echo 按任意键关闭窗口。
@@ -145,10 +178,10 @@ goto :eof
 
 :no_panel
 echo ================================================
-echo [X] 没找到面板代码 (RVCSVC\dashboard\panel.py)
+echo [X] 没找到控制台 (RVCSVC\dashboard\panel.py)
 echo ================================================
-echo   根目录认成了: %STACK%
-echo   重跑一次 一键安装.bat 可以补齐文件。
+echo   根目录上称是: %STACK%
+echo   重跑一次 一键安装.bat 可以补回文件。
 echo.
 >> "%LOG%" echo [X] 没找到 panel.py STACK=%STACK%
 echo 按任意键关闭窗口。

@@ -300,6 +300,13 @@ call :log 阶段6 下载基础模型
 if errorlevel 1 echo   （模型下载有失败也不影响安装完成，可重跑本安装器只补模型）
 copy /y "%STACK%\RVCSVC\setup\fix_paths.py" "%STACK%\runtime\fix_paths.py" >nul 2>nul
 
+rem ---- 安装后体检（v1.3.1）----
+rem WebUI 日志目录不存在时，面板开服务会报 Errno 2，这里先建好
+if not exist "%STACK%\RVC-WebUI\logs" md "%STACK%\RVC-WebUI\logs" 2>nul
+rem 网易云 Cookie 探测：结果在下面的完成提示里明确告诉用户
+set "NCM_OK=0"
+if exist "%STACK%\RVCSVC\ncmapi\ncm_cookie.txt" set "NCM_OK=1"
+
 echo.
 echo ==================================================
 echo    安装完成！
@@ -313,7 +320,13 @@ echo.
 echo    想卸载：双击安装目录里的 卸载程序.bat（可选保留个人数据）
 echo.
 echo    可选进阶：
-echo    · 网易云歌曲：双击 %STACK%\RVCSVC\ncmapi\设置网易云Cookie.bat
+if "%NCM_OK%"=="1" (
+  echo    · 网易云歌曲：Cookie 已配置，装好即用
+) else (
+  echo    [!] 网易云歌曲还没配置 Cookie：点歌搜索会失败。现在就配：
+  echo        双击 %STACK%\RVCSVC\ncmapi\设置网易云Cookie.bat
+  echo        登录网易云后按窗口提示复制 Cookie 粘进去，再重启网易云。
+)
 echo    · 开放给朋友用（公网）：见 docs\使用说明.md
 echo    · hubert 等个别大模型需手动补一次（脚本上方有指引），
 echo      没有它生成会报错，获取一次后永久可用。

@@ -542,6 +542,7 @@ def collect():
         "lan_reach": lan_reach,
         "rvc": rvc_models(),
         "gpu": gpu_info(),
+        "ncm_preflight": ncm_preflight(),
         "log": log_tail(),
     }
 
@@ -626,6 +627,11 @@ def start(target):
         env = os.environ.copy()
         env.update(cfg["env"])
         try:
+            # 日志目录可能还不存在（全新安装 RVC-WebUI\logs 是空的），
+            # 直接 open("ab") 会 Errno 2 让启动整个失败 —— 先补目录。
+            log_dir = os.path.dirname(cfg["log"])
+            if log_dir and not os.path.isdir(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
             log = open(cfg["log"], "ab", buffering=0)
             log.write(("\n\n===== %s 由控制台启动 =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode())
             cmd = [cfg["exe"]] + cfg["args"]
@@ -657,6 +663,34 @@ def start(target):
     return False, "找不到解释器或启动脚本"
 
 
+def ncm_preflight():
+    """网易云搜索的配置体检。
+
+    ncmapi 要有 ncm_cookie.txt（含 MUSIC_U）才能真的搜到歌 —— 全新安装
+    只有 example 文件，服务能起但搜什么都是空/报错。这里把状态查出来，
+    让控制台和一键开启都能提前告诉用户该干什么，而不是等搜索失败再猜。
+    """
+    proxy = os.path.join(NCM_DIR, "ncm_proxy.py")
+    cookie = os.path.join(NCM_DIR, "ncm_cookie.txt")
+    has_cookie = False
+    try:
+        if os.path.isfile(cookie):
+            with open(cookie, "r", encoding="utf-8", errors="ignore") as f:
+                has_cookie = "MUSIC_U=" in f.read()
+    except OSError:
+        pass
+    return {"installed": os.path.isfile(proxy), "cookie": has_cookie}
+
+
+def webui_preflight():
+    """WebUI 完整性体检：安装不完整时给出说得清的错，而不是 Errno 2。"""
+    if not os.path.isdir(RVC_ROOT):
+        return False, "没找到 RVC-WebUI 目录（%s）——安装可能没完成，重新双击一键安装" % RVC_ROOT
+    if not os.path.isfile(os.path.join(RVC_ROOT, "webui.py")):
+        return False, "RVC-WebUI 不完整（缺 webui.py）——重新双击一键安装补齐"
+    return True, ""
+
+
 def start_all():
     """WebUI / 后端 / 网易云三路并行拉起，再等端口逐个就绪。
 
@@ -670,6 +704,9 @@ def start_all():
     if port_open(7865):
         notes.append("WebUI 已在运行")
     else:
+        okw, msgw = webui_preflight()
+        if not okw:
+            return False, msgw
         ok1, m1 = start("webui")
         if not ok1:
             return False, "WebUI 启动失败: %s" % m1
@@ -685,12 +722,16 @@ def start_all():
             return False, "后端启动失败: %s" % m2
         notes.append("后端启动中")
 
-    # 3) 网易云搜索，同样并行
+    # 3) 网易云搜索，同样并行；Cookie 没配也能起，但要明确告诉用户去配置
+    ncm_pf = ncm_preflight()
     if port_open(3002):
         notes.append("网易云已在运行")
     else:
         ok_n, m_n = start("ncm")
         notes.append("网易云已启动" if ok_n else "网易云启动失败: %s" % m_n)
+    if ncm_pf["installed"] and not ncm_pf["cookie"]:
+        notes.append("网易云 Cookie 未配置：点歌搜索会失败，"
+                     "请双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 配置后重启网易云")
 
     # 4) 等后端真正监听再返回（后端轻量，一般先就绪）
     if not port_open(3333):

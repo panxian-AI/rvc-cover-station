@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.3.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v1.3.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -43,6 +43,9 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   自动配对 `.index` 索引，确认后直接装进 WebUI；导完就地 **🔄 更新声线** 一键重启后端
 - 🗂 **模型管理页**（`/models`）：全部声线列表 + 索引配对情况 + 孤儿索引单列，
   两段式删除（先预览后确认），防路径穿越
+- 🩺 **启动前体检**（v1.3.1）：安装器装完建 WebUI 日志目录 + 检测网易云
+  Cookie 配置并明确提示；面板开服务前自动补目录、缺文件给人话报错
+  （修掉全新安装「一键开启」报 Errno 2 的问题）；控制台显示网易云配置状态
 - 🔓 **验证码解锁请求**（v1.3.0）：访客连错被锁时页面给出明确提示，可向站长
   发解锁请求（限频），控制台一键同意/拒绝——同意只解当次，错误计数保留，
   再错照常锁，绝不从此豁免
@@ -69,7 +72,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 14 套回归测试共 624 项断言（`dashboard/e2e_*.py`）
+- 附带 14 套回归测试共 632 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

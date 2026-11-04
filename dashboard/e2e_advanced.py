@@ -338,6 +338,49 @@ def main():
         s, r = jpost("/api/action", {"action": "tunnel_start2"})
         chk("未知 action 报错", s == 200 and not r.get("ok"), (s, r.get("msg")))
 
+        print("\n== 8. 启动前体检：网易云 Cookie / WebUI 完整性 / 日志目录 ==")
+        # 日志目录兜底：全新安装 RVC-WebUI\logs 不存在时不能再 Errno 2（截图真 bug）
+        src = open(os.path.join(HERE, "panel.py"), encoding="utf-8").read().replace("\r\n", "\n")
+        chk("start() 开日志前先建目录（makedirs 兜底）",
+            "os.makedirs" in src and "log_dir" in src)
+        fake_root = os.path.join(TMP, "RVC-WebUI")
+        os.makedirs(fake_root, exist_ok=True)
+        real_root, real_ncm = panel.RVC_ROOT, panel.NCM_DIR
+        try:
+            panel.RVC_ROOT = fake_root
+            okw, msgw = panel.webui_preflight()
+            chk("WebUI 缺 webui.py 时给出明确提示（不报 Errno 2）",
+                not okw and "webui.py" in msgw, msgw)
+            panel.RVC_ROOT = os.path.dirname(fake_root)   # 根本没有这个目录
+            okw, msgw = panel.webui_preflight()
+            chk("WebUI 目录整个缺失时报「安装可能没完成」",
+                not okw and "重新" in msgw, msgw)
+
+            panel.NCM_DIR = os.path.join(TMP, "ncmapi")
+            pf = panel.ncm_preflight()
+            chk("ncmapi 缺失 → installed False", pf["installed"] is False, pf)
+            os.makedirs(panel.NCM_DIR, exist_ok=True)
+            open(os.path.join(panel.NCM_DIR, "ncm_proxy.py"), "w").close()
+            pf = panel.ncm_preflight()
+            chk("只有 example 没 cookie.txt → cookie False",
+                pf["installed"] is True and pf["cookie"] is False, pf)
+            open(os.path.join(panel.NCM_DIR, "ncm_cookie.txt"), "w",
+                 encoding="utf-8").write("MUSIC_U=abc; os=pc")
+            pf = panel.ncm_preflight()
+            chk("cookie.txt 含 MUSIC_U → cookie True", pf["cookie"] is True, pf)
+            open(os.path.join(panel.NCM_DIR, "ncm_cookie.txt"), "w",
+                 encoding="utf-8").write("其他内容没有登录串")
+            pf = panel.ncm_preflight()
+            chk("cookie.txt 没有 MUSIC_U 也算没配", pf["cookie"] is False, pf)
+        finally:
+            panel.RVC_ROOT, panel.NCM_DIR = real_root, real_ncm
+
+        st, d = jget("/api/status")
+        chk("/api/status 带 ncm_preflight（本机已配置 → cookie True）",
+            st == 200 and isinstance(d.get("ncm_preflight"), dict)
+            and d["ncm_preflight"].get("cookie") is True,
+            d.get("ncm_preflight"))
+
     finally:
         cover._run_cover = real_run
         cover.COVERS_DIR, cover.INDEX_PATH, cover.BACKEND_TEMP = real_covers, real_index, real_temp

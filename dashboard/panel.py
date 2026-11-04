@@ -99,6 +99,13 @@ except Exception as _e:
     models_mgr = None
     print("⚠️ 模型管理未加载（models_mgr.py 导入失败）: %s" % _e)
 
+# 数据备份与迁移：导出 zip / 从 zip 恢复（换机器、重装、手改坏了都能救回来）
+try:
+    import dataio as dataio_mod
+except Exception as _e:
+    dataio_mod = None
+    print("⚠️ 数据备份未加载（dataio.py 导入失败）: %s" % _e)
+
 # 访问控制：管理功能**只认本机直连**（回环且不经反代），没有密码、没有远程管理。
 # 公网隧道、局域网、带转发头的请求一律拒绝；访客只能看访客页。
 MSG_LOCAL_ONLY = "管理功能只在这台电脑上可用：请在运行面板的电脑上打开 http://127.0.0.1:%d/" % PORT
@@ -1071,6 +1078,43 @@ def public_info():
     return {"ok": True, "url": url, "alive": alive}
 
 
+# ---------------- 数据备份的写操作 ----------------
+def _data_action(path, body):
+    """POST /api/data/* 的具体动作。
+
+    导入是唯一会覆盖用户数据的操作，所以要求前端显式带 confirm=true ——
+    面板上是「我已经确认要覆盖」那个勾选项，脚本直连也必须自己给出这个字段。
+    """
+    if not dataio_mod:
+        return 500, {"ok": False, "msg": "数据备份模块未加载"}
+    act = path[len("/api/data/"):].strip("/").lower()
+    if act == "export":
+        # 页面用它：先打包拿结果（能给出确定反馈），再单独下载那一份
+        r = dataio_mod.export(with_audio=bool(body.get("audio")))
+        return (200 if r.get("ok") else 400), r
+    if act == "import_pick":
+        return 200, dataio_mod.pick_zip()
+    if act == "import_check":
+        r = dataio_mod.check(body.get("path"))
+        return (200 if r.get("ok") else 400), r
+    if act == "import_apply":
+        mode = str(body.get("mode") or "replace").lower()
+        if mode not in ("replace", "merge"):
+            return 400, {"ok": False, "msg": "未知的导入方式（只支持 replace / merge）"}
+        if body.get("confirm") is not True:
+            return 400, {"ok": False, "msg": "导入会改写本机数据，请先勾选确认再执行"}
+        r = dataio_mod.apply(body.get("path"), token=body.get("token") or "", mode=mode)
+        if r.get("ok"):
+            sec_log("数据导入（%s）：%s" % (mode, r.get("msg")))
+        return (200 if r.get("ok") else 400), r
+    if act == "delete":
+        r = dataio_mod.delete_backup(body.get("name"))
+        return (200 if r.get("ok") else 400), r
+    if act == "open":
+        return 200, dataio_mod.open_dir()
+    return 404, {"ok": False, "msg": "未知操作"}
+
+
 # ---------------- HTTP 服务 ----------------
 # 同时处理的连接上限。ThreadingHTTPServer 是「一连接一线程、不设上限」，
 # 公网被人开几百个慢连接（连上来不发完整请求，卡满 timeout）就能把线程和内存耗光，
@@ -1174,6 +1218,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_download(self, path, name=None):
+        """发一个附件（数据备份 zip）。名字可能是中文，按 RFC 5987 双写。"""
+        name = os.path.basename(str(name or path or "download.zip"))
+        try:
+            size = os.path.getsize(path)
+            f = open(path, "rb")
+        except OSError:
+            self._send(404, json.dumps({"ok": False, "msg": "文件不存在"}, ensure_ascii=False))
+            return
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "backup.zip"
+        quoted = urllib.parse.quote(name)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition",
+                         'attachment; filename="%s"; filename*=UTF-8\'\'%s'
+                         % (ascii_name, quoted))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except OSError:
+            pass
+        finally:
+            f.close()
 
     # ---------- 访问控制（公网穿透后必须） ----------
     def _client(self):
@@ -1423,6 +1498,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif guest_mod and path.startswith("/api/admin/"):
             code, obj = guest_mod.handle_get(path, q, gid, True, ip)
             self._send(code, json.dumps(obj, ensure_ascii=False))
+        elif path == "/api/data/summary":
+            if not dataio_mod:
+                self._send(500, json.dumps({"ok": False, "msg": "数据备份模块未加载"},
+                                           ensure_ascii=False))
+            else:
+                try:
+                    self._send(200, json.dumps(dataio_mod.summary(), ensure_ascii=False))
+                except Exception as e:
+                    self._send(500, json.dumps({"ok": False, "msg": str(e)}, ensure_ascii=False))
+        elif path == "/api/data/export":
+            # 点一下就把备份打包好并直接下载（浏览器存到「下载」文件夹）
+            if not dataio_mod:
+                self._send(500, json.dumps({"ok": False, "msg": "数据备份模块未加载"},
+                                           ensure_ascii=False))
+            else:
+                audio = str((q.get("audio") or ["0"])[0]).lower() in ("1", "true", "yes")
+                try:
+                    r = dataio_mod.export(with_audio=audio)
+                except Exception as e:
+                    r = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+                if r.get("ok"):
+                    self._send_download(r["path"], r["name"])
+                else:
+                    self._send(400, json.dumps(r, ensure_ascii=False))
+        elif path == "/api/data/file":
+            # 备份列表里点「下载」拿某一份历史备份
+            p = dataio_mod.backup_abs((q.get("name") or [""])[0]) if dataio_mod else None
+            if p:
+                self._send_download(p)
+            else:
+                self._send(404, json.dumps({"ok": False, "msg": "这份备份不在了"},
+                                           ensure_ascii=False))
         elif path == "/api/update/check":
             force = str((q.get("force") or ["0"])[0]).lower() in ("1", "true", "yes")
             try:
@@ -1542,6 +1649,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         body = self._read_json()
         if self._too_big():
+            return
+        # 数据备份：选包 / 预检 / 导入 / 删备份 / 打开目录
+        # 前缀 /api/data/ 与 guest 的 /api/admin/ 不重叠，但仍要排在那条通配之前
+        if dataio_mod and path.startswith("/api/data/"):
+            try:
+                code, obj = _data_action(path, body)
+            except Exception as e:
+                code, obj = 500, {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+            self._send(code, json.dumps(obj, ensure_ascii=False))
             return
         # 模型市场：下载并安装（必须排在 guest 的 /api/admin/ 通配之前，也不与它同前缀）
         if market and path.startswith("/api/market/"):

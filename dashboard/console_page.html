@@ -250,6 +250,22 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
   </div>
 
   <div class="card">
+    <h2>数据备份与迁移 <span id="dioSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div class="row">
+      <button class="green" id="dioExpBtn" onclick="dioExport()">⬇ 导出备份</button>
+      <button class="gray" id="dioImpBtn" onclick="dioPick()">📤 导入备份（弹文件选择窗口）</button>
+      <button class="gray mini" onclick="dioOpen()">📂 打开备份文件夹</button>
+      <label style="font-size:12px;color:#8fa3c2;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="dioAudio" onchange="dioAudioHint()"> 连成品音频一起打包
+      </label>
+    </div>
+    <div id="dioRst" style="display:none;margin-top:10px;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.7"></div>
+    <div id="dioBox"></div>
+    <div id="dioList" style="margin-top:11px"></div>
+    <div class="hint">换硬盘、重装系统、手改 JSON 改坏了——都靠这份备份救回来。导出的 <b>.zip</b> 里是访客记录、申请与队列、白名单、高级设置、成品库索引（勾上「连成品音频」才含 mp3），外加一份已装声线清单，换机器后照着清单就知道缺哪个声线。<b>导入前会自动把本机现有数据也存一份</b>（列表里带 🕘 的那些），导错了直接再导回来。</div>
+  </div>
+
+  <div class="card">
     <h2>申请记录 <span id="reqN" style="color:#8fa3c2;font-weight:400"></span></h2>
     <div id="reqs"><div class="empty">读取中…</div></div>
     <details id="visitBox">
@@ -1081,7 +1097,224 @@ async function updApply(){
 
 function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadCoverJobs(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadUnlock(); loadAdv(); loadSec(); loadMarket(); logLoad(); }
 refresh(); setInterval(refresh, 8000);
+dioLoad();                // 备份概况不进 8 秒轮询：会把正在看的预检面板刷掉
 updCheck(false);          // 每次打开控制台都查一次（服务端 10 分钟缓存，不会刷爆额度）
+
+/* ---------- 数据备份与迁移 ---------- */
+/* 只有「导出 / 导入」两件事，但要做得可信：
+   导出前先把包里有什么、多大说清楚；导入前先展示「会变成什么样」，再让用户
+   自己勾确认；导完把「自动存档在哪」写出来，后悔了还能导回去。 */
+let DIO = null;
+let DIO_COVERS = {indexed: 0, bytes: 0};
+
+function dioTime(ts){
+  const d = new Date((ts || 0) * 1000), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+       + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function dioMsg(kind, html){
+  const b = $('#dioRst');
+  b.style.display = 'block';
+  const c = kind === 'ok' ? ['#10291f', '#1f5340', '#6fd39a']
+          : kind === 'bad' ? ['#2a1414', '#5c2626', '#ff9b9b']
+          : ['#2a2313', '#5c4a1f', '#f0c674'];
+  b.style.background = c[0]; b.style.border = '1px solid ' + c[1]; b.style.color = c[2];
+  b.innerHTML = html;
+}
+function dioAudioHint(){
+  const on = $('#dioAudio').checked;
+  const mb = Math.round((DIO_COVERS.bytes || 0) / 1048576);
+  $('#dioAudio').parentNode.lastChild.textContent =
+    on ? ' 连成品音频一起打包（约 ' + mb + ' MB，会慢一些）' : ' 连成品音频一起打包';
+}
+
+async function dioLoad(){
+  try{
+    const d = await (await fetch('/api/data/summary', {cache:'no-store'})).json();
+    if(!d.ok) throw new Error(d.msg || '读取失败');
+    const c = d.counts || {}, cv = d.covers || {};
+    DIO_COVERS = cv;
+    $('#dioSum').textContent = '访客 ' + (c.visits||0) + ' · 申请 ' + (c.requests||0)
+      + ' · 白名单 ' + (c.whitelist||0) + ' · 成品 ' + (cv.indexed||0) + ' 首';
+    dioList(d.backups || [], d.total_text || '0 B');
+    dioAudioHint();
+  }catch(e){
+    $('#dioSum').textContent = '读取失败：' + e.message;
+  }
+}
+
+function dioList(bks, totalText){
+  if(!bks.length){
+    $('#dioList').innerHTML = '<div class="empty">还没有备份 —— 建议现在就点上面「⬇ 导出备份」存一份。</div>';
+    return;
+  }
+  let h = '<div style="display:flex;justify-content:space-between;font-size:11.5px;color:#75869f;margin-bottom:5px;flex-wrap:wrap;gap:6px">'
+        + '<span>已有 ' + bks.length + ' 份，共 ' + esc(totalText) + '</span>'
+        + '<span>🕘 = 导入前自动存的，💾 = 手动导出的</span></div>';
+  h += bks.map(b =>
+    '<div style="display:flex;align-items:center;gap:9px;padding:6px 0;border-bottom:1px dashed #212b40;flex-wrap:wrap">'
+    + '<span style="flex:1;min-width:190px;font-size:12.5px;word-break:break-all">'
+    +   (b.auto ? '🕘' : '💾') + ' ' + esc(b.name) + '</span>'
+    + '<span style="color:#75869f;font-size:11.5px;white-space:nowrap">'
+    +   esc(b.size_text) + ' · ' + dioTime(b.mtime) + '</span>'
+    + '<button class="gray mini" onclick=\'dioGet(this,' + JSON.stringify(b.name) + ')\'>下载</button>'
+    + '<button class="red mini" onclick=\'dioDel(this,' + JSON.stringify(b.name) + ')\'>删</button>'
+    + '</div>').join('');
+  $('#dioList').innerHTML = h;
+}
+
+async function dioExport(){
+  const btn = $('#dioExpBtn'), audio = $('#dioAudio').checked;
+  btn.disabled = true; btn.textContent = '打包中…';
+  dioMsg('wait', audio ? '正在打包（含成品音频，可能要几十秒）…' : '正在打包…');
+  try{
+    const d = await impPost('/api/data/export', {audio: audio});
+    if(!d.ok){ dioMsg('bad', esc(d.msg || '导出失败')); return; }
+    let extra = '';
+    if(d.skipped && d.skipped.length){
+      extra = '<br>没打进去的：' + d.skipped.map(x => esc(x.label + '（' + x.why + '）')).join('；');
+    }
+    dioMsg('ok', '已导出 <b>' + esc(d.name) + '</b>（' + esc(d.size_text) + '，用时 '
+          + d.secs + ' 秒），浏览器正在下载。备份也存在：<br>' + esc(d.path) + extra);
+    toast('已导出 ' + d.size_text);
+    window.location.href = '/api/data/file?name=' + encodeURIComponent(d.name);
+    dioLoad();
+  }catch(e){
+    dioMsg('bad', '请求失败：' + esc(e.message));
+  }finally{
+    btn.disabled = false; btn.textContent = '⬇ 导出备份';
+  }
+}
+
+function dioGet(btn, name){
+  window.location.href = '/api/data/file?name=' + encodeURIComponent(name);
+}
+
+async function dioDel(btn, name){
+  if(!confirm('删掉这份备份？\n\n' + name + '\n\n删了就找不回来了（如果它正是你要恢复的那份）。')) return;
+  btn.disabled = true;
+  try{
+    const d = await impPost('/api/data/delete', {name: name});
+    toast(d.msg || (d.ok ? '已删除' : '删除失败'));
+    dioLoad();
+  }catch(e){ toast('请求失败：' + e.message); btn.disabled = false; }
+}
+
+async function dioOpen(){
+  try{
+    const d = await impPost('/api/data/open', {});
+    toast(d.msg || (d.ok ? '已打开备份文件夹' : '打不开'));
+  }catch(e){ toast('请求失败：' + e.message); }
+}
+
+async function dioPick(){
+  const box = $('#dioBox');
+  $('#dioRst').style.display = 'none';
+  box.innerHTML = '<div class="empty">已弹出文件选择窗口…（选完自动读包）</div>';
+  let p;
+  try{ p = await impPost('/api/data/import_pick', {}); }
+  catch(e){ box.innerHTML = '<div class="empty">请求失败：' + esc(e.message) + '</div>'; return; }
+  if(!p.ok){ box.innerHTML = '<div class="empty">' + esc(p.msg || '打开文件选择框失败') + '</div>'; return; }
+  if(p.cancelled){ box.innerHTML = '<div class="empty">已取消，没有选择文件</div>'; return; }
+  box.innerHTML = '<div class="empty">正在校验这份备份…（带音频的包要几秒钟）</div>';
+  let c;
+  try{ c = await impPost('/api/data/import_check', {path: p.path}); }
+  catch(e){ box.innerHTML = '<div class="empty">校验请求失败：' + esc(e.message) + '</div>'; return; }
+  if(!c.ok){
+    box.innerHTML = '<div class="empty" style="color:#ff9b9b">这份备份不能用：' + esc(c.msg || '校验没通过') + '</div>';
+    return;
+  }
+  DIO = c; dioRenderCheck(c);
+}
+
+function dioRenderCheck(d){
+  const b = d.current || {}, r = (d.preview || {}).replace || {}, m = (d.preview || {}).merge || {};
+  const rows = [['访客', 'visits'], ['申请', 'requests'], ['其中待批', 'pending'],
+                ['白名单', 'whitelist'], ['白名单申请', 'wl_apps'], ['队列里等着的', 'queue']];
+  const cell = (v, base, col) =>
+    '<td align="right" style="padding:5px 7px;color:' + ((v||0) !== (base||0) ? col : '#c8d6ea') + '">' + (v||0) + '</td>';
+  let t = '<div style="overflow:auto;background:#0e1524;border:1px solid #2a3550;border-radius:10px;padding:10px 12px">'
+        + '<div style="font-size:12.5px;color:#cfe3ff;margin-bottom:8px">'
+        + '包来自 <b>' + esc(d.machine) + '</b>，导出于 ' + esc(d.created)
+        + '（v' + esc(d.version) + '，' + esc(d.size_text) + '）</div>'
+        + '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+        + '<tr style="color:#75869f;font-size:11.5px"><th align="left" style="padding:4px 7px">项目</th>'
+        + '<th align="right" style="padding:4px 7px">本机现在</th>'
+        + '<th align="right" style="padding:4px 7px">覆盖导入后</th>'
+        + '<th align="right" style="padding:4px 7px">合并导入后</th></tr>';
+  rows.forEach(([label, k]) => {
+    t += '<tr><td style="padding:5px 7px;color:#a9bcd8">' + label + '</td>'
+       + '<td align="right" style="padding:5px 7px;color:#8fa3c2">' + (b[k]||0) + '</td>'
+       + cell(r[k], b[k], '#f0c674') + cell(m[k], b[k], '#7ef0a8') + '</tr>';
+  });
+  t += '</table>';
+
+  const bits = [];
+  bits.push('成品索引 ' + (d.covers.incoming || 0) + ' 首（本机现有 ' + (d.covers.now || 0) + ' 首）');
+  if(d.audio_files) bits.push('成品音频 <b>' + d.audio_files + '</b> 个（' + esc(d.audio_text) + '）');
+  bits.push(d.settings_included ? '含高级设置' : '不含高级设置');
+  t += '<div style="font-size:12px;color:#8fa3c2;margin-top:8px;line-height:1.7">' + bits.join(' · ') + '</div>';
+  if(d.missing_models_n){
+    t += '<div style="font-size:12px;color:#f0c674;margin-top:6px;line-height:1.7">'
+       + '⚠ 备份里用到 ' + d.missing_models_n + ' 个本机没装的声线：'
+       + d.missing_models.slice(0, 6).map(esc).join('、')
+       + (d.missing_models_n > 6 ? ' 等' : '') + ' —— 导入后这些歌要先去模型市场补齐声线。'
+       + '</div>';
+  }
+  if(d.audio_files === 0 && d.covers.incoming > d.covers.now){
+    t += '<div style="font-size:12px;color:#8fa3c2;margin-top:6px;line-height:1.7">'
+       + '这个包没带音频文件，导入后新增的那 ' + (d.covers.incoming - d.covers.now)
+       + ' 首只在成品库列表里看到、点开会提示缺文件。需要音频就导出时勾「连成品音频一起打包」。</div>';
+  }
+  t += '<div style="margin-top:11px;display:flex;gap:9px;flex-wrap:wrap;align-items:center">'
+     + '<label style="font-size:12px;color:#f0c674;display:flex;align-items:center;gap:6px">'
+     + '<input type="checkbox" id="dioSure"> 我确认要改写本机数据</label>'
+     + '<button class="red mini" onclick="dioApply(\'replace\', this)">用这份备份覆盖本机</button>'
+     + '<button class="green mini" onclick="dioApply(\'merge\', this)">合并进本机（同一条不重复）</button>'
+     + '<button class="gray mini" onclick="DIO=null;$(\'#dioBox\').innerHTML=\'\'">取消</button>'
+     + '</div>'
+     + '<div style="font-size:11.5px;color:#6f8099;margin-top:7px;line-height:1.7">'
+     + '覆盖 = 本机数据全部换成包里的（本机独有的记录会消失）；合并 = 两边合起来，同一条取更新的那次状态。'
+     + '两种方式都会在动手前把本机现有数据自动存一份。</div></div>';
+  $('#dioBox').innerHTML = t;
+}
+
+async function dioApply(mode, btn){
+  if(!DIO) return;
+  if(!$('#dioSure').checked){ toast('先勾选「我确认要改写本机数据」'); return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '导入中…';
+  dioMsg('wait', '正在导入，别关这个页面…');
+  try{
+    const d = await impPost('/api/data/import_apply',
+      {path: DIO.path, token: DIO.token, mode: mode, confirm: true});
+    if(!d.ok){
+      dioMsg('bad', esc(d.msg || '导入失败')
+        + (d.backup ? '<br>导入前的数据已存在：' + esc(d.backup) : ''));
+      return;
+    }
+    let extra = '';
+    if(d.stats && d.stats.running_to_queued){
+      extra += '<br>有 ' + d.stats.running_to_queued + ' 单原本是「制作中」，已改回「排队中」等重新制作。';
+    }
+    if(d.missing_models_n){
+      extra += '<br>还缺 ' + d.missing_models_n + ' 个声线：'
+             + d.missing_models.slice(0, 5).map(esc).join('、')
+             + ' —— 去「模型市场」补齐后这些歌才做得出。';
+    }
+    if(d.warns && d.warns.length){
+      extra += '<br>设置项提示：' + d.warns.map(esc).join('；');
+    }
+    dioMsg('ok', esc(d.msg) + extra
+      + '<br>导入前的本机数据已存档：<b>' + esc(d.backup_name || '（本机原本没有数据）') + '</b>');
+    DIO = null; $('#dioBox').innerHTML = '';
+    dioLoad(); refresh();
+  }catch(e){
+    dioMsg('bad', '请求失败：' + esc(e.message));
+  }finally{
+    btn.disabled = false; btn.textContent = label;
+  }
+}
 
 /* ---------- 模型市场概览 ---------- */
 async function loadMarket(){

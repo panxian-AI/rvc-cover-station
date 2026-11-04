@@ -97,8 +97,11 @@ def check(force=False, path=None):
                       "have": got or "未安装", "status": status})
     drift = [x for x in items if x["status"] != "ok"]
     if not items:
-        res = {"ok": True, "file": path or REQ_FILE, "items": [], "drift": [],
-               "msg": "没找到 requirements.txt（跳过核对）", "checked": now}
+        # 以前这里返回 ok=True 并写「跳过核对」：结果清单文件没被安装时，
+        # 整个「依赖锁」在用户机器上是静默空转的，谁也不会发现。
+        res = {"ok": False, "file": path or REQ_FILE, "items": [], "drift": [],
+               "missing_file": True,
+               "msg": "没找到 requirements.txt（依赖版本没有核对）", "checked": now}
     elif not drift:
         res = {"ok": True, "file": path or REQ_FILE, "items": items, "drift": [],
                "msg": "%d 项依赖与锁定版本一致" % len(items), "checked": now}

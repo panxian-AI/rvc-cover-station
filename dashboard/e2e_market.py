@@ -13,6 +13,7 @@
     apienv\\Scripts\\python.exe e2e_market.py
 """
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -496,11 +498,19 @@ def main():
     print("== 9. 更新器多线路测速 ==")
     seen = []
 
+    def zip_bytes():
+        """真 zip：更新包现在会先验 CRC，拿假数据（只有 PK 头）会被判坏包。"""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("VERSION", "9.9.9")
+            z.writestr("padding.txt", "x" * 4096)   # 过 1024 字节的「像样 zip」门槛
+        return buf.getvalue()
+
     def fake_get(url, timeout=12):
         seen.append(url)
         if "ghproxy.net" in url:
             raise OSError("boom")
-        return b"PK" + b"\x00" * 4096
+        return zip_bytes()
 
     real_get, real_rank = updater._get, updater.speed.rank
     updater._get = fake_get
@@ -528,12 +538,26 @@ def main():
         seen.append(url)
         if "ghfast.top" in url:
             raise OSError("boom")
-        return b"PK" + b"\x00" * 4096
+        return zip_bytes()
 
     updater._get = fake_get2
     data, used = updater._download("v9.9.9")
     chk("最快线路失败后自动换线", used and "ghfast" not in used, used)
     chk("失败后仍能拿到数据", data[:2] == b"PK")
+
+    # 包被截断（有 PK 头但内容不全）→ 判坏包并换线，绝不能拿去覆盖代码
+    seen.clear()
+
+    def fake_get_bad(url, timeout=12):
+        seen.append(url)
+        if "ghfast.top" in url:
+            return zip_bytes()[:40]
+        return zip_bytes()
+
+    updater._get = fake_get_bad
+    data, used = updater._download("v9.9.9")
+    chk("坏包不会被当成好包用", "ghfast" not in used, used)
+    chk("坏包之后换了别的线路", len(seen) >= 2 and data[:2] == b"PK")
 
     # 全失败 → 中文报错
     def fake_get3(url, timeout=12):

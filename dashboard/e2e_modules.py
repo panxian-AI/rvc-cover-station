@@ -204,11 +204,56 @@ def test_deps():
     chk("给出的修复命令能直接用", "pip install -r" in cmd and "requirements.txt" in cmd, cmd)
 
 
+def test_release_plumbing():
+    print("\n== D. 依赖锁真的生效（安装 / 更新 / 核对三段都得通） ==")
+    import io as _io
+    import zipfile as _zip
+
+    import updater
+
+    usrc = rd("updater.py")
+    chk("更新器覆盖根级声明文件",
+        {"requirements.txt", "install.json"} <= set(updater.ROOT_FILES), updater.ROOT_FILES)
+    chk("apply 真的处理根级文件（不是只定义常量）",
+        "rel in ROOT_FILES" in usrc and "os.path.join(PROJ, rel)" in usrc)
+
+    # 更新包先验完整性：apply 是边解压边覆盖，坏包会留下半新半旧的代码
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("a.txt", "hello" * 200)
+    good = buf.getvalue()
+    chk("好包判为完整", updater._zip_broken(good) == "", updater._zip_broken(good)[:40])
+    chk("截断的包会被判坏", bool(updater._zip_broken(good[: len(good) // 2])))
+    chk("压根不是 zip 的也判坏", bool(updater._zip_broken(b"not a zip at all")))
+    chk("下载流程里真的调了校验", "broken = _zip_broken(data)" in usrc)
+
+    missing = os.path.join(HERE, "_nope_requirements.txt")
+    r = deps.check(force=True, path=missing)
+    chk("清单缺失时不再假装 ok", r.get("ok") is False and bool(r.get("missing_file")),
+        r.get("msg"))
+    chk("缺清单时不给「pip install」当修复建议",
+        'd.get("missing_file")' in rd(os.path.join("panelkit", "routes_get.py")))
+
+    # 导入必须走 guest 的统一写入口，否则并发写盘会把导入结果盖回旧数据
+    gsrc = rd("guest.py")
+    dsrc = rd("dataio.py")
+    chk("guest 提供「整份替换」入口", "def replace_db(" in gsrc)
+    chk("替换在锁内完成（换内存 + 落盘不被打断）",
+        re.search(r"def replace_db\(.*?\n    with _lock:", gsrc, re.S) is not None)
+    chk("dataio 写库不是直接覆盖文件", "_replace_guest(merged)" in dsrc)
+    chk("回滚也走同一个入口", "_replace_guest(obj)" in dsrc)
+    chk("合并取本机现状用内存快照",
+        "def snapshot(" in gsrc and "_cur_db()" in dsrc)
+    chk("写盘失败不吞（保留脏标记等下次重试）",
+        "保留脏标记" in gsrc or "_dirty = True" in gsrc)
+
+
 def main():
     print("RVC 模块化 / 多页面 / 依赖锁 回归测试")
     test_layout()
     test_pages()
     test_deps()
+    test_release_plumbing()
     print("\n" + "=" * 52)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

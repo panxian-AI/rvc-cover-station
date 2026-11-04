@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -32,7 +33,7 @@ from paths import DATA, DASH, PROJ, RVC_ROOT
 import speed
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "2.0.0"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "2.0.1"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")
@@ -52,6 +53,10 @@ DIR_MAP = [
     ("setup", os.path.join(PROJ, "setup")),
     ("RVC-WebUI", RVC_ROOT),
 ]
+
+# 根级文件：安装布局里它们也放在 PROJ 下。
+# requirements.txt 尤其重要——少了它 deps.py 找不到清单，「依赖锁」就是空转的。
+ROOT_FILES = {"requirements.txt", "install.json"}
 
 # 这些路径绝不能被更新覆盖（个人数据 / 模型 / 虚拟环境 / 缓存）
 SKIP_PARTS = {
@@ -224,6 +229,21 @@ def _line_name(url: str) -> str:
 _last_download = {"url": "", "lines": [], "speed": 0.0}
 
 
+def _zip_broken(data: bytes) -> str:
+    """整包 CRC 校验。返回出问题的条目名或异常描述，全好返回 ""。
+
+    为什么必须做：apply() 是边解压边覆盖，包里有一处坏，前面几十个文件已经写进
+    去了，走到坏的那一条才抛异常——留下一半新一半旧的代码，还得靠 _update_backup
+    手工恢复。这里先验一遍，坏包直接换线路。
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            bad = z.testzip()
+        return bad or ""
+    except Exception as e:
+        return "%s: %s" % (type(e).__name__, e)
+
+
 def _download(tag: str) -> tuple[bytes, str]:
     """先给所有线路测速，再按实测速度从上到下试。
 
@@ -253,6 +273,10 @@ def _download(tag: str) -> tuple[bytes, str]:
                 continue
             if len(data) > MAX_ZIP:
                 last = "更新包过大（%d 字节），已放弃" % len(data)
+                continue
+            broken = _zip_broken(data)
+            if broken:
+                last = "更新包不完整（%s），换线路重试" % broken
                 continue
             _last_download["url"] = u
             _last_download["speed"] = c.get("kbps") or 0
@@ -305,6 +329,28 @@ def apply() -> dict:
                 rel = zi.filename[len(root) + 1:] if root and zi.filename.startswith(root + "/") else zi.filename
                 rel = rel.replace("\\", "/")
                 top = rel.split("/")[0]
+
+                # 根级文件（requirements.txt / install.json）：直接落到 PROJ 下。
+                # 以前这里被 `rel == top` 一律跳过，于是依赖锁清单永远不会被更新。
+                if rel in ROOT_FILES:
+                    dest = os.path.realpath(os.path.join(PROJ, rel))
+                    if os.path.dirname(dest) != os.path.realpath(PROJ):
+                        skipped += 1
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    if os.path.isfile(dest) and os.path.getsize(dest) < 2 * 1024 * 1024:
+                        bdst = os.path.join(backup, "_root", rel)
+                        try:
+                            os.makedirs(os.path.dirname(bdst), exist_ok=True)
+                            shutil.copy2(dest, bdst)
+                            backed += 1
+                        except OSError:
+                            pass
+                    with z.open(zi) as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    written += 1
+                    continue
+
                 target_root = next((dst for src, dst in DIR_MAP if src == top), None)
                 if not target_root or rel == top:
                     continue

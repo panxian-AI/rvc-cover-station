@@ -208,15 +208,25 @@ def handle(h):
         h._send(200, json.dumps(obj, ensure_ascii=False))
     elif path == "/api/status":
         try:
-            h._send(200, json.dumps(collect(), ensure_ascii=False))
+            st = collect()
+            # 访客库写盘失败（磁盘满 / 文件被占用）不能静默：概览页要看得见
+            try:
+                if guest_mod and hasattr(guest_mod, "save_error"):
+                    err = guest_mod.save_error()
+                    if err:
+                        st["save_error"] = err
+            except Exception:
+                pass
+            h._send(200, json.dumps(st, ensure_ascii=False))
         except Exception as e:
             h._send(500, json.dumps({"error": str(e)}, ensure_ascii=False))
     elif path == "/api/deps":
         try:
             d = deps_mod.check() if deps_mod else {
-                "ok": True, "items": [], "drift": [],
+                "ok": False, "items": [], "drift": [], "missing_file": True,
                 "msg": "依赖核对模块未加载（deps.py 缺失）"}
-            if deps_mod and not d.get("ok"):
+            # 只有「装了但版本不对」才给修复命令；清单本身缺失时给命令没用
+            if deps_mod and not d.get("ok") and not d.get("missing_file"):
                 d["repair"] = deps_mod.repair_cmd()
             h._send(200, json.dumps(d, ensure_ascii=False))
         except Exception as e:

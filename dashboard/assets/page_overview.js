@@ -47,8 +47,17 @@ async function loadStatus(){
         sl.style.display = 'none';
       }
     }
-  }catch(e){ $('#svc').innerHTML = '<div class="s">状态读取失败</div>'; }
-}
+    const kl = $('#saveLine');
+    if(kl){
+      if(d.save_error){
+        kl.style.display = '';
+        kl.innerHTML = '<span style="color:#ff9aa8">⚠ 访客库写盘失败：</span>' + esc(d.save_error)
+          + '<br>多半是磁盘满了或文件被别的程序占用。数据还在内存里，腾出空间后下一次写盘会自动重试。';
+      }else{
+        kl.style.display = 'none';
+      }
+    }
+  }catch(e){ $('#svc').innerHTML = '<div class="s">状态读取失败</div>'; }}
 
 /* ---------- 启动日志（静默模式下原本在黑窗口里的那些输出） ---------- */
 let LOG_OPEN = false;
@@ -272,6 +281,13 @@ async function loadDeps(){
   if(!el) return;
   try{
     const d = await (await fetch('/api/deps', {cache:'no-store'})).json();
+    if(d.missing_file){
+      el.style.display = '';
+      el.innerHTML = '<span style="color:#f0c674">⚠ 安装目录里缺 requirements.txt</span>：'
+        + '依赖版本没法核对。重新跑一次一键安装、或把仓库里的 requirements.txt '
+        + '放到 RVCSVC 目录下即可（不影响今天用）。';
+      return;
+    }
     const bad = (d.drift || []);
     if(!bad.length){ el.style.display = 'none'; return; }
     el.style.display = '';

@@ -247,6 +247,15 @@ def main():
     chk("dry-run 不创建产物目录", not os.path.isfile(os.path.join(TMP, "x", "_env.txt")))
     chk("dry-run 也返回 JSON", bool(obj) and obj.get("ok") is True, obj)
 
+    print("\n== 5. 安装布局必须带上依赖清单 ==")
+    raw = open(bat, "rb").read()
+    btxt = raw.decode("gbk", "ignore")
+    chk("安装器把 requirements.txt 搬进 RVCSVC",
+        'copy /y "%SRC%\\requirements.txt" "%STACK%\\RVCSVC\\"' in btxt,
+        "缺这行 → deps.py 找不到清单，依赖锁在用户机器上静默空转")
+    chk("bat 仍是 GBK + CRLF（没被编辑器转码）",
+        raw.count(b"\r\n") > 0 and raw.count(b"\n") == raw.count(b"\r\n"))
+
     print("\n==== 结果：%d 通过 / %d 失败 ====" % (len(PASS), len(FAIL)))
     if FAIL:
         for f in FAIL:

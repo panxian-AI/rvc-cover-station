@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.0.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.0.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -57,6 +57,12 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   第一首歌省掉约 70 秒的冷启动（分离模型 43 秒 + F0 首次 30~40 秒）
 - 🎛 **设备自适应**（v1.3.2）：按显卡显存/物理核/内存自动选档位（极速/均衡/省内存），
   线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
+- 🛡 **导入备份不再丢数据**（v2.0.1）：以前导入时若有访客正在访问、或队列巡队线程
+  正好在写盘，那份**旧内存**会在几秒后把刚导入的库盖回去——接口还返回成功。现在写库
+  统一走 `guest.replace_db()`，换内存与落盘在同一把锁里完成，导入期间有人来访也不会冲掉
+- 🔐 **依赖锁真正生效**（v2.0.1）：v2.0.0 锁了版本，但安装器没把 `requirements.txt` 搬
+  进安装目录、更新器也只覆盖 5 个目录，于是 `deps.py` 找不到清单就「跳过核对」——等于
+  空转。现在安装与更新都会带上这份清单，缺了会在概览页明确提示，而不是假装一切正常
 - 🧱 **拆包重构**（v2.0.0）：`panel.py` 从 2318 行瘦到 200 行，只剩「怎么起服务」；
   实现按依赖分层搬进 `dashboard/panelkit/`——`core`（常量/工具）→ `security` / `sysinfo`
   / `services` / `pages` / `trayapp` → `routes_get` / `routes_post` → `server`。
@@ -115,7 +121,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 18 套回归测试共 914 项断言（`dashboard/e2e_*.py`）
+- 附带 18 套回归测试共 939 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

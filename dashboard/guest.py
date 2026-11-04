@@ -14,6 +14,7 @@
 
 数据落在 dashboard\\guest_db.json：visits（访客）/ requests（申请）/ queue（队列）。
 """
+import copy
 import hashlib
 import json
 import os
@@ -124,27 +125,43 @@ _cooldown_until = 0.0
 
 
 # ---------------- 存储 ----------------
+def _shape(d) -> dict:
+    """把任意对象归一成库的形状：缺字段补空表、类型不对就丢掉。
+
+    单独抽出来是因为「从文件加载」和「导入备份整份替换」必须用同一套规则——
+    两处各写一份，早晚会有一处忘了补新字段。
+    """
+    if not isinstance(d, dict):
+        d = {}
+    wl_apps = d.get("wl_apps")
+    wl_list = d.get("whitelist")
+
+    def as_list(v):
+        return v if isinstance(v, list) else []
+
+    return {"visits": as_list(d.get("visits")),
+            "requests": as_list(d.get("requests")),
+            "queue": [str(x) for x in as_list(d.get("queue"))],
+            # 老库没有白名单字段 → 空表，别让 KeyError
+            "wl_apps": as_list(wl_apps),
+            "whitelist": as_list(wl_list)}
+
+
 def _load():
-    global _db
+    global _db, _dirty
     try:
         with open(DB_PATH, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(d, dict):
-            wl_apps = d.get("wl_apps")
-            wl_list = d.get("whitelist")
-            _db = {"visits": d.get("visits") or [],
-                   "requests": d.get("requests") or [],
-                   "queue": [str(x) for x in (d.get("queue") or [])],
-                   # 老库没有白名单字段 → 空表，别让 KeyError
-                   "wl_apps": wl_apps if isinstance(wl_apps, list) else [],
-                   "whitelist": wl_list if isinstance(wl_list, list) else []}
+            _db = _shape(json.load(f))
     except Exception:
-        _db = {"visits": [], "requests": [], "queue": [], "wl_apps": [], "whitelist": []}
+        _db = _shape({})
+    # 刚按文件重建了内存，之前的脏标记作废——否则会把「加载进来的内容」再写一遍
+    _dirty = False
     return _db
 
 
 _dirty = False                # 有未落盘的改动（soft 写被节流时会置上）
 _last_save = 0.0
+_last_error = ""              # 最近一次写盘失败的原因（磁盘满/被占用），给状态页看
 SAVE_GAP = 2.0                # soft 写最小间隔（秒）
 
 
@@ -156,21 +173,30 @@ def _save(soft=False):
     为什么需要：每次写盘都是整份 JSON（现在 100KB+），而且是在 _lock 里做的 ——
     公网被刷时（每个新 IP 一条访客记录）会把所有请求串行卡在这上面。
     """
-    global _dirty, _last_save
+    global _dirty, _last_save, _last_error
     now = time.time()
     with _lock:
         _dirty = True
         if soft and now - _last_save < SAVE_GAP:
             return
         _last_save = now
-        _dirty = False
         try:
             tmp = DB_PATH + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(_db, f, ensure_ascii=False, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, DB_PATH)
-        except OSError:
-            pass
+            _dirty = False
+            _last_error = ""
+        except OSError as e:
+            # 写失败必须保留脏标记：下次 flush 还会重试，不能「假装写成功」把改动吞掉
+            _last_error = "%s: %s" % (type(e).__name__, e)
+
+
+def save_error() -> str:
+    """最近一次写盘失败的原因（空串表示没失败过）。"""
+    return _last_error
 
 
 def flush():
@@ -179,6 +205,34 @@ def flush():
         if not _dirty:
             return
     _save()
+
+
+def snapshot() -> dict:
+    """内存库的深拷贝（锁内取）。
+
+    合并导入时用它当「本机现在」，不要读文件：soft 写被节流的那两秒里，
+    文件比内存旧，按文件算合并会把刚发生的申请漏掉或判重出错。
+    """
+    with _lock:
+        return copy.deepcopy(_db)
+
+
+def replace_db(new_db, save=True) -> dict:
+    """整份替换内存库并立刻落盘（导入备份 / 回滚时用）。
+
+    为什么必须走这里、不能在外面直接写文件：
+        面板运行中 guest 有自己的内存副本。文件被外部改写之后，任何一次
+        _save()（访客来访的 soft 写、巡队 flush）都会把**旧内存**写回去，
+        导入进来的数据就静默消失了（接口还会返回成功）。这里在锁内完成
+        「换内存 + 落盘」，中间插不进别人的写。
+    """
+    global _db, _dirty
+    with _lock:
+        _db = _shape(new_db)
+        _dirty = True
+        if save:
+            _save()                  # RLock 可重入
+        return _db
 
 
 _load()

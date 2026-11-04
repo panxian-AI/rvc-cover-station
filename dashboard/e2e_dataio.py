@@ -387,8 +387,10 @@ def main():
         cnt = {"n": 0}
 
         def boom(path, data):
-            cnt["n"] += 1
-            if cnt["n"] == 2:            # 第一份写完、第二份炸
+            # 按目标文件注入，而不是「第 N 次写」：导入顺序会随实现变化，
+            # 写死次数的话改一次实现就得跟着改测试，还容易测错东西。
+            if not cnt["n"] and os.path.realpath(path) == os.path.realpath(IDX_P):
+                cnt["n"] += 1
                 raise OSError("磁盘满了（测试桩）")
             return real_write(path, data)
 
@@ -398,8 +400,13 @@ def main():
             r = dataio.apply(z5["path"], token=ck7["token"], mode="replace")
         finally:
             dataio._write_atomic = real_write
+        chk("确实炸到了成品索引那一步（否则这条没测到东西）", cnt["n"] == 1, cnt["n"])
         chk("失败被捕获并回滚", (not r.get("ok")) and r.get("rolled_back"), r.get("msg"))
         chk("库回到导入前（一条不差）", disk_db() == good, len(disk_db().get("requests") or []))
+        chk("内存也回到导入前（不是只还原了文件）",
+            [x.get("id") for x in (guest._db.get("requests") or [])]
+            == [x.get("id") for x in (good.get("requests") or [])],
+            [x.get("id") for x in (guest._db.get("requests") or [])])
 
         print("\n== 11. 容量上限 ==")
         big = base_db()
@@ -462,7 +469,69 @@ def main():
         chk("全新机器也能导入（没有导入前备份不算失败）", r.get("ok"), r.get("msg"))
         chk("数据真的落回来了", len(disk_db()["requests"]) == 3)
 
-        print("\n== 14. 页面接线 ==")
+        print("\n== 14. 导入时有人来访，也不会把导入结果冲掉 ==")
+        # 曾经的坑：apply 先写文件、最后才 reload 内存；这中间巡队线程的 flush()
+        # 或访客的一次 _save() 会把**旧内存**写回去，导入白做、接口还返回成功。
+        clear_backups()
+        seed()                                   # 包的内容：3 单（r1/r2/r3）
+        z8 = dataio.export()
+        guest.replace_db({"visits": [], "queue": [], "wl_apps": [], "whitelist": [],
+                          "requests": [{"id": "old1", "gid": "g0", "state": "done",
+                                        "created": 1, "title": "旧的"}]})
+        # 制造「有未落盘改动」：访客刚来过，soft 写被节流
+        guest._db["visits"].append({"id": "v-new", "ip": "9.9.9.9", "country": "CN",
+                                    "ua": "x", "raw_ua": "x", "first": time.time(),
+                                    "last": time.time(), "count": 1})
+        guest._last_save = time.time()
+        guest._save(soft=True)
+        chk("先确认脏标记真的在", guest._dirty is True)
+
+        real_settings = dataio._settings()
+
+        class SlowSettings:
+            """让「写库之后、收尾之前」有一段真实窗口（线上这段是解压音频）。"""
+
+            def __getattr__(self, name):
+                return getattr(real_settings, name)
+
+            def save(self, vals):
+                time.sleep(0.35)
+                return real_settings.save(vals)
+
+        stop = threading.Event()
+
+        def hammer():                            # 模拟巡队 flush + 访客来访的写盘
+            while not stop.is_set():
+                guest.flush()
+                guest._save(soft=True)
+                time.sleep(0.01)
+
+        dataio._settings = lambda: SlowSettings()
+        th = threading.Thread(target=hammer, daemon=True)
+        th.start()
+        try:
+            ck10 = dataio.check(z8["path"])
+            r = jpost("/api/data/import_apply",
+                      {"path": z8["path"], "token": ck10["token"],
+                       "mode": "replace", "confirm": True})[1]
+        finally:
+            stop.set()
+            th.join(2.0)
+            dataio._settings = lambda: real_settings
+
+        chk("并发写盘时导入仍然成功", r.get("ok"), r.get("msg"))
+        chk("磁盘上就是包里的 3 单（没被旧内存盖回去）",
+            len(disk_db().get("requests") or []) == 3,
+            [x.get("id") for x in (disk_db().get("requests") or [])])
+        chk("内存也换成了导入后的内容",
+            len(guest._db.get("requests") or []) == 3,
+            len(guest._db.get("requests") or []))
+        guest.flush()                            # 事后再让巡队写一次
+        chk("事后再写盘也不会退回旧数据",
+            len(disk_db().get("requests") or []) == 3,
+            [x.get("id") for x in (disk_db().get("requests") or [])])
+
+        print("\n== 15. 页面接线 ==")
         cpage = (open(os.path.join(HERE, "console_settings_page.html"), encoding="utf-8").read()
                  + open(os.path.join(HERE, "assets", "page_settings.js"), encoding="utf-8").read())
         chk("控制台有这张卡片", "数据备份与迁移" in cpage and 'id="dioSum"' in cpage)

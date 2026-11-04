@@ -316,10 +316,41 @@ def _safe_backup_path(path) -> str | None:
     return p
 
 
+def _cur_db():
+    """本机「现在」的访客库：优先取 guest 的内存快照，而不是读文件。
+
+    为什么：soft 写被节流的 2 秒里，文件比内存旧。按文件算预览/合并会少算刚
+    发生的申请，合并时还可能把本机最新的一条判成「更旧的那份」。
+    """
+    g = _guest()
+    if g and hasattr(g, "snapshot"):
+        try:
+            return g.snapshot()
+        except Exception:
+            pass
+    return _loads(_read_bytes(_db_path())) if os.path.isfile(_db_path()) else None
+
+
+def _replace_guest(new_db) -> bool:
+    """把整份库交给 guest 写入（它有自己的内存副本和锁）。
+
+    直接写文件是错的：面板运行中 guest 内存里还有一份，任何一次 _save() 都会把
+    旧内容盖回去，导入静默丢失。没有 guest 模块时（离线修数据）才退回写文件。
+    """
+    g = _guest()
+    if g and hasattr(g, "replace_db"):
+        try:
+            g.replace_db(new_db)
+            return True
+        except Exception:
+            pass
+    return False
+
+
 # ---------------- 当前概况 ----------------
 def summary() -> dict:
     """控制台「数据备份」卡片顶部那一行 + 备份列表。"""
-    db = _loads(_read_bytes(_db_path())) if os.path.isfile(_db_path()) else None
+    db = _cur_db()
     st = _loads(_read_bytes(_settings_path())) if os.path.isfile(_settings_path()) else None
     bks = list_backups()
     return {
@@ -618,7 +649,7 @@ def check(zip_path) -> dict:
                 except Exception:
                     idx = None
 
-    cur_db = _loads(_read_bytes(_db_path())) if os.path.isfile(_db_path()) else None
+    cur_db = _cur_db()
     raw_counts = _counts(db or {})
 
     # 两种导入方式各自会变成什么样：预览必须准，用户才敢点。
@@ -894,6 +925,12 @@ def _current_snapshot() -> dict:
 
 def _restore(snapshot: dict):
     for arc, data in snapshot.items():
+        if arc == "data/guest_db.json":
+            obj = _loads(data)
+            # 回滚也要走 guest 的写入口，否则内存里还是「导入后」的内容，
+            # 下一次 _save() 会把回滚掉的版本又写回去
+            if obj is not None and _replace_guest(obj):
+                continue
         p = {"data/guest_db.json": _db_path(),
              "data/advanced_settings.json": _settings_path(),
              "data/covers_index.json": _index_path()}[arc]
@@ -943,7 +980,7 @@ def apply(zip_path, token="", mode="replace") -> dict:
                     inc = _loads(raw["data/guest_db.json"])
                     if inc is None:
                         raise RuntimeError("备份里的访客库不是合法 JSON")
-                    cur = _loads(_read_bytes(_db_path())) if os.path.isfile(_db_path()) else None
+                    cur = _cur_db()
                     if mode == "merge":
                         merged, stat = _merge_guest_db(cur or {}, inc)
                     else:
@@ -959,7 +996,9 @@ def apply(zip_path, token="", mode="replace") -> dict:
                     merged, norm = _normalize(merged, prefer_queue=(
                         merged.get("queue") if mode == "replace" else None))
                     stat.update(norm)
-                    _write_atomic(_db_path(), _dump(merged))
+                    # 必须经 guest 写（内存 + 文件一起换），不能只覆盖文件
+                    if not _replace_guest(merged):
+                        _write_atomic(_db_path(), _dump(merged))
 
                 # ---- 高级设置（走 settings.save 的校验，坏值夹回默认） ----
                 if "data/advanced_settings.json" in raw:

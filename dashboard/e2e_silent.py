@@ -213,11 +213,109 @@ def test_wiring():
         chk("没有裸 %i 循环变量（会直接闪退）", not re.search(r"(?<!%)%i\b", txt))
 
 
+# ------------------------------------------- D. 无窗口启动 + 自助翻唱任务可见
+
+def test_quiet_and_cover_jobs():
+    print("\n== D. 无窗口启动 / 自助翻唱任务可见 ==")
+    rd = lambda p: open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
+
+    psrc = rd("panel.py")
+    chk("服务用 pythonw.exe 启动", "def gui_exe" in psrc and 'cmd = [gui_exe(cfg["exe"])]' in psrc)
+    chk("只在同目录真有 pythonw 时才换", "if os.path.isfile(w)" in psrc and 'n.lower() == "python.exe"' in psrc)
+    chk("分离启动带 CREATE_NO_WINDOW", "_CREATE_NO_WINDOW = 0x08000000" in psrc
+        and "flags = _DETACHED_PROCESS | _CREATE_NO_WINDOW" in psrc)
+    chk("仍保留 DETACHED + 独立进程组", "_DETACHED_PROCESS = 0x00000008" in psrc
+        and "_CREATE_NEW_PROCESS_GROUP = 0x00000200" in psrc)
+    chk("STARTUPINFO 要求隐藏窗口", "STARTF_USESHOWWINDOW" in psrc and "SW_HIDE" in psrc)
+    n_flags = psrc.count("creationflags=detach_flags(")
+    chk("服务/兜底 bat/隧道都走同一套标志", n_flags >= 3, n_flags)
+    chk("隧道也带隐藏 startupinfo", "startupinfo=hidden_startup()" in psrc)
+
+    nsrc = rd(os.path.join("..", "ncmapi", "ncm_proxy.py"))
+    import ast
+    ntree = ast.parse(nsrc)
+    sys_calls = [n for n in ast.walk(ntree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "system"]
+    in_calls = [n for n in ast.walk(ntree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "input"]
+    chk("ncm 不再用 os.system 开 ANSI", not sys_calls and "_enable_ansi" in nsrc, len(sys_calls))
+    chk("ncm 的 ipconfig 不再开窗", "creationflags=_CREATE_NO_WINDOW" in nsrc)
+    chk("ncm 仅剩一处 input 且包在 isatty 里", len(in_calls) == 1 and "os.isatty(0)" in nsrc,
+        len(in_calls))
+
+    # --- 快照逻辑：直接往 _jobs 里塞假任务，别真去做单 ---
+    import cover
+    with cover._lock:
+        saved = dict(cover._jobs)
+    now = time.time()
+
+    def job(state, created, started=None, ended=None, **kw):
+        j = {"state": state, "stage": kw.pop("stage", ""), "created": created,
+             "started": started, "ended": ended, "file": kw.pop("file", None),
+             "error": None, "title": kw.pop("title", ""), "model": kw.pop("model", "x.pth"),
+             "key_shift": 0, "acapella": False}
+        j.update(kw)
+        return j
+
+    try:
+        with cover._lock:
+            cover._jobs.clear()
+            cover._jobs.update({
+                "r1": job("running", now - 60, now - 30, stage="派发任务（下载 + 人声分离 + 推理）…",
+                          title="正在做的一首", model="foo.pth", key_shift=2),
+                "q1": job("queued", now - 50, stage="排队中", title="等 GPU 的一首", acapella=True),
+                "d1": job("done", now - 300, now - 290, now - 260, stage="完成",
+                          title="刚做完的一首", file="done.mp3"),
+            })
+            for i in range(7):     # 再塞 7 条完成，验证只留最近 5 条
+                cover._jobs["old%d" % i] = job("done", now - 900 - i, now - 800 - i, now - 700 - i,
+                                               title="旧单 %d" % i)
+        snap = cover.jobs_snapshot()
+    finally:
+        with cover._lock:
+            cover._jobs.clear()
+            cover._jobs.update(saved)
+
+    chk("分成 running / queued / recent", len(snap["running"]) == 1
+        and len(snap["queued"]) == 1 and len(snap["recent"]) == 5,
+        (len(snap["running"]), len(snap["queued"]), len(snap["recent"])))
+    chk("running 带阶段与已用时", snap["running"][0]["stage"].startswith("派发")
+        and snap["running"][0]["elapsed"] >= 25, snap["running"][0])
+    chk("模型名去掉 .pth 后缀", snap["running"][0]["model"] == "foo", snap["running"][0]["model"])
+    chk("total 只统计未完成的单", snap["total"] == 2, snap["total"])
+    chk("recent 按完成时间倒序取前 5", snap["recent"][0]["title"] == "刚做完的一首",
+        [r["title"] for r in snap["recent"]])
+    chk("完成项带成品文件名", snap["recent"][0]["file"] == "done.mp3")
+    chk("快照带并发上限与占用", snap["cap"] >= 1 and snap["used"] >= 0)
+    with cover._lock:
+        cover._jobs.clear()
+    try:
+        empty = cover.jobs_snapshot()
+        chk("没有任务时 total=0 且三段为空", empty["total"] == 0 and not empty["running"]
+            and not empty["queued"] and not empty["recent"])
+    finally:
+        with cover._lock:
+            cover._jobs.update(saved)
+
+    cs = rd("cover.py")
+    chk("新增 /api/cover/jobs 接口", 'path == "/api/cover/jobs"' in cs and "jobs_snapshot()" in cs)
+
+    html = rd("console_page.html")
+    chk("控制台有「自助翻唱任务」卡片", 'id="cjobs"' in html and "自助翻唱任务" in html)
+    chk("控制台会拉快照接口", "'/api/cover/jobs'" in html)
+    chk("refresh 里接上了它", "loadQueue(); loadCoverJobs();" in html)
+    chk("卡片能显示阶段/用时/试听", "j.stage" in html and "已用" in html and "/api/cover/file" in html)
+    i_local = psrc.find('if not self._local_only(as_json=path.startswith("/api/"))')
+    i_cover = psrc.find('elif cover_mod and path.startswith("/api/cover/")')
+    chk("自助翻唱接口在本机校验之后（外网拿不到）", 0 < i_local < i_cover, (i_local, i_cover))
+
+
 def main():
     print("RVC 静默启动 / 任务栏图标 回归测试")
     test_launcher()
     test_tray()
     test_wiring()
+    test_quiet_and_cover_jobs()
     print("\n== 结果 ==")
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

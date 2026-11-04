@@ -603,6 +603,51 @@ _SPAWNED = {}
 _spawn_lock = threading.Lock()
 
 
+# ---------------- 无窗口分离启动 ----------------
+# 只用 DETACHED_PROCESS 是不够的：把 Windows Terminal 设成「默认终端应用」的
+# 机器上（Win11 默认就是），实测三个服务仍会各冒一个终端窗口，标题就是解释器
+# 路径，用户看到的就是「点一下开启服务，桌面多出三个黑框」。
+# 所以再显式带上 CREATE_NO_WINDOW（不创建控制台），并用 STARTF_USESHOWWINDOW
+# + SW_HIDE 兜一层：老式 conhost 上这一层是唯一生效的那一层。
+_CREATE_NO_WINDOW = 0x08000000
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+def hidden_startup():
+    """让子进程以隐藏姿态启动（不经 STARTUPINFO 时，某些终端宿主仍会给它开窗）。"""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
+
+
+def detach_flags(breakaway=True):
+    """无窗口 + 无控制台 + 独立进程组（+ 可选脱离 job）。"""
+    flags = _DETACHED_PROCESS | _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
+    if breakaway:
+        flags |= _CREATE_BREAKAWAY_FROM_JOB
+    return flags
+
+
+def gui_exe(exe):
+    """把 python.exe 换成同目录的 pythonw.exe。
+
+    这条才是真正止住「开启服务弹出三个终端」的关键：python.exe 是控制台子系统，
+    即使带 DETACHED_PROCESS + CREATE_NO_WINDOW，在把 Windows Terminal 设成默认
+    终端的 Win11 上仍会被 WT 接管、开出一个标签页（实测三个服务 = 三个终端窗口）。
+    pythonw.exe 是 GUI 子系统，进程创建时就不申请控制台，桌面绝不会多窗口。
+    stdout/stderr 本来就已经重定向进各自的日志文件，所以输出一个字都不丢。
+    """
+    d, n = os.path.split(str(exe))
+    if n.lower() == "python.exe":
+        w = os.path.join(d, "pythonw.exe")
+        if os.path.isfile(w):
+            return w
+    return exe
+
+
 def pid_alive(pid):
     """进程是否还活着（不依赖 tasklist，纯 ctypes）"""
     try:
@@ -685,18 +730,19 @@ def start(target):
                 os.makedirs(log_dir, exist_ok=True)
             log = open(cfg["log"], "ab", buffering=0)
             log.write(("\n\n===== %s 由控制台启动 =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode())
-            cmd = [cfg["exe"]] + cfg["args"]
+            cmd = [gui_exe(cfg["exe"])] + cfg["args"]
             kwargs = dict(cwd=cfg["cwd"], env=env, stdin=subprocess.DEVNULL,
-                          stdout=log, stderr=subprocess.STDOUT, close_fds=True)
+                          stdout=log, stderr=subprocess.STDOUT, close_fds=True,
+                          startupinfo=hidden_startup())
             try:
                 # 优先彻底脱离当前任务对象，关掉面板后子进程也能活
-                proc = subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200 | 0x01000000, **kwargs)
+                proc = subprocess.Popen(cmd, creationflags=detach_flags(), **kwargs)
             except OSError as e:
                 # 面板本身处在不允许 breakaway 的 job 里时会 WinError 5，
                 # 去掉 breakaway 只要 DETACHED_PROCESS 一样能起（子进程随 job 走）
                 if getattr(e, "winerror", None) != 5:
                     raise
-                proc = subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200, **kwargs)
+                proc = subprocess.Popen(cmd, creationflags=detach_flags(False), **kwargs)
                 print("breakaway 被拒绝，已用 DETACHED_PROCESS 降级启动 %s" % target)
             with _spawn_lock:
                 _SPAWNED[target] = proc.pid
@@ -713,7 +759,8 @@ def start(target):
             subprocess.Popen(["cmd", "/c", cfg["bat"]], cwd=os.path.dirname(cfg["bat"]),
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, close_fds=True,
-                             creationflags=0x00000008 | 0x00000200 | 0x08000000)
+                             startupinfo=hidden_startup(),
+                             creationflags=detach_flags())
             return True, "已通过脚本启动 %s（若几十秒后端口仍关闭，请手动双击 %s）" % (
                 target, os.path.basename(cfg["bat"]))
         except Exception as e:
@@ -916,7 +963,8 @@ def start_tunnel(timeout=25):
         subprocess.Popen([PY_API, "-u", os.path.join(HERE, "tunnel.py")],
                          cwd=HERE, stdin=subprocess.DEVNULL,
                          stdout=log, stderr=subprocess.STDOUT, close_fds=True,
-                         creationflags=0x00000008 | 0x00000200)
+                         startupinfo=hidden_startup(),
+                         creationflags=detach_flags())
     except Exception as e:
         return False, "隧道启动失败: %s" % e
     t0 = time.time()

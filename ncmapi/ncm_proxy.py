@@ -225,7 +225,8 @@ def _local_ips():
     ips = []
     try:
         out = subprocess.run(["ipconfig"], capture_output=True, text=True,
-                             encoding="gbk", errors="ignore").stdout
+                             encoding="gbk", errors="ignore",
+                             creationflags=_CREATE_NO_WINDOW).stdout
     except Exception:
         return ips
     for line in out.splitlines():
@@ -242,13 +243,45 @@ def _local_ips():
     return ips
 
 
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _enable_ansi():
+    """打开控制台的 VT 处理（等价于老代码里的 os.system("")）。
+
+    老写法是靠起一个空的 cmd 来「顺手」打开 ANSI，但服务是由面板以 DETACHED
+    方式拉起的 —— 没有控制台可继承时，Windows 会给这条 cmd 新分配一个黑窗口，
+    用户看到的就是「开启服务时闪一下黑框」。直接改控制台模式，零进程。
+    """
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.GetStdHandle(-11)          # STD_OUTPUT_HANDLE
+        if not h or h == ctypes.c_void_p(-1).value:
+            return
+        mode = ctypes.c_uint32()
+        if k32.GetConsoleMode(h, ctypes.byref(mode)):
+            k32.SetConsoleMode(h, mode.value | 0x0004)   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
+
+
+def _wait_enter():
+    """有控制台才真的等回车；静默启动时 input() 会抛 EOFError。"""
+    try:
+        if os.isatty(0):
+            input("按回车退出…")
+    except Exception:
+        pass
+
+
 def main():
-    os.system("")
+    _enable_ansi()
     try:
         httpd = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     except OSError as e:
         print("端口 %d 启动失败: %s" % (PORT, e))
-        input("按回车退出…")
+        _wait_enter()
         return
     ips = _local_ips()
     print("=" * 56)

@@ -187,6 +187,12 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
   </div>
 
   <div class="card">
+    <h2>🎤 自助翻唱任务 <span id="cjSum" style="color:#8fa3c2;font-weight:400"></span></h2>
+    <div id="cjobs"><div class="empty">读取中…</div></div>
+    <div class="hint">这一块是「自助翻唱」页（<a href="/cover">/cover</a>）里的单：你自己用、不用审批，和上面的访客队列分开排 GPU。以前它的进度只有那个页面自己看得到。</div>
+  </div>
+
+  <div class="card">
     <h2>待审批 <span id="pendN" style="color:#f0c674"></span></h2>
     <div id="pend"><div class="empty">读取中…</div></div>
     <div class="hint">批准即入队，不会因为「还有一单在做」被挡。命中成品库的单批准后立刻发成品，不占队列。</div>
@@ -423,6 +429,50 @@ async function pumpNow(){
 }
 
 /* ---------- 待审批 ---------- */
+/* ---------- 自助翻唱任务（自己用，不走访客队列） ---------- */
+async function loadCoverJobs(){
+  let d;
+  try{ d = await (await fetch('/api/cover/jobs', {cache:'no-store'})).json(); }
+  catch(e){ $('#cjobs').innerHTML = '<div class="empty">读取失败</div>'; return; }
+  if(!d.ok){ $('#cjobs').innerHTML = '<div class="empty">只能在本机查看</div>'; return; }
+  const run = d.running || [], qs = d.queued || [], rec = d.recent || [];
+  $('#cjSum').textContent = (run.length ? (' · 正在做 ' + run.length + '/' + (d.cap||1)) : '')
+    + (qs.length ? (' · 排队 ' + qs.length) : '')
+    + ((run.length || qs.length) ? '' : ' · 空闲');
+  const sub = j => esc(j.model || '-') + (j.key_shift ? (' · 升调 ' + j.key_shift) : '')
+    + (j.acapella ? ' · 清唱' : '');
+  let html = '';
+  if(run.length){
+    html += run.map(j => `<div class="qrow qrun">
+      <span class="pos">▶</span>
+      <div class="t"><b>🎤 ${esc(j.title)}</b>
+        <span>${sub(j)} · ${esc(j.stage || '制作中')} · 已用 ${Math.round(j.elapsed)}s</span></div>
+    </div>`).join('');
+  }else{
+    html += '<div class="empty">现在没有在做的自助翻唱</div>';
+  }
+  if(qs.length){
+    html += qs.map((j, i) => `<div class="qrow">
+      <span class="pos">#${i+1}</span>
+      <div class="t"><b>🎤 ${esc(j.title)}</b><span>${sub(j)} · 排队等 GPU</span></div>
+    </div>`).join('');
+  }
+  if(rec.length){
+    html += '<div class="hint" style="margin:10px 0 4px">最近完成</div>' + rec.map(j => {
+      const ok = j.state === 'done';
+      const tail = ok
+        ? `<a class="link" href="/api/cover/file?name=${encodeURIComponent(j.file||'')}" target="_blank">▶ 试听</a>`
+        : `<span style="color:#f87171;font-size:12px">${esc(j.error || '失败')}</span>`;
+      return `<div class="qrow" style="opacity:.85">
+        <span class="pos">${ok ? '✓' : '!'}</span>
+        <div class="t"><b>🎤 ${esc(j.title)}</b><span>${sub(j)} · 用时 ${Math.round(j.elapsed)}s</span></div>
+        ${tail}
+      </div>`;
+    }).join('');
+  }
+  $('#cjobs').innerHTML = html;
+}
+
 async function loadPend(){
   let d;
   try{ d = await (await fetch('/api/admin/requests?state=pending', {cache:'no-store'})).json(); }
@@ -1005,7 +1055,7 @@ async function updApply(){
   finally{ UPD_BUSY = false; btn.disabled = false; btn.textContent = '⬆ 立即更新'; }
 }
 
-function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadUnlock(); loadAdv(); loadSec(); loadMarket(); logLoad(); }
+function refresh(){ loadStatus(); loadPublic(); loadQueue(); loadCoverJobs(); loadPend(); loadReqs(); loadVisits(); loadWl(); loadUnlock(); loadAdv(); loadSec(); loadMarket(); logLoad(); }
 refresh(); setInterval(refresh, 8000);
 updCheck(false);          // 每次打开控制台都查一次（服务端 10 分钟缓存，不会刷爆额度）
 

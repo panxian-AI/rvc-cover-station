@@ -130,6 +130,46 @@ def job_status(jid: str) -> dict | None:
     return out
 
 
+def jobs_snapshot(recent=5):
+    """自助翻唱的实时任务快照（给总面板用）。
+
+    自助翻唱是站长自己用的入口：任务只活在 _jobs 里，不写访客队列，
+    所以以前只有 /cover 页面自己看得到进度，控制台「制作队列」永远只有访客单。
+    这里把「正在做 / 排队 / 最近完成」一次给全，控制台照着渲染就行。
+    """
+    now = time.time()
+    with _lock:
+        items = [(jid, dict(j)) for jid, j in _jobs.items()]
+    run, queued, done = [], [], []
+    for jid, j in items:
+        st = str(j.get("state") or "")
+        started = j.get("started")
+        row = {"id": jid, "title": j.get("title") or "(未命名)",
+               "model": os.path.basename(str(j.get("model") or "")).replace(".pth", ""),
+               "key_shift": j.get("key_shift") or 0,
+               "acapella": bool(j.get("acapella")),
+               "state": st, "stage": j.get("stage") or "",
+               "file": j.get("file"), "error": j.get("error"),
+               "created": float(j.get("created") or 0),
+               "ended": float(j.get("ended") or 0),
+               "elapsed": round((j.get("ended") or now) - started, 1) if started else 0}
+        if st == "running":
+            run.append(row)
+        elif st == "queued":
+            queued.append(row)
+        else:
+            done.append(row)
+    run.sort(key=lambda r: r["created"])
+    queued.sort(key=lambda r: r["created"])
+    done.sort(key=lambda r: (r["ended"] or r["created"]), reverse=True)
+    try:
+        cap = max(1, settings_mod.concurrency())
+    except Exception:
+        cap = 1
+    return {"ok": True, "running": run, "queued": queued, "recent": done[:recent],
+            "used": slots_used(), "cap": cap, "total": len(run) + len(queued)}
+
+
 # ---------------- 工具 ----------------
 def _json_get(url: str, timeout=40):
     with _OPENER.open(url, timeout=timeout) as r:
@@ -715,6 +755,8 @@ def handle_get(path: str, query: dict) -> tuple[int, dict]:
             jid = (q.get("id") or [""])[0] if isinstance(q.get("id"), list) else q.get("id", "")
             st = job_status(jid or "")
             return (200, {"ok": True, "job": st}) if st else (404, {"ok": False, "msg": "任务不存在"})
+        if path == "/api/cover/jobs":
+            return 200, jobs_snapshot()
         if path == "/api/cover/covers":
             return 200, covers()
         if path == "/api/cover/exists":

@@ -5,6 +5,7 @@
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
 [![Release](https://img.shields.io/badge/Release-v2.1.3-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![e2e](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -137,6 +138,8 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   在 `dashboard` 里执行 `..\apienv\Scripts\python.exe run_e2e.py`
   （在安装目录里跑时加 `--repo <仓库根>`；失败的套会回显末尾输出并写 `logs\e2e_run-last.log`）
   发布脚本 `_release/create_release.py` 会先跑这遍全量，不绿不许发版
+  每次 push / PR 另由 GitHub Actions 跑一遍（`.github/workflows/e2e.yml`）：
+  干净检出里没有声线和成品，先跑 `dashboard/ci_fixture.py` 摆一份最小夹具再测
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

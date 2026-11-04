@@ -1,11 +1,6 @@
 /* RVC 控制台 · tasks —— 由 console_page.html 拆出（v2.0.0 多页面） */
 
-const $ = s => document.querySelector(s);
-
-function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');
-  clearTimeout(window._t);window._t=setTimeout(()=>t.classList.remove('on'),2400);}
-
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+/* $ / toast / esc / jsq 在 assets/common.js（页面里的 <script> 顺序保证先加载） */
 
 const SVC_NAME = {api:'后端 3333', webui:'WebUI 7865', ncm:'网易云 3002', panel:'面板 8899'};
 
@@ -50,10 +45,10 @@ async function loadQueue(){
       <div class="t"><b>${q.type==='tts'?'🗣':'🎤'} ${esc(q.title)}</b>
         <span>${esc(q.artist)||'-'}${q.acapella?' · 清唱':''} · 提交 ${esc(q.created)}
           · <b style="color:#c4b5fd">${q.q_ahead ? ('前面 '+q.q_ahead+' 单') : '下一个就做'}</b>${q.eta_text?` · <span class="eta">预计约 ${esc(q.eta_text)}开始</span>`:''}</span></div>
-      <button class="gray" onclick="moveQ('${esc(q.id)}','top')" ${q.pos===1?'disabled':''}>⤒</button>
-      <button class="gray" onclick="moveQ('${esc(q.id)}','up')" ${q.pos===1?'disabled':''}>↑</button>
-      <button class="gray" onclick="moveQ('${esc(q.id)}','down')" ${q.pos===d.total?'disabled':''}>↓</button>
-      <button class="red" onclick="decide('reject','${esc(q.id)}')">移出</button>
+      <button class="gray" onclick="moveQ('${jsq(q.id)}','top')" ${q.pos===1?'disabled':''}>⤒</button>
+      <button class="gray" onclick="moveQ('${jsq(q.id)}','up')" ${q.pos===1?'disabled':''}>↑</button>
+      <button class="gray" onclick="moveQ('${jsq(q.id)}','down')" ${q.pos===d.total?'disabled':''}>↓</button>
+      <button class="red" onclick="decide('reject','${jsq(q.id)}')">移出</button>
     </div>`).join('');
   }
   $('#queue').innerHTML = html;
@@ -134,8 +129,8 @@ async function loadPend(){
         <div class="n">${r.type==='tts'?'🗣':'🎤'} ${esc(r.title)}</div>
         <div class="m">${esc(r.artist||'-')} · ${r.type==='tts'?esc(r.voice_label || (r.voice||'').replace(/Neural$/,'')):esc((r.model||'').replace(/\.pth$/i,''))}${r.acapella?' · 清唱':''}${r.reuse?' · 复用成品':''} · ${esc(r.ip||'')}${r.country?'·'+esc(r.country):''} · ${esc(r.created)}</div>
       </div>
-      <button class="green mini" onclick="decide('approve','${esc(r.id)}')">✓ 批准入队</button>
-      <button class="red mini" onclick="decide('reject','${esc(r.id)}')">拒绝</button>
+      <button class="green mini" onclick="decide('approve','${jsq(r.id)}')">✓ 批准入队</button>
+      <button class="red mini" onclick="decide('reject','${jsq(r.id)}')">拒绝</button>
     </div>`).join('');
 }
 
@@ -160,9 +155,9 @@ async function loadReqs(){
       if(r.state === 'done' && r.file)
         op = `<a class="link" href="/api/cover/file?name=${encodeURIComponent(r.file)}" target="_blank">▶ 试听</a>`;
       else if(r.state === 'error' || r.state === 'rejected')
-        op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">重试</a>`;
+        op = `<a class="link" href="#" onclick="decide('approve','${jsq(r.id)}');return false">重试</a>`;
       else if(r.state === 'pending')
-        op = `<a class="link" href="#" onclick="decide('approve','${esc(r.id)}');return false">批准</a>`;
+        op = `<a class="link" href="#" onclick="decide('approve','${jsq(r.id)}');return false">批准</a>`;
       // 状态列不只写「排队中/制作中」，把位次和阶段也带上，一眼知道卡在哪
       let stHtml = `<span class="badge ${cls}">${esc(st)}</span>`;
       if(r.state === 'queued' && r.q_pos)

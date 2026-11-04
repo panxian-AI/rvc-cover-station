@@ -26,7 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'ht
 只要判断一句话：**最后一行 JSON 里 `ok` 是不是 `true`**。
 
 ```json
-{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"2.1.1","missing":[],"panel":"http://127.0.0.1:8899","error":""}
+{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"2.1.2","missing":[],"panel":"http://127.0.0.1:8899","error":""}
 ```
 
 ## 第二步：先空跑核对（可选，约 20 秒）

@@ -44,6 +44,20 @@ def rd(p):
     return open(os.path.join(HERE, p), encoding="utf-8").read().replace("\r\n", "\n")
 
 
+def dataio_src():
+    """dataio 的全部源码：门面 + dataiokit/*.py。
+
+    v2.1.2 把实现搬进包以后，只读 dataio.py 会读到 40 行薄壳，
+    「代码搬走了」被误判成「代码没了」——这和 v2.0.0 拆 panelkit 是同一个坑。
+    """
+    parts = [rd("dataio.py")]
+    d = os.path.join(HERE, "dataiokit")
+    for n in sorted(os.listdir(d)):
+        if n.endswith(".py"):
+            parts.append(rd(os.path.join("dataiokit", n)))
+    return "\n".join(parts)
+
+
 def get(path):
     req = urllib.request.Request("http://127.0.0.1:%d%s" % (PORT, path), headers={"Host": "127.0.0.1:%d" % PORT})
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -123,17 +137,33 @@ def test_pages():
             chk("%-18s 200 + HTML" % url, st == 200 and "text/html" in hd.get("Content-Type", ""), st)
             chk("  └ 引用了共用样式", 'href="/assets/console.css"' in body)
             chk("  └ 引用了自己的脚本", ('src="/assets/%s"' % js_name) in body)
+            chk("  └ 公共库先于页面脚本加载",
+                "/assets/common.js" in body
+                and body.find("/assets/common.js") < body.find("/assets/%s" % js_name))
             chk("  └ 没有内联大段 JS", body.count("<script>") == 0)
 
         st, css, hd = get("/assets/console.css")
         chk("/assets/console.css 200 text/css", st == 200 and "text/css" in hd.get("Content-Type", ""), st)
         chk("样式里有导航与卡片", ".nav" in css and ".card" in css and ".qrow" in css)
 
+        # v2.1.2：$ / toast / esc / jsq 只在 common.js 里有一份
+        st, com, hd = get("/assets/common.js")
+        chk("/assets/common.js 200 js", st == 200 and "javascript" in hd.get("Content-Type", ""), st)
+        for sig in ("const $", "function toast", "function esc", "function jsq"):
+            chk("  └ 提供 %s" % sig, sig in com)
+        chk("  └ jsq 把单引号转成 \\x27（不是 HTML 实体）", "\\x27" in com)
+        chk("  └ esc 说明了自己管不了单引号", "单引号" in com)
+
         for _u, _h, js in PAGES:
             st, code, hd = get("/assets/" + js)
             chk("/assets/%-18s 200 js" % js,
                 st == 200 and "javascript" in hd.get("Content-Type", ""), st)
             chk("  └ 有刷新循环", "setInterval(refresh" in code)
+            dup = [p for p in (r"const \$ *=", r"function toast\(", r"function esc\(", r"function jsq\(")
+                   if re.search(p, code)]
+            chk("  └ 不重复定义公共函数", not dup, dup)
+            chk("  └ 内联事件里不用 esc（会漏单引号，该用 jsq）",
+                not re.search(r'on(?:click|change|keydown)="[^"]*esc\(', code))
 
         st, _b, hd = get("/assets/../panel.py")
         chk("静态资源不能越界", st == 404, st)
@@ -236,7 +266,7 @@ def test_release_plumbing():
 
     # 导入必须走 guest 的统一写入口，否则并发写盘会把导入结果盖回旧数据
     gsrc = rd("guest.py")
-    dsrc = rd("dataio.py")
+    dsrc = dataio_src()
     chk("guest 提供「整份替换」入口", "def replace_db(" in gsrc)
     chk("替换在锁内完成（换内存 + 落盘不被打断）",
         re.search(r"def replace_db\(.*?\n    with _lock:", gsrc, re.S) is not None)
@@ -248,12 +278,94 @@ def test_release_plumbing():
         "保留脏标记" in gsrc or "_dirty = True" in gsrc)
 
 
+def _missing_globals(path):
+    """模块里「函数当成全局用、但模块没定义也没 import」的名字。
+
+    拆包最容易踩的就是这个：少一个 from .core import _counts，代码看着没问题，
+    跑到 summary() 才 NameError。逐个试接口太慢，symtable 一次扫全。
+    """
+    import builtins
+    import symtable
+    ok_names = set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
+    top = symtable.symtable(open(path, encoding="utf-8").read(), path, "exec")
+    defined = {s.get_name() for s in top.get_symbols()
+               if s.is_assigned() or s.is_imported()}
+    miss = {}
+
+    def walk(t):
+        for s in t.get_symbols():
+            if s.is_global() and s.get_name() not in defined and s.get_name() not in ok_names:
+                miss.setdefault(s.get_name(), set()).add(t.get_name())
+        for c in t.get_children():
+            walk(c)
+
+    for c in top.get_children():
+        walk(c)
+    return miss
+
+
+def test_dataio_pkg():
+    print("\n== E. dataio 拆包（v2.1.2）==")
+    import dataio
+    import dataiokit.backup as dio_backup
+    import dataiokit.core as dio_core
+    import dataiokit.restore as dio_restore
+
+    for n in ("__init__.py", "core.py", "backup.py", "restore.py"):
+        chk("dataiokit/%-11s 存在" % n,
+            os.path.isfile(os.path.join(HERE, "dataiokit", n)))
+
+    csrc = rd(os.path.join("dataiokit", "core.py"))
+    bsrc = rd(os.path.join("dataiokit", "backup.py"))
+    rsrc = rd(os.path.join("dataiokit", "restore.py"))
+    chk("分层单向：core 不 import 上层",
+        "from .backup" not in csrc and "from .restore" not in csrc)
+    chk("分层单向：backup 不 import restore", "from .restore" not in bsrc)
+    chk("分层单向：restore 只用下面两层",
+        "from .core" in rsrc and "from .backup" in rsrc)
+
+    # 拆包最容易漏的就是「门面少了几个老名字」，老代码 import 到一半才炸
+    legacy = ["APP", "KIND", "SCHEMA", "BACKUP_DIR", "MAX_ZIP", "MAX_MEMBER",
+              "MAX_UNPACK", "MAX_KEEP_AUTO", "MAX_KEEP_MANUAL", "AUDIO_PREFIX",
+              "DATA_PREFIX", "SAFE_ARCS", "version", "ensure_dir", "list_backups",
+              "_prune", "delete_backup", "backup_abs", "_safe_backup_path", "summary",
+              "_collect", "_audio_arc", "export", "_arc_ok", "check", "_by_id",
+              "_newer", "_merge_guest_db", "_job_alive", "_normalize", "_cap",
+              "_write_atomic", "_reload", "_current_snapshot", "_restore", "apply",
+              "_PICK_SRC", "pick_zip", "open_dir", "_LOCK", "_LAST_EXPORT", "_guest",
+              "_settings", "_cover", "_covers_dir", "_db_path", "_settings_path",
+              "_index_path", "_sha", "_sha_file", "_read_bytes", "_loads", "_dump",
+              "_human", "_tag", "_counts", "_cover_counts", "_models_manifest",
+              "_new_path", "_cur_db", "_replace_guest"]
+    miss = [n for n in legacy if not hasattr(dataio, n)]
+    chk("门面导出了拆前的 %d 个名字" % len(legacy), not miss, miss)
+
+    # 赋值必须转发：测试与运维就是靠替换内部函数来验「写盘失败要回滚」的
+    w0, s0 = dio_restore._write_atomic, dio_core._settings
+    sent = lambda *a, **k: None            # noqa: E731
+    try:
+        dataio._write_atomic = sent
+        chk("dataio.X = v 转发到 restore", dio_restore._write_atomic is sent)
+        dataio._settings = sent
+        chk("dataio.X = v 转发到 core", dio_core._settings is sent and dio_restore._settings is sent)
+    finally:
+        dataio._write_atomic, dataio._settings = w0, s0
+    chk("改完能还原（测试之间不串味）",
+        dio_restore._write_atomic is w0 and dio_core._settings is s0)
+
+    for f in ("core.py", "backup.py", "restore.py"):
+        m = _missing_globals(os.path.join(HERE, "dataiokit", f))
+        chk("dataiokit/%-11s 没有漏导入的全局名" % f, not m,
+            sorted(m.items())[:4])
+
+
 def main():
     print("RVC 模块化 / 多页面 / 依赖锁 回归测试")
     test_layout()
     test_pages()
     test_deps()
     test_release_plumbing()
+    test_dataio_pkg()
     print("\n" + "=" * 52)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

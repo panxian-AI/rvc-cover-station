@@ -1,16 +1,6 @@
 /* RVC 控制台 · guest —— 由 console_page.html 拆出（v2.0.0 多页面） */
 
-const $ = s => document.querySelector(s);
-
-function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');
-  clearTimeout(window._t);window._t=setTimeout(()=>t.classList.remove('on'),2400);}
-
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-// onclick="fn('...')" 里用：esc 不转义单引号，IP/文件名里一个 ' 就把整句
-// JS 断掉（按钮点了没反应）；\x27 不是 HTML 实体，解析器不会提前解码。
-function jsq(s){ return String(s==null?'':s)
-  .replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'&quot;')
-  .replace(/</g,'&lt;').replace(/\r?\n/g,'\\n'); }
+/* $ / toast / esc / jsq 在 assets/common.js（页面里的 <script> 顺序保证先加载） */
 
 const SVC_NAME = {api:'后端 3333', webui:'WebUI 7865', ncm:'网易云 3002', panel:'面板 8899'};
 

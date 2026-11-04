@@ -186,11 +186,25 @@ def test_tray():
 
 
 
-def page_bundle(html_name, js_name):
-    """页面 + 它引用的脚本（v2.0.0 起控制台拆成多页，脚本在 assets/ 下）。"""
+def page_bundle(html_name, js_name=None):
+    """页面 + 它引用的全部 /assets/*.js。
+
+    v2.0.0 起控制台拆成多页、脚本放 assets/ 下；v2.1.2 又把公用工具提进了
+    common.js。这里改成顺着页面里的 <script src="/assets/..."> 全部读进来，
+    不再由调用方逐个点名 —— 否则加了脚本没同步测试，断言会假红。
+    js_name 只作兼容保留：传了就额外并入（通常是同一份，不会重复）。
+    """
     a = open(os.path.join(HERE, html_name), encoding="utf-8").read()
-    b = open(os.path.join(HERE, "assets", js_name), encoding="utf-8").read()
-    return a + "\n" + b
+    parts = [a]
+    for src in re.findall(r'<script src="/assets/([A-Za-z0-9_.\-]+\.js)"', a):
+        p = os.path.join(HERE, "assets", src)
+        if os.path.isfile(p):
+            parts.append(open(p, encoding="utf-8").read())
+    if js_name:
+        p = os.path.join(HERE, "assets", js_name)
+        if os.path.isfile(p) and os.path.basename(p) not in a:
+            parts.append(open(p, encoding="utf-8").read())
+    return "\n".join(parts)
 
 
 def panel_src():

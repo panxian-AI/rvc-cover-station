@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.1.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.2-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -57,6 +57,9 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   第一首歌省掉约 70 秒的冷启动（分离模型 43 秒 + F0 首次 30~40 秒）
 - 🎛 **设备自适应**（v1.3.2）：按显卡显存/物理核/内存自动选档位（极速/均衡/省内存），
   线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
+- 🧱 **结构整理**（v2.1.2）：`dataio.py` 1246 行拆成 `dataiokit/` 三层（core → backup →
+  restore），`dataio.py` 只留 60 行门面，老代码一个字不用改；四个控制台页面各存一份的
+  `$ / toast / esc` 合成 `assets/common.js`；发布脚本加了门禁——**全量回归不绿就不许发版**
 - 🧰 **稳定版 · 全面加固**（v2.1.0）：逐文件审了一遍、逐条实测复现后修掉 6 个会丢数据
   或让公网访客冒充本机的严重问题——长连接里未读的请求体会被当成「下一条请求」（可绕过
   本机校验）、访客库读失败会被当空库写回、删声线会误删别人的索引、安装器重跑会「假成功」、
@@ -126,9 +129,10 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 19 套回归测试共 972 项断言（`dashboard/e2e_*.py`），一条命令全跑：
+- 附带 19 套回归测试共 1005 项断言（`dashboard/e2e_*.py`），一条命令全跑：
   在 `dashboard` 里执行 `..\apienv\Scripts\python.exe run_e2e.py`
   （在安装目录里跑时加 `--repo <仓库根>`；失败的套会回显末尾输出并写 `logs\e2e_run-last.log`）
+  发布脚本 `_release/create_release.py` 会先跑这遍全量，不绿不许发版
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 
@@ -209,7 +213,9 @@ dashboard/
     routes_get.py       GET 路由（页面 + 查询接口）
     routes_post.py      POST 路由（动作 + 审批 + 导入导出 + 更新）
     server.py           PanelServer（连接上限）+ Handler 基类 + 路由分发
-  assets/               控制台共用的 console.css 与各页脚本
+  dataio.py             数据备份与迁移的薄门面（~60 行，老名字全在，赋值会转发）
+  dataiokit/            实现：core（常量/路径/工具）→ backup（导出）→ restore（导入/回滚）
+  assets/               控制台共用的 console.css、common.js 与各页脚本
   console_page.html         概览：服务状态 / 版本 / 公网地址 / 日志
   console_tasks_page.html   任务：制作队列 / 自助翻唱 / 待审批 / 申请记录
   console_guest_page.html   访客：白名单 / 解锁请求 / 公网安全

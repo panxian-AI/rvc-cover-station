@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v1.3.1-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v1.3.2-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](#快速开始)
@@ -53,6 +53,12 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   自动释放（`RVC_UVR_IDLE_UNLOAD` 可调）——装再多声线也不白占内存
 - ⚡ **启动提速**（v1.2.1）：后端 3333 从约 20 秒降到约 7 秒（torch / UVR 重模块
   推迟到真正用到时才导入），「一键开启」三路并行再省 15~30 秒
+- 🚀 **首曲不再等**（v1.3.2）：服务就绪后在后台把 torch、分离模型、rmvpe 预加载好，
+  第一首歌省掉约 70 秒的冷启动（分离模型 43 秒 + F0 首次 30~40 秒）
+- 🎛 **设备自适应**（v1.3.2）：按显卡显存/物理核/内存自动选档位（极速/均衡/省内存），
+  线程数按物理核给、内存不够自动不预热；控制台「服务状态」里直接显示当前档位
+- 🧵 **翻唱提速**（v1.3.2）：伴奏变调与推理并行、同一模型不再重复加载，
+  每首歌再省 5~10 秒；后端日志会打「本首耗时」分段账
 - 🔄 版本更新：打开控制台自动查最新版，有新版本弹窗显示更新内容，一键更新代码
   （**8 条线路先并行测速再挑最快的下**，失败自动换线；旧文件自动备份；
   模型、成品、访客记录、白名单、设置都不动）
@@ -72,7 +78,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 14 套回归测试共 632 项断言（`dashboard/e2e_*.py`）
+- 附带 15 套回归测试共 670 项断言（`dashboard/e2e_*.py`）
 
 ## 🚀 三步上手（推荐给完全不懂代码的人）
 

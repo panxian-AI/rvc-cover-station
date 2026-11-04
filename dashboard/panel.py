@@ -34,6 +34,13 @@ if HERE not in sys.path:
 from paths import (API_BAT, API_DIR, COVERS_DIR, DATA, NCM_BAT, NCM_DIR, PROJ,  # noqa: E402
                    PY_API, PY_WEB, RVC_ROOT, STACK, WEBUI_BAT)
 
+# 设备自适应档位（线程数 / 预热策略），只读探测，纯 stdlib，不拖慢面板启动
+try:
+    import perf as perf_mod
+except Exception as _e:      # 极端情况下没有 perf.py，退回全默认
+    perf_mod = None
+    print("⚠️ 性能档位模块未加载: %s" % _e)
+
 # 翻唱页（搜歌 / 选模型 / 成品库 / 缓存管理），同端口挂在 /cover
 try:
     import cover as cover_mod
@@ -543,6 +550,8 @@ def collect():
         "rvc": rvc_models(),
         "gpu": gpu_info(),
         "ncm_preflight": ncm_preflight(),
+        "perf": perf_mod.probe() if perf_mod else {},
+        "perf_text": perf_mod.describe() if perf_mod else "",
         "log": log_tail(),
     }
 
@@ -625,6 +634,9 @@ def start(target):
         return False, "未知服务: %s" % target
     if os.path.isfile(cfg["exe"]):
         env = os.environ.copy()
+        env.update(perf_mod.env() if perf_mod else {})   # 线程数按物理核给，别让 BLAS 开满 32 个抢核心
+        if perf_mod:
+            env.update(perf_mod.child_hints(target))
         env.update(cfg["env"])
         try:
             # 日志目录可能还不存在（全新安装 RVC-WebUI\logs 是空的），

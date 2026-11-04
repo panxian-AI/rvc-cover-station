@@ -20,6 +20,57 @@ from tools.cuda_graph import cuda_graph_enabled, run_cuda_graph
 bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 
 
+# ======================================================================
+# rmvpe 模型跨 Pipeline 复用（v1.3.2）
+#
+# 原来 rmvpe 挂在 Pipeline 实例上（self.model_rmvpe），而 VC.get_vc 每次切模型
+# 都会新建一个 Pipeline —— 于是每换一次模型就重新 torch.load 一遍 181MB 的
+# rmvpe.pt，机械盘上实测要 30~40 秒（第一首歌最明显）。
+# 这里提到模块级、按 (路径, 设备, 精度) 缓存：切模型不再重载，预热也只做一次。
+# ======================================================================
+_RMVPE_CACHE = {}
+
+
+def _rmvpe_key(path, device, is_half):
+    return (os.path.abspath(str(path)), str(device), bool(is_half))
+
+
+def get_rmvpe(path, device, is_half):
+    """取（必要时加载）rmvpe 模型。同一设备/精度只加载一次。"""
+    key = _rmvpe_key(path, device, is_half)
+    hit = _RMVPE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from infer.rmvpe import RMVPE
+
+    logger.info("Loading rmvpe model, %s", path)
+    model = RMVPE(path, is_half=is_half, device=device)
+    _RMVPE_CACHE[key] = model
+    return model
+
+
+def prewarm_rmvpe(device, is_half):
+    """启动后在后台把 rmvpe 加载好，并跑一小段静音做一次真实推理。
+
+    只加载权重是不够的：第一次 infer_from_audio 还要编译 CUDA 核、捕获 graph，
+    那部分比加载更贵。用 1 秒静音跑一遍就等于把首曲的这笔账提前付了。
+    """
+    path = "%s/rmvpe.pt" % os.environ.get("rmvpe_root", "assets/rmvpe")
+    if not os.path.isfile(path):
+        return False
+    t0 = ttime()
+    model = get_rmvpe(path, device, is_half)
+    logger.info("rmvpe loaded in %.1fs, warming up...", ttime() - t0)
+    try:
+        dummy = np.zeros(16000, dtype=np.float32)   # 1 秒静音
+        model.infer_from_audio(dummy, thred=0.03)
+    except Exception:
+        logger.warning("rmvpe warmup skipped:\n%s", traceback.format_exc())
+    logger.info("rmvpe warmup done in %.1fs", ttime() - t0)
+    return True
+
+
+
 def change_rms(data1, sr1, data2, sr2, rate):  # 1是输入音频，2是输出音频,rate是2的占比
     # print(data1.max(),data2.max())
     rms1 = librosa.feature.rms(
@@ -92,17 +143,9 @@ class Pipeline(object):
                     f0, [[pad_size, p_len - len(f0) - pad_size]], mode="constant"
                 )
         elif f0_method == "rmvpe":
-            if not hasattr(self, "model_rmvpe"):
-                from infer.rmvpe import RMVPE
-
-                logger.info(
-                    "Loading rmvpe model,%s" % "%s/rmvpe.pt" % os.environ["rmvpe_root"]
-                )
-                self.model_rmvpe = RMVPE(
-                    "%s/rmvpe.pt" % os.environ["rmvpe_root"],
-                    is_half=self.is_half,
-                    device=self.device,
-                )
+            self.model_rmvpe = get_rmvpe(
+                "%s/rmvpe.pt" % os.environ["rmvpe_root"], self.device, self.is_half
+            )
             f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
 
             if "privateuseone" in str(self.device):  # clean ortruntime memory

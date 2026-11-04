@@ -111,10 +111,53 @@ def is_gradio_port_in_use_error(error, port):
     return str(error).startswith(f"Port {port} is in use.")
 
 
+def _start_rmvpe_prewarm(config):
+    """启动后在后台把 rmvpe 加载好并跑一次静音推理（v1.3.2）。
+
+    为什么：rmvpe 首次加载 + 第一次推理要 30~40 秒（181MB 权重 + CUDA 核编译），
+    这笔账原来全算在「第一首歌」头上。只加载权重不够，必须真跑一次才算预热完。
+    默认不开（RVC_WEBUI_PREWARM=1 才做）——由面板按显存/内存自适应决定，
+    内存紧张的机器上白占显存反而添乱。
+    """
+    if str(os.environ.get("RVC_WEBUI_PREWARM") or "").strip().lower() not in (
+            "1", "on", "yes", "true"):
+        return None
+
+    def run():
+        # 先等自己的端口真的能应答（launch 还没返回时端口就已经开了），
+        # 再等几秒收尾；不然会在启动阶段跟 gradio 抢 CPU/磁盘，端口就绪反而变慢。
+        import socket as _sock
+
+        t0 = time.time()
+        while time.time() - t0 < 300:
+            port = config.listen_port
+            probe = _sock.socket()
+            probe.settimeout(0.4)
+            try:
+                if probe.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            finally:
+                probe.close()
+            time.sleep(0.5)
+        delay = float(os.environ.get("RVC_WEBUI_PREWARM_DELAY", "3") or 3)
+        time.sleep(max(0.0, delay))
+        try:
+            from infer.vc.pipeline import prewarm_rmvpe
+
+            prewarm_rmvpe(config.device, config.is_half)
+        except Exception:
+            logger.warning("rmvpe prewarm failed:\n%s", traceback.format_exc())
+
+    t = threading.Thread(target=run, daemon=True, name="rmvpe-prewarm")
+    t.start()
+    return t
+
+
 def launch_webui_with_port_fallback(app, config):
     """Launch Gradio, increasing the requested port until startup succeeds."""
     next_port = config.listen_port
     queued_app = app.queue(concurrency_count=511, max_size=1022)
+    _start_rmvpe_prewarm(config)
     while True:
         config.listen_port = find_available_port(next_port)
         if config.listen_port != next_port:

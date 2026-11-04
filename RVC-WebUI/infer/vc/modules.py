@@ -166,6 +166,21 @@ class VC:
                 "",
             )
         person = f'{os.getenv("weight_root")}/{sid}'
+
+        # 同一个模型重复切：直接复用已加载的网络（v1.3.2）
+        # VC 是常驻单例，WebUI 进程重启时它是新实例（net_g 为 None），
+        # 所以「同路径 + net_g 还在」就等价于「真的是同一个模型」，判断是安全的。
+        # 每首歌都重新 torch.load + 建模 + 搬上显存，白花 0.5~4 秒。
+        if (self.net_g is not None and self.pipeline is not None
+                and getattr(self, "_loaded_person", None) == person
+                and getattr(self, "_loaded_reply", None) is not None):
+            logger.info("%s: %s（已加载，跳过）", i18n("选择模型"), sid)
+            reply = self._loaded_reply
+            return (
+                reply[0], reply[1], to_return_protect0, to_return_protect1,
+                reply[4], reply[5],
+            ) if to_return_protect else reply[0]
+
         logger.info("%s: %s", i18n("正在加载模型"), person)
 
         if self.net_g is not None:
@@ -209,6 +224,17 @@ class VC:
             "__type__": "update",
         }
         logger.info("%s: %s", i18n("选择索引"), index["value"])
+
+        # 记住这次加载，下次切同一个模型就直接复用（见上面的短路分支）
+        self._loaded_person = person
+        self._loaded_reply = (
+            speaker_slider_update,
+            speaker_dropdown_update,
+            to_return_protect0,
+            to_return_protect1,
+            index,
+            index,
+        )
 
         return (
             (

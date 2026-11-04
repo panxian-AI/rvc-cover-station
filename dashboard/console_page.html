@@ -125,6 +125,7 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
   <div class="card">
     <h2>服务状态</h2>
     <div class="svc" id="svc"></div>
+    <div id="perfLine" class="hint" style="margin-top:8px">性能档位：读取中…</div>
     <div id="ncmCfg" class="hint" style="margin-top:8px">网易云配置：读取中…</div>
     <div class="row">
       <button class="green" id="btnStart" onclick="act('start_all')">⚡ 一键开启服务</button>
@@ -295,6 +296,8 @@ async function loadStatus(){
       : (pf.cookie ? '✓ Cookie 已配置，点歌搜索可用'
                    : '<span style="color:#f0c674">⚠ 还没配置网易云 Cookie：服务能起，但点歌搜索会失败。'
                      + '双击 <b>RVCSVC\\ncmapi\\设置网易云Cookie.bat</b>，登录后复制 Cookie 粘贴进去，再重启网易云。</span>');
+    const pl = $('#perfLine');
+    if(pl && d.perf_text) pl.textContent = '性能档位：' + d.perf_text;
   }catch(e){ $('#svc').innerHTML = '<div class="s">状态读取失败</div>'; }
 }
 

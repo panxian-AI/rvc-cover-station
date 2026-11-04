@@ -1,5 +1,16 @@
 import re, os, time
 import math
+
+# ============ 线程数自适应（必须在 numpy / torch 之前） ============
+# 这几个库导入时就会按当前环境建线程池，导入之后再设就没用了。
+# 面板会按物理核数塞好（perf.py），这里只是「直接跑脚本」时的兜底：
+# 逻辑核全开在 Ryzen 这种 SMT 机器上反而更慢（抢内存带宽、和推理抢核心）。
+if not os.environ.get("OMP_NUM_THREADS"):
+    _n_cpu = min(8, max(2, (os.cpu_count() or 4) // 2))
+    for _k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(_k, str(_n_cpu))
+
 import gc
 import requests
 import json
@@ -229,6 +240,25 @@ def show_model():
     return []
 
 RVC_ROOT = os.environ.get("RVC_WEBUI_ROOT", r"D:\RVC-WebUI")
+
+# 环境变量写错/没设时（比如直接跑这个脚本），退回兄弟目录推导出来的真实路径。
+# 以前这里写死 D:\RVC-WebUI，装在别的盘时 _collect_indices 扫的目录根本不存在。
+if not os.path.isdir(RVC_ROOT):
+    RVC_ROOT = _RVC_WEBUI_DIR
+
+
+def _local_models():
+    """直接扫 assets/weights 拿模型列表。
+
+    启动时**不再同步等 WebUI**（它要 10~150 秒才起得来），本地扫是毫秒级；
+    WebUI 起来后再由后台线程 refresh_models() 对齐一次（索引路径以它为准）。
+    """
+    d = os.path.join(RVC_ROOT, "assets", "weights")
+    try:
+        names = [f for f in os.listdir(d) if f.lower().endswith(".pth")]
+    except OSError:
+        return []
+    return sorted(names, key=lambda s: s.lower())
 
 
 def _collect_indices():
@@ -566,6 +596,43 @@ def wwy_downloader(
 
 
 
+def _start_inst_shift(inst_path, song_id, key_shift):
+    """伴奏变调放后台线程：它只依赖分离结果，和 RVC 推理毫无依赖关系。
+
+    pedalboard 的 PitchShift 一首 5 分钟的歌要 4~5 秒（纯 CPU，PSOLA），
+    以前是在推理完之后串行做，白等这 4~5 秒；现在和推理同时跑。
+    """
+    box = {"audio": None, "err": None, "seconds": 0.0}
+
+    def run():
+        t0 = time.time()
+        try:
+            from pedalboard import Pedalboard, PitchShift
+            y, sr_i = librosa.load(inst_path, sr=None)
+            y_shifted = Pedalboard([PitchShift(semitones=int(key_shift))])(y, sr_i)
+            os.makedirs("temp", exist_ok=True)
+            out = os.path.join("temp", "shifted_%s_inst.wav" % song_id)
+            soundfile.write(out, y_shifted, sr_i)
+            box["audio"] = AudioSegment.from_file(out, format="wav")
+        except Exception as e:
+            box["err"] = e
+        box["seconds"] = time.time() - t0
+
+    t = _threading.Thread(target=run, daemon=True, name="inst-pitch-shift")
+    t.start()
+    return {"thread": t, "box": box, "path": inst_path}
+
+
+def _finish_inst_shift(job):
+    """等后台变调结束（正常情况下早就跑完了，等于不花时间）。"""
+    job["thread"].join(timeout=600)
+    if job["box"]["audio"] is not None:
+        print("✅ 伴奏音高调整完成（%.1f 秒，已与推理并行）" % job["box"]["seconds"])
+        return job["box"]["audio"]
+    print("⚠️ 伴奏音高调整失败，使用原始伴奏: %s" % job["box"]["err"])
+    return AudioSegment.from_file(job["path"], format="wav")
+
+
 def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
             reverb_intensity=4, delay_intensity=0,
             uvr5_agg=10, uvr5_model="", split_model="UVR-HP5",
@@ -587,6 +654,16 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
             reverb=None, echo=None, delay=None,
             vocal_gain=None, inst_gain=None, sample_rate=None, acapella=None):
   """进行翻唱推理合成（参数取超集 + 别名，兼容不同版本的插件调用）"""
+  _mark_job()          # 告诉预热线程「有真活了，让路」
+  # 各阶段计时（也打给用户看：卡在哪一步一眼就知道）
+  _laps = []
+  _t_start = time.time()
+  _t_prev = [_t_start]
+
+  def _lap(name):
+    now = time.time()
+    _laps.append((name, now - _t_prev[0]))
+    _t_prev[0] = now
   # song_name_src 与 split_model 都会被拼进 ./output/<split>/<song>/ 这类路径，
   # 而且都是**外部请求直接传的字符串**。这里统一归一化成安全字符，
   # 后面所有路径都用同一个值（不然和 wwy_downloader 的返回值对不上，读不到文件）。
@@ -719,11 +796,22 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
     print("📥 未找到缓存，开始下载和分离")
     audio_rvc, sr_src = librosa.load(wwy_downloader(song_name_src, split_model)[0], sr=44100, mono=True)
     soundfile.write(audio_rvc_path, audio_rvc, sr_src)
+  _lap("人声准备")
 
   print("🎤 RVC 推理中...")
+  # 伴奏变调不依赖人声推理：先把它甩到后台，等推理做完再取结果（见 _finish_inst_shift）
+  _inst_shift = None
+  if (not _acapella) and key_shift != 0 and abs(key_shift) != 12 and shift_acc:
+    print(f"🎹 伴奏变调 {key_shift:+d} 半音已在后台并行处理")
+    _inst_shift = _start_inst_shift(
+        f"output/{split_model}/{song_name_src}/instrument_{song_name_src}.wav_{agg}.wav",
+        song_name_src, key_shift)
   switch_model(model_dropdown)
+  _lap("切换模型")
   _f0 = (str(f0_method or "rmvpe")).strip() or "rmvpe"
   print(f"⚙️ f0={_f0} 索引比例={index_rate} 保护={protect} 响度混合={rms_mix_rate}")
+  _index_file = find_index(model_dropdown)
+  _lap("匹配索引")
   _resp = requests.post(f"{RVC_API_BASE}/run/infer_convert", json={
     "data": [
       0,
@@ -731,7 +819,7 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
       {"name": audio_rvc_path, "data": None, "is_file": True},
       key_shift,
       _f0,
-      find_index(model_dropdown),
+      _index_file,
       float(index_rate),
       int(resample_sr or 0),
       float(rms_mix_rate),
@@ -740,6 +828,7 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
 
   # gradio 推理出错时 HTTP 500 + {"error": null}，真实原因只在 WebUI 日志里。
   # 以前直接 response["data"] 会抛 KeyError，用户只看到一段听不懂的堆栈。
+  _lap("推理请求")
   try:
     response = _resp.json()
   except ValueError:
@@ -756,6 +845,7 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
 
   data = response["data"][1]["name"]
   print(response["data"][0])
+  _lap("RVC 推理")
 
   if data:
     print("🎛️ 开始处理音频")
@@ -893,6 +983,9 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
     if _acapella:
         print("🎤 清唱模式：完全跳过伴奏")
         audio_inst = None
+    elif _inst_shift is not None:
+        # 推理之前就甩到后台了，这里基本只是「取结果」
+        audio_inst = _finish_inst_shift(_inst_shift)
     elif key_shift != 0 and abs(key_shift) != 12 and shift_acc:
         print(f"🎹 正在将伴奏音高调整 {key_shift:+d} 半音以匹配人声...")
         
@@ -965,6 +1058,7 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
     except Exception as e:
         print(f"⚠️ 峰值保护跳过: {e}")
 
+    _lap("效果与混音")
     print("💾 导出最终文件...")
     output_path = f"temp/{sanitize_filename(song_name_src)}-RVC-AI翻唱.mp3"
     combined_audio.export(
@@ -976,6 +1070,9 @@ def convert(song_name_src, key_shift, vocal_vol, inst_vol, model_dropdown,
     if os.path.isfile(data):
       os.remove(data)
     
+    _lap("导出 MP3")
+    print("⏱️ 本首耗时 %.1f 秒：" % (time.time() - _t_start)
+          + " · ".join("%s %.1f" % (n, d) for n, d in _laps))
     print(f"✅ 已导出: {output_path}")
     return output_path
 
@@ -988,6 +1085,7 @@ def convert_voice_file(audio_path, model_dropdown, f0_method="rmvpe",
                        index_rate="0.75", protect="0.33",
                        rms_mix_rate="0.0", resample_sr="0",
                        key_shift="0"):
+  _mark_job()          # 告诉预热线程「有真活了，让路」
   def _f(v, d=0.0):
     try:
       return float(re.search(r"-?\d+(?:\.\d+)?", str(v)).group())
@@ -1152,7 +1250,7 @@ def clear_cache(scope="all"):
 
 def refresh_models():
     """刷新模型列表的回调函数"""
-    models_list = show_model()
+    models_list = show_model() or _local_models()   # WebUI 没就绪也能列出来
     if models_list:
         return gr.Dropdown(choices=models_list, value=models_list[0] if models_list else None)
     else:
@@ -1164,7 +1262,115 @@ def switch_model(model_name):
         return "❌ 请先选择一个有效的模型"
     result = change_model(model_name)
     return result
-    
+
+
+# ======================================================================
+# 启动后后台预热：把「第一首歌要付的冷启动账」提前付掉
+#
+# 实测（E:\RVC-Data，机械盘 + RTX 5060）：启动后第一首歌要额外等
+#   · 分离模型现场加载 43 秒（import torch + AudioPre 建模型）
+#   · WebUI 侧 rmvpe 首次加载 + CUDA graph 捕获 30~40 秒
+# 这些只在「第一次」发生，但用户感知就是「第一首歌要两分钟」。
+#
+# 这里只做能安全并行的部分：模块导入 + 分离模型预载，放在服务就绪之后、
+# 后台线程里跑，不拖慢启动。真实任务开始时立刻让路（见 _job_*）。
+# 内存不够的机器（<1.2GB 可用）自动跳过——宁可第一首慢点，也别 OOM。
+# ======================================================================
+_jobs = {"last": 0.0}          # 最近一次真实任务开始的时间（时间戳，不计数，不会漏减）
+_jobs_lock = _threading.Lock()
+PREWARM_DELAY = float(os.environ.get("RVC_PREWARM_DELAY", "6"))
+
+
+def _mark_job():
+    with _jobs_lock:
+        _jobs["last"] = time.time()
+
+
+def _job_active(window=180.0):
+    """3 分钟内跑过真实任务就认为「在忙」，预热让路。"""
+    with _jobs_lock:
+        return (time.time() - _jobs["last"]) < window
+
+
+def _port_alive(port, host="127.0.0.1", timeout=0.4):
+    import socket
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex((host, port)) == 0
+    finally:
+        s.close()
+
+
+def prewarm(level=None):
+    """预热。level: full/uvr/import/off/auto（默认读 RVC_PREWARM）。"""
+    level = str(level or os.environ.get("RVC_PREWARM") or "auto").strip().lower()
+    if level in ("0", "off", "none", "no"):
+        print("⏭️ 已关闭预热（RVC_PREWARM=off）")
+        return False
+    if _job_active():
+        print("⏭️ 有任务在跑，热身让路（下个空闲周期再说）")
+        return False
+    free = _avail_mem_mb()
+    need = 1200 if level == "import" else 2600
+    if 0 <= free < need:
+        print("⏭️ 可用内存只有 %.0f MB（预热要 %d MB），跳过预热" % (free, need))
+        return False
+
+    t0 = time.time()
+    try:
+        _get_torch()                       # 约 10 秒的 torch 导入
+        from uvr5.vr import AudioPre       # noqa: F401  连带 librosa 那条链
+        print("🔥 预热：torch / 分离模块已就绪（%.1f 秒）" % (time.time() - t0))
+    except Exception as e:
+        print("⚠️ 预热导入失败（不影响使用）: %s" % e)
+        return False
+    if level == "import":
+        return True
+
+    if _job_active():
+        print("⏭️ 有任务在跑，跳过分离模型预载")
+        return True
+    try:
+        get_pre_fun()                      # 预载分离模型（十几秒，常驻几百 MB）
+        print("🔥 预热完成，共 %.1f 秒（首首歌不用再等这段）" % (time.time() - t0))
+        return True
+    except Exception as e:
+        print("⚠️ 预热分离模型失败（不影响使用）: %s" % e)
+        return False
+
+
+def _start_prewarm_thread():
+    """服务就绪之后、且 WebUI 也起完之后，再动手预热。
+
+    为什么不能一到点就热：预热要读几百 MB（torch 的 DLL + 分离模型权重），
+    和 WebUI 启动抢同一块盘，会把「端口就绪」从 13 秒拖到 33 秒——
+    用户看到的就是「启动更慢了」。等 WebUI 起来再热，两条时间线就不打架了。
+    """
+    def run():
+        for _ in range(900):
+            if _port_alive(3333):
+                break
+            time.sleep(0.2)
+        else:
+            return
+        # 等 WebUI 就绪（最多 120 秒）；只有后端的环境就等 10 秒后照常预热
+        wait_webui = time.time()
+        while time.time() - wait_webui < 120:
+            if _port_alive(7865):
+                break
+            time.sleep(0.5)
+        time.sleep(max(0.0, PREWARM_DELAY))
+        try:
+            prewarm()
+        except Exception as e:
+            print("⚠️ 预热异常（忽略）: %s" % e)
+
+    t = _threading.Thread(target=run, daemon=True, name="prewarm")
+    t.start()
+    return t
+
+
 app = gr.Blocks()
 
 with app:
@@ -1306,11 +1512,40 @@ with app:
 
 
 print("正在初始化并加载模型列表...")
-initial_models = show_model()
+# 本地扫目录（毫秒级），不再同步等 WebUI —— 它慢的时候要 10~150 秒才应答，
+# 那段等待以前是直接算在「后端启动」里的。
+initial_models = _local_models()
+if not initial_models:
+    # 扫不到（装的目录结构不一样）才退回问 WebUI，且这时只能同步等
+    initial_models = show_model()
+else:
+    models = initial_models
 if initial_models:
-    print(f"成功加载 {len(initial_models)} 个模型")
+    print(f"成功加载 {len(initial_models)} 个模型（本地扫描）")
 else:
     print("⚠️ 警告: 未能加载模型列表，请确保RVC服务正在运行")
+
+
+def _sync_models_when_webui_ready():
+    """后台线程：等 WebUI 起来后把模型/索引列表跟它对齐（索引路径以它为准）。"""
+    for _ in range(900):          # 最多等 3 分钟
+        if _port_alive(7865):
+            break
+        time.sleep(0.2)
+    else:
+        return
+    time.sleep(1.0)
+    try:
+        got = show_model()
+        if got:
+            print(f"🔄 已与 WebUI 对齐模型列表：{len(got)} 个")
+    except Exception as e:
+        print(f"⚠️ 对齐模型列表失败（不影响使用）: {e}")
+
+
+_threading.Thread(target=_sync_models_when_webui_ready, daemon=True,
+                  name="model-list-sync").start()
+_start_prewarm_thread()
 
 
 app.queue(max_size=40, api_open=False)

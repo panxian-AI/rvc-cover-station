@@ -307,19 +307,53 @@ def test_quiet_and_cover_jobs():
     # --- 扫码登录：编码器 + 登录窗口 + 代理的热更新 ---
     qsrc = rd(os.path.join("..", "ncmapi", "_qr.py"))
     csrc = rd(os.path.join("..", "ncmapi", "cookie_setup.py"))
+    lsrc = rd(os.path.join("..", "ncmapi", "ncm_login.py"))
     chk("二维码编码器存在且不依赖第三方库",
         "def encode(" in qsrc and "def to_ppm(" in qsrc
         and not re.search(r"^\s*(import|from)\s+(qrcode|segno|PIL)", qsrc, re.M))
+    chk("二维码能直接画成网页用的 SVG（单条 path，不落图片文件）",
+        "def to_svg(" in qsrc and 'shape-rendering="crispEdges"' in qsrc
+        and "for r in range(s):" in qsrc)
+    chk("登录逻辑抽到 ncm_login.py，且不拖进 tkinter（面板要 import）",
+        "def new_key(" in lsrc and "def poll(" in lsrc and "def save_cookie(" in lsrc
+        and not re.search(r"^\s*import tkinter", lsrc, re.M))
     chk("登录窗口走官方扫码接口、803 时落盘 Cookie",
-        "api/login/qrcode/unikey" in csrc
-        and "api/login/qrcode/client/login" in csrc
-        and "code == 803" in csrc and "save_cookie(cookie)" in csrc)
+        "code == 803" in csrc and "save_cookie(cookie)" in csrc
+        and "NcmLogin" in csrc)
+    chk("扫码接口与原子写盘都在 ncm_login.py",
+        "api/login/qrcode/unikey" in lsrc and "api/login/qrcode/client/login" in lsrc
+        and "os.replace(tmp, COOKIE_FILE)" in lsrc and "os.fsync" in lsrc)
     chk("代理按 mtime 热更新 Cookie（扫码后不用重启 3002）",
         "_cookie_state" in nsrc and "getmtime(COOKIE_FILE)" in nsrc
         and 'h["Cookie"] = cookie or _cookie_state()["cookie"]' in nsrc)
     chk("代理有 /login/status（能查到昵称和 VIP）",
         "/login/status" in nsrc and "def login_status" in nsrc
         and "api/nuser/account/get" in nsrc)
+
+    # --- 扫码登录内嵌在控制台（v2.1.5）：页面按钮 + 弹层 + 面板路由 ---
+    phtml = rd(os.path.join("console_page.html"))
+    pjs = rd(os.path.join("assets", "page_overview.js"))
+    rget = rd(os.path.join("panelkit", "routes_get.py"))
+    rpost = rd(os.path.join("panelkit", "routes_post.py"))
+    nmod = rd(os.path.join("panelkit", "ncmlogin.py"))
+    chk("概览页有「扫码登录」按钮和二维码弹层",
+        'id="btnNcmLogin"' in phtml and 'id="ncmModal"' in phtml
+        and 'id="ncmQr"' in phtml and 'id="ncmRaw"' in phtml)
+    chk("前端把 SVG 直接塞进页面并按 2 秒轮询",
+        "function ncmRegen(" in pjs and "function ncmPoll(" in pjs
+        and "r.svg" in pjs and "setTimeout(ncmPoll, 2000)" in pjs)
+    chk("前端不再让用户去双击 bat（入口改成页面按钮）",
+        "设置网易云Cookie.bat" not in pjs and "ncmOpen()" in pjs)
+    chk("面板有扫码登录路由（qr/poll/status/cookie/logout）",
+        '"/api/ncm/login/status"' in rget and '"/api/ncm/login/poll"' in rget
+        and '"/api/ncm/login/"' in rpost and '"qr"' in rpost
+        and '"cookie"' in rpost and '"logout"' in rpost)
+    chk("轮询写盘前查同源（803 会改本机 Cookie 文件）",
+        'path == "/api/ncm/login/poll"' in rget and "_same_origin()" in rget)
+    chk("面板侧懒加载 ncmapi（不 import 包、不污染 sys.path）",
+        "spec_from_file_location" in nmod and "core.NCM_DIR" in nmod
+        and "STATUS_TTL" in nmod)
+
 
     # 行为级：编码器黄金样本。这组矩阵和参考实现逐位一致、且能被 cv2 从屏幕
     # 截图里解出原文 —— 谁动了编码算法就会对不上，别顺手改期望值。
@@ -336,6 +370,35 @@ def test_quiet_and_cover_jobs():
         (_ver, _mask) == (5, 2)
         and _h == "193a265ca7065ab9140ad8704837f1fc2c792a179ee7a5ff51b1f3193ac0a888",
         "ver=%s mask=%s hash=%s" % (_ver, _mask, _h[:16] + "…"))
+
+    # 面板显示的是 SVG：path 里每一个矩形反推回来必须和矩阵逐位一致，
+    # 否则「页面上看得到码、手机扫不出来」这种最难查的问题会漏过去。
+    _svg = _qrmod.to_svg(_mat, border=3)
+    _b = 3
+    _n = len(_mat) + _b * 2
+    _grid = [[0] * _n for _ in range(_n)]
+    for _m in re.finditer(r"M(\d+) (\d+)h(\d+)v1H\1Z", _svg):
+        _x, _y, _w = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
+        for _c in range(_x, _x + _w):
+            _grid[_y][_c] = 1
+    _same = all(_grid[r + _b][c + _b] == (1 if _mat[r][c] else 0)
+                for r in range(len(_mat)) for c in range(len(_mat)))
+    chk("SVG 与矩阵逐位一致、四周留白（手机才能扫出来）",
+        _same and _svg.count("<path") == 1 and 'viewBox="0 0 %d %d"' % (_n, _n) in _svg,
+        "same=%s paths=%s" % (_same, _svg.count("<path")))
+
+    # 粘贴 Cookie 的解析：面板和独立窗口共用这一份，别只在一个入口好使
+    _lspec = _ilu.spec_from_file_location(
+        "_rvc_ncm_login", os.path.join(HERE, "..", "ncmapi", "ncm_login.py"))
+    _lmod = _ilu.module_from_spec(_lspec)
+    _lspec.loader.exec_module(_lmod)
+    _a, _ = _lmod.extract("MUSIC_U=abc123; os=pc; __csrf=zz")
+    _b2, _ = _lmod.extract("a" * 40)
+    _c2, _e2 = _lmod.extract("hello")
+    chk("粘贴解析：整段 Cookie / 只有值 / 垃圾都能分辨",
+        _a == "MUSIC_U=abc123; os=pc; __csrf=zz"
+        and _b2 == "MUSIC_U=" + "a" * 40 and not _c2 and bool(_e2),
+        "%r %r %r" % (_a[:20], _b2[:16], _c2))
 
     # --- 快照逻辑：直接往 _jobs 里塞假任务，别真去做单 ---
     import cover

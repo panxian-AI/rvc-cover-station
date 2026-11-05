@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.1.4-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.5-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![e2e](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
@@ -52,6 +52,11 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   再错照常锁，绝不从此豁免
 - 🪶 **模型按需加载**：人声分离器不再开机常驻内存，首个任务现场加载、空闲 15 分钟
   自动释放（`RVC_UVR_IDLE_UNLOAD` 可调）——装再多声线也不白占内存
+- 📱 **网易云扫码登录内嵌在控制台**（v2.1.5）：概览页「网易云未登录」旁边
+  直接点「扫码登录」，二维码画在页面里（不弹独立窗口、不用去翻
+  `ncmapi\设置网易云Cookie.bat`），手机 App 扫一下确认就生效——Cookie 换掉
+  后 3002 代理按文件时间自动热加载，不用重启服务；扫码被风控拦时还能展开
+  「粘贴 Cookie」备选。二维码由纯标准库编码器现画成 SVG，不装任何第三方包
 - 🛡 **WebUI 单实例与显存修复**（v2.1.4）：端口被占时 WebUI 以前会悄悄换到
   7866 继续启动——但后端固定连 7865，多出来的实例没人用，唯一效果是每个都往
   显存里塞一份模型，叠到第三份就是 CUDA out of memory，且一次 OOM 后该进程的
@@ -141,7 +146,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 19 套回归测试共 1046 项断言（`dashboard/e2e_*.py`），一条命令全跑：
+- 附带 19 套回归测试共 1062 项断言（`dashboard/e2e_*.py`），一条命令全跑：
   在 `dashboard` 里执行 `..\apienv\Scripts\python.exe run_e2e.py`
   （在安装目录里跑时加 `--repo <仓库根>`；失败的套会回显末尾输出并写 `logs\e2e_run-last.log`）
   发布脚本 `_release/create_release.py` 会先跑这遍全量，不绿不许发版
@@ -269,8 +274,9 @@ dashboard/
    人声分离模型 `5_HP-Karaoke-UVR.pth` 放进 `RVCSVC-API/uvr5/uvr_model/`。
    完整环境锁定（含全部间接依赖）见 `RVCSVC-API/requirements-freeze.txt`。
 4. **启动**：双击 `启动RVC.bat` → 控制台点「⚡ 一键开启服务」。
-5. **网易云登录态（可选）**：双击 `ncmapi/设置网易云Cookie.bat`，在窗口里粘贴浏览器复制的
-   Cookie，自动提取 MUSIC_U 并验证。不配也能用（匿名模式，VIP/独家曲目拿不到）。
+5. **网易云登录态（可选）**：控制台概览页点「📱 扫码登录网易云」，手机 App 扫一下确认即可
+   （也可以双击 `ncmapi/设置网易云Cookie.bat` 用独立窗口，或粘贴浏览器 Cookie）。
+   不配也能用（匿名模式，VIP/独家曲目拿不到）。
 6. **公网开放（可选）**：控制台里一键开启 Cloudflare Tunnel（需自备 `cloudflared.exe`），
    把生成的临时地址发给朋友即可。
 

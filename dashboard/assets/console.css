@@ -107,3 +107,15 @@ font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .nav a.on{color:#cfe3ff;background:#20304d;border-color:#35496f}
 .crumb{color:#75869f;font-size:11.5px;margin:-4px 0 12px}
 .crumb a{color:#7fb4ff;text-decoration:none}
+
+/* 网易云扫码登录（概览页内嵌弹层） */
+.ncmqr{width:236px;height:236px;margin:4px auto 10px;background:#fff;border-radius:10px;padding:9px}
+.ncmqr svg{display:block;width:100%;height:100%}
+.ncmwait{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;
+color:#6f8099;font-size:13px;line-height:1.8}
+.ncmmsg{min-height:22px;text-align:center;font-size:12.5px;color:#8fa3c2}
+.ncmmsg.good{color:#6fd39a}
+.ncmmsg.warn{color:#f0c674}
+.ncmmsg.bad{color:#ff9aa8}
+#ncmRaw{width:100%;height:82px;margin:8px 0;background:#0c1220;border:1px solid #1e2a40;
+border-radius:8px;color:#c8d6ea;font:12px/1.5 Consolas,ui-monospace,monospace;padding:8px;resize:vertical}

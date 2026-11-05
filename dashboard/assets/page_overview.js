@@ -16,7 +16,7 @@ async function loadStatus(){
     $('#svc').innerHTML = (d.ports||[]).map(p => {
       let warn = '';
       if(p.key === 'ncm' && d.ncm_preflight && !d.ncm_preflight.cookie)
-        warn = ' <span class="tag t-off" style="font-size:11px" title="双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 扫码登录，保存后自动生效">⚠ 未登录</span>';
+        warn = ' <span class="tag t-off" style="font-size:11px" title="点下面的「扫码登录网易云」，手机 App 扫一下就好">⚠ 未登录</span>';
       return `<div class="s"><span class="dot ${p.open?'on':'off'}"></span>${esc(SVC_NAME[p.key]||p.key)}${warn}</div>`;
     }).join('');
     const all = (d.ports||[]).filter(p=>p.key!=='panel').every(p=>p.open);
@@ -27,7 +27,10 @@ async function loadStatus(){
       ? '<span style="color:#ff9aa8">网易云代理缺失（重装可修复）</span>'
       : (pf.cookie ? '✓ 已登录网易云，点歌搜索可用'
                    : '<span style="color:#f0c674">⚠ 网易云未登录：服务能起，但 VIP / 独家曲目搜不到。'
-                     + '双击 <b>RVCSVC\\ncmapi\\设置网易云Cookie.bat</b>，用手机 App 扫码登录即可（保存后自动生效，不用重启）。</span>');
+                     + '点下面的「扫码登录网易云」，用手机 App 扫一下即可（登录后自动生效，不用重启）。</span>');
+    const nr = $('#ncmRow');
+    if(nr) nr.style.display = (pf && pf.installed) ? '' : 'none';
+    ncmLabel(pf && pf.cookie);
     const pl = $('#perfLine');
     if(pl && d.perf_text) pl.textContent = '性能档位：' + d.perf_text;
     const sl = $('#silentLine');
@@ -308,6 +311,153 @@ async function loadDeps(){
   }catch(e){ el.style.display = 'none'; }
 }
 
+/* ---------- 网易云扫码登录（内嵌在概览页，不弹独立窗口） ----------
+   为什么放在面板里：以前要用户自己去 RVCSVC\ncmapi 双击一个 bat 才出窗口，
+   大多数人压根不知道有这一步；而「未登录」又只影响 VIP / 独家曲目，容易以为
+   是站点坏了。二维码由 ncmapi/_qr.py 现画成 SVG，页面直接内联，不落图片文件。
+   登录成功后 Cookie 写进 ncmapi/ncm_cookie.txt，3002 代理按 mtime 热更新。 */
+let NCM = {key:'', timer:0, busy:false};
+
+function ncmLabel(logged){
+  const b = $('#btnNcmLogin');
+  if(b) b.textContent = logged ? '🔁 换账号 / 查看登录' : '📱 扫码登录网易云';
+  const l = $('#btnNcmLogout');
+  if(l) l.style.display = logged ? '' : 'none';
+}
+
+function ncmMsg(text, kind){
+  const el = $('#ncmMsg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.className = 'ncmmsg' + (kind ? ' ' + kind : '');
+}
+
+async function ncmLoad(){
+  try{
+    const d = await (await fetch('/api/ncm/login/status', {cache:'no-store'})).json();
+    const who = $('#ncmWho');
+    if(!who) return;
+    who.textContent = d.cookie
+      ? ('已登录' + (d.nickname ? '：' + d.nickname : '') + (d.vip ? '（VIP）' : ''))
+      : (d.installed === false ? '' : '还没登录（只能搜到免费曲目）');
+    ncmLabel(d.cookie);
+  }catch(e){ /* 状态接口失败不影响主流程 */ }
+}
+
+function ncmOpen(){
+  $('#ncmModal').classList.add('on');
+  $('#ncmRaw').value = '';
+  ncmMsg('');
+  ncmRegen();
+}
+
+function ncmClose(){
+  $('#ncmModal').classList.remove('on');
+  ncmStop();
+}
+
+function ncmStop(){
+  if(NCM.timer){ clearTimeout(NCM.timer); NCM.timer = 0; }
+  NCM.busy = false;
+}
+
+function ncmQrBox(html){ $('#ncmQr').innerHTML = html; }
+
+async function ncmRegen(){
+  ncmStop();
+  NCM.key = '';
+  ncmQrBox('<div class="ncmwait">正在生成二维码…</div>');
+  ncmMsg('正在向网易云申请二维码…');
+  try{
+    const r = await (await fetch('/api/ncm/login/qr', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+    if(!r.ok){
+      ncmQrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
+      ncmMsg(r.msg || '二维码生成失败', 'bad');
+      return;
+    }
+    NCM.key = r.key;
+    ncmQrBox(r.svg);
+    ncmMsg('等待扫码…（二维码 5 分钟内有效）');
+    ncmPoll();
+  }catch(e){
+    ncmQrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
+    ncmMsg('请求失败：' + e.message, 'bad');
+  }
+}
+
+async function ncmPoll(){
+  if(!NCM.key || NCM.busy) return;
+  NCM.busy = true;
+  let again = true;
+  try{
+    const key = encodeURIComponent(NCM.key);
+    const r = await (await fetch('/api/ncm/login/poll?key=' + key, {cache:'no-store'})).json();
+    if(r.code === 803){
+      ncmStop();
+      NCM.key = '';
+      if(r.ok){
+        ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
+        ncmMsg(r.msg || '登录成功', 'good');
+        toast('网易云登录成功');
+        ncmLoad(); loadStatus();
+      }else{
+        ncmQrBox('<div class="ncmwait">登录成功但没保存下来<br>请改用「粘贴 Cookie」</div>');
+        ncmMsg(r.msg || '保存失败', 'bad');
+      }
+      again = false;
+    }else if(r.code === 800){
+      ncmMsg(r.msg || '二维码过期了，点「换一张」', 'warn');
+      again = false;
+    }else if(r.code === 802){
+      ncmMsg(r.msg || '已扫码，请在手机上点「确认登录」', 'good');
+    }else if(r.code === 801){
+      ncmMsg(r.msg || '等待扫码…');
+    }else if(r.retry){
+      ncmMsg(r.msg || '网络不稳，正在重试…', 'warn');
+    }else{
+      ncmMsg(r.msg || '未知状态', 'bad');
+      again = false;
+    }
+  }catch(e){
+    ncmMsg('网络不稳，正在重试…', 'warn');
+  }finally{
+    NCM.busy = false;
+  }
+  if(again && $('#ncmModal').classList.contains('on'))
+    NCM.timer = setTimeout(ncmPoll, 2000);
+}
+
+async function ncmSaveRaw(){
+  const raw = ($('#ncmRaw').value || '').trim();
+  if(!raw){ ncmMsg('先把 Cookie 粘进来', 'bad'); return; }
+  ncmMsg('正在检测…');
+  try{
+    const r = await (await fetch('/api/ncm/login/cookie', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({raw: raw})})).json();
+    ncmMsg((r.ok ? '' : '⚠ ') + (r.msg || ''), r.ok ? 'good' : 'bad');
+    if(r.ok){
+      ncmStop();
+      NCM.key = '';
+      ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
+      toast('网易云登录成功');
+      ncmLoad(); loadStatus();
+    }
+  }catch(e){ ncmMsg('保存失败：' + e.message, 'bad'); }
+}
+
+async function ncmLogout(){
+  if(!confirm('退出网易云登录？\n之后的搜索会退回匿名模式（VIP / 独家曲目搜不到）。')) return;
+  try{
+    const r = await (await fetch('/api/ncm/login/logout', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+    toast(r.msg || '已退出');
+    ncmMsg(r.msg || '已退出', r.ok ? 'warn' : 'bad');
+    ncmLoad(); loadStatus();
+  }catch(e){ toast('操作失败：' + e.message); }
+}
+
 function refresh(){ loadStatus(); loadPublic(); loadDeps(); if(LOG_OPEN) logLoad(); }
 refresh(); setInterval(refresh, 8000);
+ncmLoad();                // 昵称只查一次，跟着 refresh 每 8 秒查一遍没必要
 updCheck(false);          // 每次打开控制台都查一次（服务端 10 分钟缓存，不会刷爆额度）

@@ -8,7 +8,7 @@ import json
 import urllib.parse
 
 from .core import *          # noqa: F401,F403
-from . import core, pages, security, sysinfo, services
+from . import core, pages, security, sysinfo, services, ncmlogin
 from .security import (_ban_left, _probe_hit, public_paused, security_view,
                        PUBLIC_GET_EXACT, PUBLIC_GET_PREFIX)
 from .sysinfo import collect, panel_log_tail
@@ -224,6 +224,26 @@ def handle(h):
         except Exception as e:
             obj = {"ok": False, "current": "?", "has_update": False,
                    "error": "%s: %s" % (type(e).__name__, e)}
+        h._send(200, json.dumps(obj, ensure_ascii=False))
+    # 网易云登录（概览页内嵌扫码）：状态 / 轮询。
+    # poll 在 803 时会写 ncm_cookie.txt —— 有写盘副作用的 GET，同样不许跨站触发。
+    elif path == "/api/ncm/login/status":
+        verify = str((q.get("verify") or ["0"])[0]).lower() in ("1", "true", "yes")
+        try:
+            obj = ncmlogin.status(verify=verify)
+        except Exception as e:
+            obj = {"installed": False, "cookie": False, "nickname": "",
+                   "msg": "%s: %s" % (type(e).__name__, e)}
+        h._send(200, json.dumps(obj, ensure_ascii=False))
+    elif path == "/api/ncm/login/poll":
+        if not h._same_origin():
+            h._send(403, json.dumps({"ok": False, "msg": "跨站请求已被拒绝"},
+                                       ensure_ascii=False))
+            return
+        try:
+            obj = ncmlogin.poll((q.get("key") or [""])[0])
+        except Exception as e:
+            obj = {"ok": False, "code": 0, "msg": "%s: %s" % (type(e).__name__, e)}
         h._send(200, json.dumps(obj, ensure_ascii=False))
     elif path == "/api/status":
         try:

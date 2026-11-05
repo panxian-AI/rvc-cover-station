@@ -28,6 +28,10 @@
     <div class="svc" id="svc"></div>
     <div id="perfLine" class="hint" style="margin-top:8px">性能档位：读取中…</div>
     <div id="ncmCfg" class="hint" style="margin-top:8px">网易云配置：读取中…</div>
+    <div class="row" id="ncmRow" style="margin-top:4px;display:none">
+      <button class="gray mini" id="btnNcmLogin" onclick="ncmOpen()">📱 扫码登录网易云</button>
+      <span class="hint" style="margin-top:0" id="ncmWho"></span>
+    </div>
     <div id="silentLine" class="hint" style="margin-top:8px;display:none"></div>
     <div id="depsLine" class="hint" style="margin-top:8px;display:none"></div>
     <div id="saveLine" class="hint" style="margin-top:8px;display:none"></div>
@@ -80,6 +84,29 @@
     <a class="tile" href="/guest" target="_blank"><b>👀 访客页预览</b><span>朋友看到的样子</span></a>
   </div>
 </main>
+
+<div class="modal" id="ncmModal">
+  <div class="box" style="max-width:420px">
+    <div class="hd">
+      <b>网易云扫码登录</b>
+      <div style="color:#75869f;font-size:12px;margin-top:4px">手机 App 首页左上角「☰」→ 扫一扫</div>
+    </div>
+    <div class="bd">
+      <div class="ncmqr" id="ncmQr"><div class="ncmwait">正在生成二维码…</div></div>
+      <div class="ncmmsg" id="ncmMsg"></div>
+      <details id="ncmPaste">
+        <summary>扫码失败？粘贴 Cookie（备选）</summary>
+        <textarea id="ncmRaw" placeholder="把浏览器里 music.163.com 的整段 Cookie 粘到这里（含 MUSIC_U 即可）"></textarea>
+        <button class="gray mini" onclick="ncmSaveRaw()">保存并检测</button>
+      </details>
+    </div>
+    <div class="ft">
+      <a class="link" href="#" onclick="ncmRegen();return false" style="margin-right:auto">换一张</a>
+      <button class="gray" id="btnNcmLogout" onclick="ncmLogout()">退出登录</button>
+      <button class="gray" onclick="ncmClose()">关闭</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal" id="updModal">
   <div class="box">

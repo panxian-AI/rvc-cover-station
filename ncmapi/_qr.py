@@ -422,6 +422,37 @@ def to_ppm(matrix, scale=6, border=4):
     return b"P6\n%d %d\n255\n" % (dim, dim) + bytes(out)
 
 
+def to_svg(matrix, border=3, dark="#111827", light="#ffffff"):
+    """转成 SVG 字符串，直接塞进网页 <div> 里就能显示（不用生成图片文件）。
+
+    每个黑模块画成一个 1x1 的方块，用 path 一次性画完 —— 版本 10 是 57x57，
+    逐格 <rect> 会有三千多个节点，path 只有一条。
+    """
+    s = len(matrix)
+    n = s + border * 2
+    parts = []
+    for r in range(s):
+        row = matrix[r]
+        c = 0
+        while c < s:
+            if row[c]:
+                start = c
+                while c < s and row[c]:
+                    c += 1
+                parts.append("M%d %dh%dv1H%dZ" % (start + border, r + border,
+                                                  c - start, start + border))
+            else:
+                c += 1
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" '
+        'width="100%%" height="100%%" shape-rendering="crispEdges" '
+        'role="img" aria-label="登录二维码">'
+        '<rect width="%d" height="%d" fill="%s"/>'
+        '<path d="%s" fill="%s"/></svg>'
+        % (n, n, n, n, light, "".join(parts), dark)
+    )
+
+
 if __name__ == "__main__":
     import sys
     txt = sys.argv[1] if len(sys.argv) > 1 else "https://music.163.com/login?codekey=test"

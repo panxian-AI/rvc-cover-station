@@ -1,44 +1,27 @@
 # -*- coding: utf-8 -*-
 """网易云登录窗口：扫码登录（推荐）+ 粘贴 Cookie（备选）。
 
-双击「设置网易云Cookie.bat」打开。
+双击「设置网易云Cookie.bat」打开。v2.1.5 起这是**备选入口** —— 主入口在
+控制台概览页：卡片上点「扫码登录」，二维码直接画在网页里，不用开新窗口。
 
-扫码登录走网易云官方的二维码接口（和手机 App「扫一扫」登录网页版是同一套）：
-  1. POST /api/login/qrcode/unikey  申请一个 unikey
-  2. 把 https://music.163.com/login?codekey=<unikey> 画成本地二维码
-  3. 每 2 秒 POST /api/login/qrcode/client/login 询问状态
-     801 等待扫码 / 802 已扫码待确认 / 803 成功（响应里带登录 Cookie）/ 800 过期
-  4. 803 时把 MUSIC_U 等 Cookie 写进 ncm_cookie.txt
-
-只依赖标准库 + tkinter；二维码自己画（见 _qr.py），不装任何第三方包。
+网络逻辑全在 ncm_login.py（面板也用它），这里只负责画界面。
 """
-import http.cookiejar
-import json
 import os
-import re
 import threading
 import tkinter as tk
-import urllib.parse
-import urllib.request
 from tkinter import messagebox, ttk
 
 try:
-    from . import _qr                      # 作为包导入时
+    from . import _qr
+    from .ncm_login import (COOKIE_FILE, OPENER, QR_TEXT_URL, NcmLogin,
+                            account, extract, load_saved, save_cookie)
 except ImportError:
-    import _qr                             # 直接跑脚本时
+    import _qr
+    from ncm_login import (COOKIE_FILE, OPENER, QR_TEXT_URL, NcmLogin,
+                           account, extract, load_saved, save_cookie)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-COOKIE_FILE = os.path.join(HERE, "ncm_cookie.txt")
 QR_IMG = os.path.join(HERE, "_qr_tmp.ppm")
-
-BASE = "https://music.163.com"
-VERIFY_URL = BASE + "/api/nuser/account/get"
-QR_KEY_URL = BASE + "/api/login/qrcode/unikey"
-QR_POLL_URL = BASE + "/api/login/qrcode/client/login"
-QR_TEXT_URL = BASE + "/login?codekey=%s"
-
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
 
 HELP_TEXT = """\
 扫码登录（推荐，10 秒）：
@@ -54,125 +37,20 @@ HELP_TEXT = """\
   3. 把整段复制到下面的框里（含 MUSIC_U 即可）
 """
 
-OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def extract(raw):
-    """从用户粘贴的内容里提取出可用的 Cookie 串。
-
-    兼容三种输入：整段浏览器 Cookie / MUSIC_U=xxx / 只有值。
-    返回 (cookie 串, 提示信息)，cookie 为空表示没提取到 MUSIC_U。
-    """
-    raw = " ".join((raw or "").split())
-    if not raw:
-        return "", "请先粘贴内容"
-    if "MUSIC_U=" in raw:
-        m = re.search(r"MUSIC_U=([^;\s]+)", raw)
-        if m and m.group(1):
-            return raw, ""
-        return "", "MUSIC_U 的值是空的，重新复制一下"
-    # 只有值：当成长 token 接受
-    if re.fullmatch(r"[A-Za-z0-9%]{32,}", raw):
-        return "MUSIC_U=" + raw, ""
-    return "", "里面没有找到 MUSIC_U —— 确认登录了网易云再复制"
-
-
-def load_saved():
-    try:
-        with open(COOKIE_FILE, "r", encoding="utf-8-sig") as f:
-            return f.read()
-    except Exception:
-        return ""
-
-
-def save_cookie(cookie):
-    """写盘。注释行以 # 开头，ncm_proxy 读的时候会跳过。"""
-    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-        f.write("# 由 设置网易云Cookie.bat 窗口保存，有 MUSIC_U 才算登录态\n")
-        f.write(cookie.strip() + "\n")
-
-
-class NcmLogin(object):
-    """扫码登录的网络部分（与界面无关，方便单独测）。
-
-    共用同一个 cookie jar：unikey 申请时网易云会种 NMTID，后续轮询要带上，
-    否则个别账号会被判成不同会话。
-    """
-
-    def __init__(self, opener=None):
-        self.jar = http.cookiejar.CookieJar()
-        self.opener = opener or urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPCookieProcessor(self.jar))
-
-    def _post(self, url, fields, cookie="", timeout=12):
-        data = urllib.parse.urlencode(fields).encode()
-        req = urllib.request.Request(url, data=data, headers={
-            "User-Agent": UA,
-            "Referer": BASE + "/",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Cookie": cookie or "os=pc; appver=2.9.7",
-        })
-        with self.opener.open(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "ignore"))
-
-    def new_key(self):
-        """申请 unikey。失败时抛异常，由界面显示成「二维码生成失败」。"""
-        d = self._post(QR_KEY_URL, {"type": 1})
-        key = d.get("unikey") or ""
-        if not key:
-            raise RuntimeError("网易云没返回 unikey（code=%s）" % d.get("code"))
-        return key
-
-    def poll(self, key):
-        """返回 (code, cookie)。
-
-        code: 800 过期 / 801 等待扫码 / 802 已扫码待确认 / 803 成功
-        cookie: 仅 803 时有值
-        """
-        d = self._post(QR_POLL_URL, {"key": key, "type": 1})
-        code = d.get("code")
-        cookie = ""
-        if code == 803:
-            cookie = d.get("cookie") or self._jar_cookie()
-        return code, cookie
-
-    def _jar_cookie(self):
-        """从 jar 里拼 Cookie：只取 music.163.com 的，按名字排序保证稳定。"""
-        items = []
-        for c in self.jar:
-            if c.value and (not c.domain or "163.com" in c.domain):
-                items.append((c.name, c.value))
-        items.sort()
-        return "; ".join("%s=%s" % kv for kv in items)
-
-    def nickname(self, cookie):
-        """用给定 Cookie 查昵称；未登录返回空串。"""
-        req = urllib.request.Request(VERIFY_URL, headers={
-            "Cookie": cookie, "User-Agent": UA, "Referer": BASE})
-        with OPENER.open(req, timeout=10) as r:
-            d = json.loads(r.read().decode("utf-8", "ignore"))
-        return ((d.get("profile") or {}).get("nickname") or "")
-
 
 def verify(cookie, cb):
-    """检测 Cookie 是否已登录。结果通过 cb(昵称或错误提示) 回调。"""
+    """检测 Cookie 是否已登录。结果通过 cb(昵称或错误提示) 回调。
+
+    窗口里不能阻塞主线程，所以还是放后台线程跑；网络判断在 ncm_login.account()。
+    """
     def run():
-        try:
-            req = urllib.request.Request(
-                VERIFY_URL,
-                headers={"Cookie": cookie,
-                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                         "Referer": BASE})
-            with OPENER.open(req, timeout=10) as r:
-                data = json.loads(r.read().decode("utf-8", "ignore"))
-            nick = (data.get("profile") or {}).get("nickname")
-            if nick:
-                cb("✅ 登录生效，账号：%s" % nick)
-            else:
-                cb("⚠️ 网易云收到了请求但没认出登录（Cookie 失效或不完整），重新复制一次")
-        except Exception as e:
-            cb("❌ 检测失败：%s: %s（网络不通也会这样）" % (type(e).__name__, e))
+        r = account(cookie)
+        if r.get("ok"):
+            cb("✅ 登录生效，账号：%s" % r["nickname"])
+        elif r.get("msg", "").startswith("检测失败"):
+            cb("❌ " + r["msg"])
+        else:
+            cb("⚠️ " + r["msg"])
     threading.Thread(target=run, daemon=True).start()
 
 

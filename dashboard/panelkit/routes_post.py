@@ -7,7 +7,7 @@ import time
 import urllib.parse
 
 from .core import *          # noqa: F401,F403
-from . import core, security, services
+from . import core, security, services, ncmlogin
 from .security import (_ban, _ban_left, _probe, _probe_hit, _probe_lock,
                        public_paused, set_public_paused, sec_log,
                        PUBLIC_POST_EXACT)
@@ -152,6 +152,22 @@ def handle(h):
             obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
         h._send(200 if obj.get("ok") else 400,
                    json.dumps(obj, ensure_ascii=False))
+        return
+    # 网易云登录（概览页内嵌扫码）：申请二维码 / 粘贴 Cookie / 退出登录
+    if path.startswith("/api/ncm/login/"):
+        act = path[len("/api/ncm/login/"):].strip("/").lower()
+        try:
+            if act == "qr":
+                obj = ncmlogin.new_qr()
+            elif act == "cookie":
+                obj = ncmlogin.save_raw(body.get("raw") or "")
+            elif act == "logout":
+                obj = ncmlogin.logout()
+            else:
+                obj = {"ok": False, "msg": "未知操作"}
+        except Exception as e:
+            obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+        h._send(200 if obj.get("ok") else 400, json.dumps(obj, ensure_ascii=False))
         return
     # 版本更新：下载最新 tag 的源码覆盖代码目录（不碰数据与模型）
     if path == "/api/update/apply":

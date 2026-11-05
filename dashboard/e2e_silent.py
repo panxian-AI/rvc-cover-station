@@ -304,6 +304,39 @@ def test_quiet_and_cover_jobs():
     chk("ncm 仅剩一处 input 且包在 isatty 里", len(in_calls) == 1 and "os.isatty(0)" in nsrc,
         len(in_calls))
 
+    # --- 扫码登录：编码器 + 登录窗口 + 代理的热更新 ---
+    qsrc = rd(os.path.join("..", "ncmapi", "_qr.py"))
+    csrc = rd(os.path.join("..", "ncmapi", "cookie_setup.py"))
+    chk("二维码编码器存在且不依赖第三方库",
+        "def encode(" in qsrc and "def to_ppm(" in qsrc
+        and not re.search(r"^\s*(import|from)\s+(qrcode|segno|PIL)", qsrc, re.M))
+    chk("登录窗口走官方扫码接口、803 时落盘 Cookie",
+        "api/login/qrcode/unikey" in csrc
+        and "api/login/qrcode/client/login" in csrc
+        and "code == 803" in csrc and "save_cookie(cookie)" in csrc)
+    chk("代理按 mtime 热更新 Cookie（扫码后不用重启 3002）",
+        "_cookie_state" in nsrc and "getmtime(COOKIE_FILE)" in nsrc
+        and 'h["Cookie"] = cookie or _cookie_state()["cookie"]' in nsrc)
+    chk("代理有 /login/status（能查到昵称和 VIP）",
+        "/login/status" in nsrc and "def login_status" in nsrc
+        and "api/nuser/account/get" in nsrc)
+
+    # 行为级：编码器黄金样本。这组矩阵和参考实现逐位一致、且能被 cv2 从屏幕
+    # 截图里解出原文 —— 谁动了编码算法就会对不上，别顺手改期望值。
+    import hashlib
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "_rvc_qr_golden", os.path.join(HERE, "..", "ncmapi", "_qr.py"))
+    _qrmod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_qrmod)
+    _mat, _ver, _mask = _qrmod.encode(
+        "https://music.163.com/login?codekey=43b9bfca-75e8-4c7c-add1-2ae2ed93906a")
+    _h = hashlib.sha256("".join("".join(str(v) for v in row) for row in _mat).encode()).hexdigest()
+    chk("二维码黄金样本（ver5 mask2，与参考实现逐位一致）",
+        (_ver, _mask) == (5, 2)
+        and _h == "193a265ca7065ab9140ad8704837f1fc2c792a179ee7a5ff51b1f3193ac0a888",
+        "ver=%s mask=%s hash=%s" % (_ver, _mask, _h[:16] + "…"))
+
     # --- 快照逻辑：直接往 _jobs 里塞假任务，别真去做单 ---
     import cover
     with cover._lock:

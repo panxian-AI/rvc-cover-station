@@ -17,12 +17,16 @@
   /search/suggest                         搜索建议
   /comment/music                          热评（R_SO_4_）
   /toplist  /playlist/detail              榜单/歌单
+  /login/status                           当前登录态（昵称 / 是否 VIP）
+
+Cookie 改动会按文件 mtime 自动重读，扫码登录后不需要重启本服务。
 """
 import http.server
 import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -68,12 +72,27 @@ def _load_cookie():
 
 
 _COOKIE, VIP_MODE = _load_cookie()
+_COOKIE_LOCK = threading.Lock()
+# 缓存：文件 mtime 变了才重读 —— 扫码登录后不用重启本服务
+_COOKIE_CACHE = {"mtime": None, "cookie": _ANON_COOKIE, "login": False}
+
+
+def _cookie_state():
+    try:
+        mt = os.path.getmtime(COOKIE_FILE)
+    except OSError:
+        mt = None
+    with _COOKIE_LOCK:
+        if _COOKIE_CACHE["mtime"] != mt:
+            c, login = _load_cookie()
+            _COOKIE_CACHE.update(mtime=mt, cookie=c, login=login)
+        return _COOKIE_CACHE
+
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Referer": "https://music.163.com/",
-    "Cookie": _COOKIE,
 }
 
 
@@ -85,10 +104,38 @@ def log(line):
         pass
 
 
-def fetch(url, timeout=12):
-    req = urllib.request.Request(url, headers=HEADERS)
+def fetch(url, timeout=12, cookie=None):
+    h = dict(HEADERS)
+    h["Cookie"] = cookie or _cookie_state()["cookie"]
+    req = urllib.request.Request(url, headers=h)
     with OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+_LOGIN_CACHE = {"at": 0.0, "obj": None}
+
+
+def login_status(force=False):
+    """当前 Cookie 的登录态。缓存 60 秒，免得面板一刷新就打一次网易云。"""
+    st = _cookie_state()
+    if not st["login"]:
+        return {"code": 200, "login": False, "nickname": "", "vip": False,
+                "msg": "未配置 Cookie，当前是匿名模式（VIP / 独家曲目搜不到）"}
+    now = time.time()
+    if not force and _LOGIN_CACHE["obj"] and now - _LOGIN_CACHE["at"] < 60:
+        return _LOGIN_CACHE["obj"]
+    try:
+        data = fetch("%s/api/nuser/account/get" % BASE, timeout=8)
+        prof = data.get("profile") or {}
+        nick = prof.get("nickname") or ""
+        obj = {"code": 200, "login": bool(nick), "nickname": nick,
+               "vip": (prof.get("vipType") or 0) > 0,
+               "msg": "" if nick else "Cookie 没有登录态（可能已过期），重新扫码登录一次"}
+    except Exception as e:
+        obj = {"code": 500, "login": st["login"], "nickname": "", "vip": False,
+               "msg": "查询失败：%s: %s" % (type(e).__name__, e)}
+    _LOGIN_CACHE.update(at=now, obj=obj)
+    return obj
 
 
 def norm_song(s):
@@ -202,6 +249,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "%s/api/v1/resource/comments/R_SO_4_%s?limit=20&offset=0" % (BASE, sid)))
             if path == "/toplist":
                 return self._json(fetch("%s/api/toplist/detail" % BASE))
+            if path in ("/login/status", "/login/status/detail"):
+                return self._json(login_status(force=("force" in q)))
             if path == "/playlist/detail":
                 pid = re.sub(r"[^\d]", "", q.get("id") or "")
                 return self._json(fetch("%s/api/v6/playlist/detail?id=%s" % (BASE, pid)))
@@ -286,11 +335,12 @@ def main():
     ips = _local_ips()
     print("=" * 56)
     print("  本地网易云 API 已启动")
-    if VIP_MODE:
+    if _cookie_state()["login"]:
         print("  登录态:     ✅ 已启用（VIP 曲目可拿完整音源）")
+        print("              换账号：双击 设置网易云Cookie.bat → 扫码登录（改完自动生效）")
     else:
         print("  登录态:     ⚠️  匿名模式（VIP / 独家曲目会拿不到地址）")
-        print("              要启用：双击同目录的 设置网易云Cookie.bat，在窗口里粘贴即可")
+        print("              要启用：双击同目录的 设置网易云Cookie.bat，扫码登录即可")
     print("  电脑自测:   http://127.0.0.1:%d/search?keywords=十年&limit=3" % PORT)
     if ips:
         print("  手机插件填: http://%s:%d" % (ips[0], PORT))

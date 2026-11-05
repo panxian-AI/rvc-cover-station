@@ -249,8 +249,8 @@ def start_all():
         ok_n, m_n = start("ncm")
         notes.append("网易云已启动" if ok_n else "网易云启动失败: %s" % m_n)
     if ncm_pf["installed"] and not ncm_pf["cookie"]:
-        notes.append("网易云 Cookie 未配置：点歌搜索会失败，"
-                     "请双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 配置后重启网易云")
+        notes.append("网易云未登录：点歌搜索会拿不到 VIP / 独家曲目，"
+                     "双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 扫码登录（保存后自动生效）")
 
     # 4) 等后端真正监听再返回（后端轻量，一般先就绪）
     if not port_open(3333):

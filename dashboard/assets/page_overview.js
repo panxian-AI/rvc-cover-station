@@ -16,7 +16,7 @@ async function loadStatus(){
     $('#svc').innerHTML = (d.ports||[]).map(p => {
       let warn = '';
       if(p.key === 'ncm' && d.ncm_preflight && !d.ncm_preflight.cookie)
-        warn = ' <span class="tag t-off" style="font-size:11px" title="双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 配置后重启网易云">⚠ 未配 Cookie</span>';
+        warn = ' <span class="tag t-off" style="font-size:11px" title="双击 RVCSVC\\ncmapi\\设置网易云Cookie.bat 扫码登录，保存后自动生效">⚠ 未登录</span>';
       return `<div class="s"><span class="dot ${p.open?'on':'off'}"></span>${esc(SVC_NAME[p.key]||p.key)}${warn}</div>`;
     }).join('');
     const all = (d.ports||[]).filter(p=>p.key!=='panel').every(p=>p.open);
@@ -25,9 +25,9 @@ async function loadStatus(){
     const el = $('#ncmCfg');
     if(el) el.innerHTML = !pf || !pf.installed
       ? '<span style="color:#ff9aa8">网易云代理缺失（重装可修复）</span>'
-      : (pf.cookie ? '✓ Cookie 已配置，点歌搜索可用'
-                   : '<span style="color:#f0c674">⚠ 还没配置网易云 Cookie：服务能起，但点歌搜索会失败。'
-                     + '双击 <b>RVCSVC\\ncmapi\\设置网易云Cookie.bat</b>，登录后复制 Cookie 粘贴进去，再重启网易云。</span>');
+      : (pf.cookie ? '✓ 已登录网易云，点歌搜索可用'
+                   : '<span style="color:#f0c674">⚠ 网易云未登录：服务能起，但 VIP / 独家曲目搜不到。'
+                     + '双击 <b>RVCSVC\\ncmapi\\设置网易云Cookie.bat</b>，用手机 App 扫码登录即可（保存后自动生效，不用重启）。</span>');
     const pl = $('#perfLine');
     if(pl && d.perf_text) pl.textContent = '性能档位：' + d.perf_text;
     const sl = $('#silentLine');

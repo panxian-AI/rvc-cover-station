@@ -663,7 +663,8 @@ def _check_cover(payload):
     title = str(payload.get("title") or "").strip()[:MAX_TITLE]
     artist = str(payload.get("artist") or "").strip()[:MAX_ARTIST]
     model = _valid_model(payload.get("model"))
-    if not song_id.isdigit() or len(song_id) > 20:
+    # v2.2.0 起支持多家音源：id 形如 `qq-xxxx` / `kugou-XXXX`，纯数字仍是网易云
+    if not cover_mod.split_song_id(song_id)[0]:
         return {"ok": False, "msg": "请先搜索并选中一首歌"}
     if not title:
         return {"ok": False, "msg": "歌曲信息不完整，请重新搜索"}
@@ -1758,7 +1759,7 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
                     payload = {"ok": False, "code": "captcha", "msg": msg}
                     payload.update(info or {})
                     return 400, payload
-            res = cover_mod.search(kw, 12)
+            res = cover_mod.search(kw, 12, (q.get("platform") or [""])[0])
             if res.get("ok"):
                 touch_search(gid)
             if info.get("pass"):
@@ -1767,6 +1768,11 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
             elif "pass_left" in info:
                 res["pass_left"] = info["pass_left"]
             return 200, res
+        if path == "/api/guest/platforms":
+            # 访客页也要能切音源：默认取站长设置，列表是静态的（不发网络请求）
+            plats = [{"key": k, "label": v} for k, v in cover_mod.PLATFORMS.items()]
+            return 200, {"ok": True, "platforms": plats,
+                         "default": cover_mod.default_platform()}
         if path == "/api/guest/voices":
             if not tts_mod:
                 return 200, {"ok": False, "msg": "文字转语音功能未启用"}

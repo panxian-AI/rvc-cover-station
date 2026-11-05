@@ -29,6 +29,7 @@ button.ghost{background:#1b2537;border:1px solid #2b3a57;color:#c8d6ea;font-weig
 .song .n{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .song .a{font-size:12px;color:#8b9bb8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .song .d{font-size:12px;color:#63748f;font-variant-numeric:tabular-nums}
+.song .p{font-size:11px;color:#7f8da3;flex:none}
 select{width:100%;padding:11px 13px;border-radius:10px;border:1px solid #2b3a57;background:#0e1524;
 color:#e7eefb;font-size:15px;outline:none;appearance:none}
 textarea{width:100%;min-height:120px;padding:11px 13px;border-radius:10px;border:1px solid #2b3a57;
@@ -106,6 +107,11 @@ footer{text-align:center;color:#55647d;font-size:12px;margin-top:22px}
     <div class="label">1 · 搜索歌曲</div>
     <div class="row">
       <input type="text" id="kw" placeholder="歌名 / 歌手，例如 春日影" autocomplete="off">
+      <select id="platform" title="换一个平台搜同一首歌" style="max-width:130px">
+        <option value="netease">网易云</option>
+        <option value="qq">QQ 音乐</option>
+        <option value="kugou">酷狗</option>
+      </select>
       <button id="btnSearch" onclick="doSearch()">搜索</button>
     </div>
     <div class="cap" id="capBox">
@@ -321,7 +327,9 @@ async function doSearch(){
   const box = $('#songs'); box.innerHTML = '<div class="empty">搜索中…（首次可能 10 秒左右）</div>';
   let keepImg = false;
   try{
-    let url = '/api/guest/search?kw=' + encodeURIComponent(kw);
+    const platEl = $('#platform');
+    let url = '/api/guest/search?kw=' + encodeURIComponent(kw)
+            + '&platform=' + encodeURIComponent((platEl && platEl.value) || '');
     if(usingPass) url += '&cp=' + encodeURIComponent(passToken);
     else url += '&ct=' + encodeURIComponent(capToken) + '&ca=' + encodeURIComponent(ca);
 
@@ -356,6 +364,7 @@ async function doSearch(){
       `<div class="song" data-id="${esc(s.id)}" onclick="pick(this, ${i})">
          <div class="t"><div class="n">${esc(s.name)}</div><div class="a">${esc(s.artist)}${s.album?' · '+esc(s.album):''}</div></div>
          <div class="d">${mmss(s.duration)}</div>
+         <div class="p">${esc(s.platform_label||'')}</div>
        </div>`).join('');
   }catch(e){
     box.innerHTML = '<div class="empty">搜索请求失败：' + esc(e.message) + '</div>';
@@ -718,6 +727,17 @@ $('#ttsText').addEventListener('input', ()=>{ $('#ttsCount').textContent = $('#t
 loadModels(); loadVoices(); loadMine(); loadWl();
 loadPass(); syncCap();
 if(!passValid()) newCap();
+// 音源平台：列表是静态的，默认值来自站长设置（/api/guest/platforms 是公开接口）
+(async function loadPlatforms(){
+  try{
+    const d = await (await fetch('/api/guest/platforms', {cache:'no-store'})).json();
+    const sel = $('#platform');
+    if(!d.ok || !sel || !d.platforms) return;
+    sel.innerHTML = d.platforms.map(p => `<option value="${esc(p.key)}">${esc(p.label.replace('音乐',''))}</option>`).join('');
+    if(d.default) sel.value = d.default;
+  }catch(e){}
+})();
+
 // 通行证到期后自动把验证码区放回来（不打断正在输入的搜索词）
 setInterval(()=>{ if(passToken && !passValid()){ clearPass(); syncCap(); newCap(); } else { syncCap(); } }, 15000);
 setInterval(()=>{ loadMine(); loadWl(); }, 5000);

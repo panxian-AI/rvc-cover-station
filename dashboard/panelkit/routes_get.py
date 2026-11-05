@@ -8,7 +8,7 @@ import json
 import urllib.parse
 
 from .core import *          # noqa: F401,F403
-from . import core, pages, security, sysinfo, services, ncmlogin
+from . import core, pages, security, sysinfo, services, ncmlogin, music
 from .security import (_ban_left, _probe_hit, public_paused, security_view,
                        PUBLIC_GET_EXACT, PUBLIC_GET_PREFIX)
 from .sysinfo import collect, panel_log_tail
@@ -224,6 +224,15 @@ def handle(h):
         except Exception as e:
             obj = {"ok": False, "current": "?", "has_update": False,
                    "error": "%s: %s" % (type(e).__name__, e)}
+        h._send(200, json.dumps(obj, ensure_ascii=False))
+    # 多平台音源：各平台 Cookie 状态 + 默认平台（不发网络请求的那部分在 music.py 里缓存）
+    elif path == "/api/music/platforms":
+        force = str((q.get("force") or ["0"])[0]).lower() in ("1", "true", "yes")
+        try:
+            obj = music.status(force=force)
+        except Exception as e:
+            obj = {"ok": False, "platforms": [], "default": "netease",
+                   "msg": "%s: %s" % (type(e).__name__, e)}
         h._send(200, json.dumps(obj, ensure_ascii=False))
     # 网易云登录（概览页内嵌扫码）：状态 / 轮询。
     # poll 在 803 时会写 ncm_cookie.txt —— 有写盘副作用的 GET，同样不许跨站触发。

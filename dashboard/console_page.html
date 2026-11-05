@@ -27,11 +27,8 @@
     <h2>服务状态</h2>
     <div class="svc" id="svc"></div>
     <div id="perfLine" class="hint" style="margin-top:8px">性能档位：读取中…</div>
-    <div id="ncmCfg" class="hint" style="margin-top:8px">网易云配置：读取中…</div>
-    <div class="row" id="ncmRow" style="margin-top:4px;display:none">
-      <button class="gray mini" id="btnNcmLogin" onclick="ncmOpen()">📱 扫码登录网易云</button>
-      <span class="hint" style="margin-top:0" id="ncmWho"></span>
-    </div>
+    <div id="ncmCfg" class="hint" style="margin-top:8px">音源平台：读取中…</div>
+    <div id="musicRows" style="margin-top:6px"></div>
     <div id="silentLine" class="hint" style="margin-top:8px;display:none"></div>
     <div id="depsLine" class="hint" style="margin-top:8px;display:none"></div>
     <div id="saveLine" class="hint" style="margin-top:8px;display:none"></div>
@@ -84,6 +81,25 @@
     <a class="tile" href="/guest" target="_blank"><b>👀 访客页预览</b><span>朋友看到的样子</span></a>
   </div>
 </main>
+
+<div class="modal" id="ckModal">
+  <div class="box" style="max-width:560px">
+    <div class="hd">
+      <b id="ckTitle">配置 Cookie</b>
+      <div id="ckHint" style="color:#75869f;font-size:12px;margin-top:4px"></div>
+    </div>
+    <div class="bd">
+      <textarea id="ckRaw" placeholder="把浏览器里该平台的整段 Cookie 粘到这里（保留分号分隔的键=值即可）"></textarea>
+      <div class="ncmmsg" id="ckMsg" style="text-align:left"></div>
+      <div class="hint">Cookie 等同登录凭证：只存在本机 <b>ncmapi\cookies\</b> 下，不会上传。改密码或退出登录后会失效，重新复制一次即可。</div>
+    </div>
+    <div class="ft">
+      <button class="gray" onclick="ckClear()" style="margin-right:auto">清除这个平台的 Cookie</button>
+      <button class="gray" onclick="ckClose()">关闭</button>
+      <button class="green" onclick="ckSave()">保存并检测</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal" id="ncmModal">
   <div class="box" style="max-width:420px">

@@ -80,6 +80,8 @@ def mk_zip(path, root="rvc-cover-station-1.0.6"):
         z.writestr(root + "/RVC-WebUI/webui.py", "# new webui\n")
         z.writestr(root + "/RVC-WebUI/assets/weights/m.pth", "model")    # 必须跳过
         z.writestr(root + "/ncmapi/api.js", "// new ncm\n")
+        z.writestr(root + "/ncmapi/ncm_cookie.txt", "MUSIC_U=evil")      # 必须跳过（账号凭证）
+        z.writestr(root + "/ncmapi/cookies/qq.txt", "qm_keyst=evil")     # 必须跳过（账号凭证）
         z.writestr(root + "/ncmapi/../../evil.py", "# escape")           # 越界，必须拦
         z.writestr(root + "/README.md", "# readme\n")                    # 不在映射里，忽略
 
@@ -111,6 +113,14 @@ def main():
     db = os.path.join(sandbox, "dashboard", "guest_db.json")
     with open(db, "w", encoding="utf-8") as f:
         f.write('{"real": 1}')
+    # 各平台登录态（v2.2.0）：更新包里塞了同名文件也不许覆盖
+    ncm_ck = os.path.join(sandbox, "ncmapi", "ncm_cookie.txt")
+    with open(ncm_ck, "w", encoding="utf-8") as f:
+        f.write("MUSIC_U=real")
+    qq_ck = os.path.join(sandbox, "ncmapi", "cookies", "qq.txt")
+    os.makedirs(os.path.dirname(qq_ck), exist_ok=True)
+    with open(qq_ck, "w", encoding="utf-8") as f:
+        f.write("qm_keyst=real")
 
     srv = panel.http.server.ThreadingHTTPServer(("127.0.0.1", 8897), panel.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -305,6 +315,10 @@ def main():
             os.path.join(sandbox, "RVC-WebUI", "assets", "weights", "m.pth")))
         chk("temp 目录被跳过", not os.path.isfile(
             os.path.join(sandbox, "RVCSVC-API", "temp", "keep.txt")))
+        with open(ncm_ck, encoding="utf-8") as f:
+            chk("网易云 Cookie 没被更新包覆盖", f.read() == "MUSIC_U=real")
+        with open(qq_ck, encoding="utf-8") as f:
+            chk("其它平台 Cookie 没被更新包覆盖", f.read() == "qm_keyst=real")
         chk("zip 越界路径被拦", not os.path.isfile(os.path.join(sandbox, "evil.py")))
         chk("映射外的文件不落地", not os.path.isfile(os.path.join(sandbox, "README.md")))
         chk("旧文件有备份", res.get("backed_up", 0) >= 1 and os.path.isfile(

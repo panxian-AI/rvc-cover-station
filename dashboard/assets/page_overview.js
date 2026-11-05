@@ -16,21 +16,11 @@ async function loadStatus(){
     $('#svc').innerHTML = (d.ports||[]).map(p => {
       let warn = '';
       if(p.key === 'ncm' && d.ncm_preflight && !d.ncm_preflight.cookie)
-        warn = ' <span class="tag t-off" style="font-size:11px" title="点下面的「扫码登录网易云」，手机 App 扫一下就好">⚠ 未登录</span>';
+        warn = ' <span class="tag t-off" style="font-size:11px" title="点下面「音源平台」里网易云那行的「扫码登录」，手机 App 扫一下就好">⚠ 未登录</span>';
       return `<div class="s"><span class="dot ${p.open?'on':'off'}"></span>${esc(SVC_NAME[p.key]||p.key)}${warn}</div>`;
     }).join('');
     const all = (d.ports||[]).filter(p=>p.key!=='panel').every(p=>p.open);
     $('#btnStart').disabled = all;
-    const pf = d.ncm_preflight;
-    const el = $('#ncmCfg');
-    if(el) el.innerHTML = !pf || !pf.installed
-      ? '<span style="color:#ff9aa8">网易云代理缺失（重装可修复）</span>'
-      : (pf.cookie ? '✓ 已登录网易云，点歌搜索可用'
-                   : '<span style="color:#f0c674">⚠ 网易云未登录：服务能起，但 VIP / 独家曲目搜不到。'
-                     + '点下面的「扫码登录网易云」，用手机 App 扫一下即可（登录后自动生效，不用重启）。</span>');
-    const nr = $('#ncmRow');
-    if(nr) nr.style.display = (pf && pf.installed) ? '' : 'none';
-    ncmLabel(pf && pf.cookie);
     const pl = $('#perfLine');
     if(pl && d.perf_text) pl.textContent = '性能档位：' + d.perf_text;
     const sl = $('#silentLine');
@@ -311,37 +301,116 @@ async function loadDeps(){
   }catch(e){ el.style.display = 'none'; }
 }
 
-/* ---------- 网易云扫码登录（内嵌在概览页，不弹独立窗口） ----------
-   为什么放在面板里：以前要用户自己去 RVCSVC\ncmapi 双击一个 bat 才出窗口，
-   大多数人压根不知道有这一步；而「未登录」又只影响 VIP / 独家曲目，容易以为
-   是站点坏了。二维码由 ncmapi/_qr.py 现画成 SVG，页面直接内联，不落图片文件。
-   登录成功后 Cookie 写进 ncmapi/ncm_cookie.txt，3002 代理按 mtime 热更新。 */
+/* ---------- 音源平台（网易云 / QQ 音乐 / 酷狗） ----------
+   v2.2.0 起「点歌源」可以是多家：哪家有版权就用哪家。
+   这里只做两件事：显示每家配没配 Cookie、把 Cookie 存到本机。
+   二维码由 ncmapi/_qr.py 现画成 SVG，页面直接内联，不落图片文件；
+   Cookie 存进 ncmapi/ 下对应文件，3002 按 mtime 热更新，不用重启服务。 */
 let NCM = {key:'', timer:0, busy:false};
+let MUSIC = null;
+let CK = {key:'', label:''};
 
-function ncmLabel(logged){
-  const b = $('#btnNcmLogin');
-  if(b) b.textContent = logged ? '🔁 换账号 / 查看登录' : '📱 扫码登录网易云';
-  const l = $('#btnNcmLogout');
-  if(l) l.style.display = logged ? '' : 'none';
+function musicStatusText(p){
+  if(!p.has_cookie) return p.msg || '未配置 Cookie';
+  if(p.login) return '已就绪' + (p.nickname ? '：' + p.nickname : '');
+  return p.msg || 'Cookie 已保存，但还不能取流';
 }
 
-function ncmMsg(text, kind){
-  const el = $('#ncmMsg');
+async function loadMusic(force){
+  const el = $('#ncmCfg'), box = $('#musicRows');
+  if(!el || !box) return;
+  try{
+    const q = force ? '?force=1' : '';
+    const d = await (await fetch('/api/music/platforms' + q, {cache:'no-store'})).json();
+    if(!d.ok || !d.platforms || !d.platforms.length){
+      el.innerHTML = '<span style="color:#ff9aa8">音源组件缺失（重装可修复）</span>'
+        + (d.msg ? '：' + esc(d.msg) : '');
+      box.innerHTML = '';
+      return;
+    }
+    MUSIC = d;
+    const def = d.platforms.find(p => p.key === d.default) || d.platforms[0];
+    const ready = d.platforms.filter(p => p.login).length;
+    el.innerHTML = '默认音源：<b>' + esc(def.label) + '</b>'
+      + (ready ? ' · <span style="color:#6fd39a">' + ready + ' 家已就绪</span>'
+               : ' · <span style="color:#f0c674">都还没配 Cookie，VIP / 独家曲目拿不到</span>')
+      + '　<span style="color:#75869f">（默认平台可在「设置」里改）</span>';
+    box.innerHTML = d.platforms.map(p => `
+      <div class="mrow">
+        <span class="dot ${p.login ? 'on' : 'off'}"></span>
+        <b>${esc(p.label)}</b>
+        ${p.key === d.default ? '<span class="tag t-on" style="font-size:10px">默认</span>' : ''}
+        <span class="mstat">${esc(musicStatusText(p))}</span>
+        <span class="sp"></span>
+        <button class="gray mini" onclick="ckOpen('${jsq(p.key)}')">${p.key === 'netease' ? '扫码 / 配置' : '配置 Cookie'}</button>
+        ${p.key === d.default ? ''
+          : `<button class="gray mini" onclick="musicDefault('${jsq(p.key)}')">设为默认</button>`}
+      </div>`).join('');
+  }catch(e){
+    el.innerHTML = '<span style="color:#ff9aa8">音源状态读取失败：' + esc(e.message) + '</span>';
+  }
+}
+
+async function musicDefault(key){
+  try{
+    const d = await (await fetch('/api/music/default', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({platform:key})})).json();
+    toast(d.msg || (d.ok ? '已切换默认音源' : '切换失败'));
+    if(d.ok){ loadMusic(true); loadStatus(); }
+  }catch(e){ toast('切换失败：' + e.message); }
+}
+
+/* ---------- 通用 Cookie 弹层（QQ / 酷狗；网易云可扫码也可粘） ---------- */
+function ckOpen(key){
+  if(key === 'netease'){ ncmOpen(); return; }
+  const p = (MUSIC && MUSIC.platforms || []).find(x => x.key === key);
+  CK = {key:key, label:(p && p.label) || key};
+  $('#ckTitle').textContent = '配置 ' + CK.label + ' Cookie';
+  $('#ckHint').textContent = (p && p.hint) || '';
+  $('#ckRaw').value = '';
+  ckMsg('');
+  $('#ckModal').classList.add('on');
+}
+
+function ckClose(){ $('#ckModal').classList.remove('on'); }
+
+function ckMsg(text, kind){
+  const el = $('#ckMsg');
   if(!el) return;
   el.textContent = text || '';
   el.className = 'ncmmsg' + (kind ? ' ' + kind : '');
 }
 
-async function ncmLoad(){
+async function ckSave(){
+  const raw = ($('#ckRaw').value || '').trim();
+  if(!raw){ ckMsg('先把 Cookie 粘进来', 'bad'); return; }
+  ckMsg('正在保存并检测…');
   try{
-    const d = await (await fetch('/api/ncm/login/status', {cache:'no-store'})).json();
-    const who = $('#ncmWho');
-    if(!who) return;
-    who.textContent = d.cookie
-      ? ('已登录' + (d.nickname ? '：' + d.nickname : '') + (d.vip ? '（VIP）' : ''))
-      : (d.installed === false ? '' : '还没登录（只能搜到免费曲目）');
-    ncmLabel(d.cookie);
-  }catch(e){ /* 状态接口失败不影响主流程 */ }
+    const d = await (await fetch('/api/music/cookie', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({platform: CK.key, raw: raw})})).json();
+    ckMsg((d.ok ? '' : '⚠ ') + (d.msg || ''), d.ok ? (d.login ? 'good' : 'warn') : 'bad');
+    if(d.ok){ toast(d.msg || '已保存'); loadMusic(true); if(d.login) setTimeout(ckClose, 1200); }
+  }catch(e){ ckMsg('保存失败：' + e.message, 'bad'); }
+}
+
+async function ckClear(){
+  if(!confirm('清掉 ' + (CK.label || CK.key) + ' 的 Cookie？\n之后会回到匿名模式（VIP / 付费曲目取不到）。')) return;
+  try{
+    const d = await (await fetch('/api/music/cookie/clear', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({platform: CK.key})})).json();
+    ckMsg(d.msg || '', d.ok ? 'warn' : 'bad');
+    toast(d.msg || (d.ok ? '已清除' : '清除失败'));
+    loadMusic(true);
+  }catch(e){ toast('清除失败：' + e.message); }
+}
+
+/* ---------- 网易云扫码登录（内嵌弹层，不弹独立窗口） ---------- */
+function ncmMsg(text, kind){
+  const el = $('#ncmMsg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.className = 'ncmmsg' + (kind ? ' ' + kind : '');
 }
 
 function ncmOpen(){
@@ -400,7 +469,7 @@ async function ncmPoll(){
         ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
         ncmMsg(r.msg || '登录成功', 'good');
         toast('网易云登录成功');
-        ncmLoad(); loadStatus();
+        loadMusic(true); loadStatus();
       }else{
         ncmQrBox('<div class="ncmwait">登录成功但没保存下来<br>请改用「粘贴 Cookie」</div>');
         ncmMsg(r.msg || '保存失败', 'bad');
@@ -441,7 +510,7 @@ async function ncmSaveRaw(){
       NCM.key = '';
       ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
       toast('网易云登录成功');
-      ncmLoad(); loadStatus();
+      loadMusic(true); loadStatus();
     }
   }catch(e){ ncmMsg('保存失败：' + e.message, 'bad'); }
 }
@@ -453,11 +522,10 @@ async function ncmLogout(){
       headers:{'Content-Type':'application/json'}, body:'{}'})).json();
     toast(r.msg || '已退出');
     ncmMsg(r.msg || '已退出', r.ok ? 'warn' : 'bad');
-    ncmLoad(); loadStatus();
+    loadMusic(true); loadStatus();
   }catch(e){ toast('操作失败：' + e.message); }
 }
 
-function refresh(){ loadStatus(); loadPublic(); loadDeps(); if(LOG_OPEN) logLoad(); }
+function refresh(){ loadStatus(); loadPublic(); loadDeps(); loadMusic(); if(LOG_OPEN) logLoad(); }
 refresh(); setInterval(refresh, 8000);
-ncmLoad();                // 昵称只查一次，跟着 refresh 每 8 秒查一遍没必要
 updCheck(false);          // 每次打开控制台都查一次（服务端 10 分钟缓存，不会刷爆额度）

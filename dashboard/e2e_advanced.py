@@ -298,8 +298,9 @@ def main():
 
         print("\n== 5. HTTP：读 / 存 / 恢复默认 ==")
         s5, ui = jget("/api/admin/settings")
-        chk("GET 能读到设置", s5 == 200 and ui.get("ok") and len(ui.get("fields") or []) == 9,
-            (s5, len(ui.get("fields") or [])))
+        chk("GET 能读到设置", s5 == 200 and ui.get("ok")
+            and len(ui.get("fields") or []) == len(settings.SPEC),
+            (s5, len(ui.get("fields") or []), len(settings.SPEC)))
         keys = [f.get("key") for f in ui.get("fields") or []]
         chk("字段含并发与翻唱参数", "max_parallel" in keys and "reverb_intensity" in keys, keys)
         chk("每个字段带说明文案", all(f.get("hint") for f in ui.get("fields") or []))

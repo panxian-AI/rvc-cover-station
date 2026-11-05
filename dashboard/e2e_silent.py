@@ -323,12 +323,15 @@ def test_quiet_and_cover_jobs():
     chk("扫码接口与原子写盘都在 ncm_login.py",
         "api/login/qrcode/unikey" in lsrc and "api/login/qrcode/client/login" in lsrc
         and "os.replace(tmp, COOKIE_FILE)" in lsrc and "os.fsync" in lsrc)
-    chk("代理按 mtime 热更新 Cookie（扫码后不用重启 3002）",
-        "_cookie_state" in nsrc and "getmtime(COOKIE_FILE)" in nsrc
-        and 'h["Cookie"] = cookie or _cookie_state()["cookie"]' in nsrc)
-    chk("代理有 /login/status（能查到昵称和 VIP）",
-        "/login/status" in nsrc and "def login_status" in nsrc
-        and "api/nuser/account/get" in nsrc)
+    # v2.2.0 起 Cookie 状态搬到 sources/base.py 的 CookieStore（一平台一份文件）
+    bsrc = rd(os.path.join("..", "ncmapi", "sources", "base.py"))
+    chk("每平台一份 Cookie 文件、按 mtime 热更新（改完不用重启 3002）",
+        "class CookieStore" in bsrc and "os.path.getmtime(self.path)" in bsrc
+        and "_cache[\"mtime\"] = object()" in bsrc
+        and "os.replace(tmp, self.path)" in bsrc and "os.fsync(" in bsrc)
+    chk("网关 /login/status 按平台分派（能查到昵称和 VIP）",
+        '"/login/status"' in nsrc and "sources.login_status(platform" in nsrc
+        and "api/nuser/account/get" in rd(os.path.join("..", "ncmapi", "sources", "netease.py")))
 
     # --- 扫码登录内嵌在控制台（v2.1.5）：页面按钮 + 弹层 + 面板路由 ---
     phtml = rd(os.path.join("console_page.html"))
@@ -336,9 +339,10 @@ def test_quiet_and_cover_jobs():
     rget = rd(os.path.join("panelkit", "routes_get.py"))
     rpost = rd(os.path.join("panelkit", "routes_post.py"))
     nmod = rd(os.path.join("panelkit", "ncmlogin.py"))
-    chk("概览页有「扫码登录」按钮和二维码弹层",
-        'id="btnNcmLogin"' in phtml and 'id="ncmModal"' in phtml
-        and 'id="ncmQr"' in phtml and 'id="ncmRaw"' in phtml)
+    chk("概览页有音源平台行 + 二维码/粘贴两种弹层",
+        'id="musicRows"' in phtml and 'id="ncmModal"' in phtml
+        and 'id="ncmQr"' in phtml and 'id="ncmRaw"' in phtml
+        and 'id="ckModal"' in phtml and 'id="ckRaw"' in phtml)
     chk("前端把 SVG 直接塞进页面并按 2 秒轮询",
         "function ncmRegen(" in pjs and "function ncmPoll(" in pjs
         and "r.svg" in pjs and "setTimeout(ncmPoll, 2000)" in pjs)

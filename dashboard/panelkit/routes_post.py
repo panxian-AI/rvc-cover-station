@@ -7,7 +7,7 @@ import time
 import urllib.parse
 
 from .core import *          # noqa: F401,F403
-from . import core, security, services, ncmlogin
+from . import core, security, services, ncmlogin, music
 from .security import (_ban, _ban_left, _probe, _probe_hit, _probe_lock,
                        public_paused, set_public_paused, sec_log,
                        PUBLIC_POST_EXACT)
@@ -152,6 +152,23 @@ def handle(h):
             obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
         h._send(200 if obj.get("ok") else 400,
                    json.dumps(obj, ensure_ascii=False))
+        return
+    # 多平台音源：存 Cookie / 清 Cookie / 设默认平台
+    if path.startswith("/api/music/"):
+        act = path[len("/api/music/"):].strip("/").lower()
+        try:
+            if act == "cookie":
+                obj = music.save_cookie(body.get("platform") or "netease",
+                                        body.get("raw") or "")
+            elif act == "cookie/clear":
+                obj = music.clear_cookie(body.get("platform") or "netease")
+            elif act == "default":
+                obj = music.set_default(body.get("platform") or "netease")
+            else:
+                obj = {"ok": False, "msg": "未知操作"}
+        except Exception as e:
+            obj = {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+        h._send(200 if obj.get("ok") else 400, json.dumps(obj, ensure_ascii=False))
         return
     # 网易云登录（概览页内嵌扫码）：申请二维码 / 粘贴 Cookie / 退出登录
     if path.startswith("/api/ncm/login/"):

@@ -1,99 +1,41 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-本地网易云音乐 API（兼容 NeteaseCloudMusicApi 常用端点）
-用途：给手机上的 AstrBot 翻唱插件提供「歌名 → 歌曲ID」的搜索能力。
-     公网公共实例大面积失效/证书握手失败，本地跑一个最稳，也不受墙和限流影响。
+"""本地音源 API（网易云 / QQ 音乐 / 酷狗，3002）。
 
-- 端口 3001，绑 0.0.0.0，手机可用 http://电脑IP:3001
-- 只用标准库
-- 所有请求都记到 access.log，方便看插件到底调了哪些接口
+对外仍然是「兼容 NeteaseCloudMusicApi 常用端点」的那套路径，新增一个可选的
+`platform` 参数：
 
-已实现：
-  /search  /cloudsearch  /cloudsearch/pc   关键词搜索（返回 ar/al/dt 与 artists/album/duration 双格式）
-  /song/detail                            歌曲详情
-  /lyric  /song/lyric                     歌词
-  /song/url  /song/url/v1                 播放地址（多数需要登录，可能返回 null）
-  /search/suggest                         搜索建议
-  /comment/music                          热评（R_SO_4_）
-  /toplist  /playlist/detail              榜单/歌单
-  /login/status                           当前登录态（昵称 / 是否 VIP）
+    /search?keywords=十年&limit=3&platform=qq
+    /song/url?id=0035GveV3i9dBM&platform=qq
+    /song/detail?ids=...&platform=kugou
+    /platforms                     各家是否配了 Cookie、能否取流
+    /login/status?platform=qq
 
-Cookie 改动会按文件 mtime 自动重读，扫码登录后不需要重启本服务。
+不带 platform 一律当网易云 —— 老插件（AstrBot）、老队列、老成品索引里存的
+都是纯数字 id，行为必须原样不变。
+
+各平台的搜索/取流实现都在 sources/ 包里（一个平台一个文件），这里只管
+HTTP 外壳、日志和参数解析。
 """
 import http.server
 import json
 import os
 import re
 import subprocess
-import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+
+import sources
+from sources.base import SourceError
 
 PORT = 3002   # 3001 被 D:\snow\index.mjs 占用，这里换到 3002
-BASE = "https://music.163.com"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ACCESS_LOG = os.path.join(HERE, "access.log")
-COOKIE_FILE = os.path.join(HERE, "ncm_cookie.txt")
-OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-# 匿名 Cookie：只能拿非 VIP、非独家曲目
-_ANON_COOKIE = "os=pc; appver=2.9.7"
-
-
-def _load_cookie():
-    """从 ncm_cookie.txt 读取登录 Cookie。
-
-    有 MUSIC_U 才算登录态（VIP 生效的前提），否则退回匿名模式。
-    返回 (cookie 串, 是否登录)。
-    """
-    try:
-        with open(COOKIE_FILE, "r", encoding="utf-8-sig") as f:
-            raw = f.read()
-    except FileNotFoundError:
-        return _ANON_COOKIE, False
-    except Exception:
-        return _ANON_COOKIE, False
-
-    # 去掉 # 开头的注释行，剩下的拼成 cookie 串；
-    # 允许一行写 "MUSIC_U=xxx"，也允许直接粘贴浏览器复制的完整 cookie
-    lines = [ln.strip() for ln in raw.splitlines()]
-    cookie = " ".join(" ".join(ln for ln in lines if ln and not ln.startswith("#")).split())
-    if not cookie or "MUSIC_U=" not in cookie:
-        return _ANON_COOKIE, False
-
-    # 补齐 PC 端标识，否则部分接口会拒
-    for kv in ("os=pc", "appver=2.9.7"):
-        if (kv.split("=")[0] + "=") not in cookie:
-            cookie += "; " + kv
-    return cookie, True
-
-
-_COOKIE, VIP_MODE = _load_cookie()
-_COOKIE_LOCK = threading.Lock()
-# 缓存：文件 mtime 变了才重读 —— 扫码登录后不用重启本服务
-_COOKIE_CACHE = {"mtime": None, "cookie": _ANON_COOKIE, "login": False}
-
-
-def _cookie_state():
-    try:
-        mt = os.path.getmtime(COOKIE_FILE)
-    except OSError:
-        mt = None
-    with _COOKIE_LOCK:
-        if _COOKIE_CACHE["mtime"] != mt:
-            c, login = _load_cookie()
-            _COOKIE_CACHE.update(mtime=mt, cookie=c, login=login)
-        return _COOKIE_CACHE
-
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Referer": "https://music.163.com/",
-}
+# 老的 3002 只服务网易云，很多地方（README/文档/手机插件）写着这个地址
+PUBLIC_PATHS = ("/", "/platforms", "/search", "/cloudsearch", "/cloudsearch/pc",
+                "/search/get", "/search/get/web", "/song/detail", "/song",
+                "/song/url", "/song/url/v1", "/login/status", "/login/status/detail")
 
 
 def log(line):
@@ -104,71 +46,28 @@ def log(line):
         pass
 
 
-def fetch(url, timeout=12, cookie=None):
-    h = dict(HEADERS)
-    h["Cookie"] = cookie or _cookie_state()["cookie"]
-    req = urllib.request.Request(url, headers=h)
-    with OPENER.open(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "ignore"))
-
-
-_LOGIN_CACHE = {"at": 0.0, "obj": None}
-
-
-def login_status(force=False):
-    """当前 Cookie 的登录态。缓存 60 秒，免得面板一刷新就打一次网易云。"""
-    st = _cookie_state()
-    if not st["login"]:
-        return {"code": 200, "login": False, "nickname": "", "vip": False,
-                "msg": "未配置 Cookie，当前是匿名模式（VIP / 独家曲目搜不到）"}
-    now = time.time()
-    if not force and _LOGIN_CACHE["obj"] and now - _LOGIN_CACHE["at"] < 60:
-        return _LOGIN_CACHE["obj"]
-    try:
-        data = fetch("%s/api/nuser/account/get" % BASE, timeout=8)
-        prof = data.get("profile") or {}
-        nick = prof.get("nickname") or ""
-        obj = {"code": 200, "login": bool(nick), "nickname": nick,
-               "vip": (prof.get("vipType") or 0) > 0,
-               "msg": "" if nick else "Cookie 没有登录态（可能已过期），重新扫码登录一次"}
-    except Exception as e:
-        obj = {"code": 500, "login": st["login"], "nickname": "", "vip": False,
-               "msg": "查询失败：%s: %s" % (type(e).__name__, e)}
-    _LOGIN_CACHE.update(at=now, obj=obj)
-    return obj
-
-
-def norm_song(s):
-    """把 cloudsearch 的 ar/al/dt 与老接口的 artists/album/duration 都补全，兼容两种解析"""
-    out = dict(s)
-    ar = s.get("ar") or s.get("artists") or []
-    al = s.get("al") or s.get("album") or {}
-    dt = s.get("dt") or s.get("duration") or 0
-    out["ar"] = ar
-    out["artists"] = ar
-    out["al"] = al
-    out["album"] = al
-    out["dt"] = dt
-    out["duration"] = dt
-    out["name"] = s.get("name", "")
-    return out
-
-
-def search_songs(kw, stype="1", limit="10", offset="0"):
-    q = urllib.parse.urlencode({"s": kw, "type": stype, "limit": limit, "offset": offset})
-    data = fetch("%s/api/cloudsearch/pc?%s" % (BASE, q))
-    res = data.get("result") or {}
-    songs = [norm_song(s) for s in (res.get("songs") or [])]
-    res["songs"] = songs
-    res.setdefault("songCount", len(songs))
-    data["result"] = res
-    data["code"] = 200
-    return data
+def _song_row(s):
+    """统一成「老网易云格式 + 新扁平格式」两种字段，谁都能解析。"""
+    return {
+        "id": s.get("id", ""),
+        "name": s.get("name", ""),
+        "artist": s.get("artist", ""),
+        "album": s.get("album", ""),
+        "duration": int(s.get("duration") or 0),
+        "album_id": s.get("album_id", ""),
+        # 兼容 NeteaseCloudMusicApi 的 ar/al/dt
+        "ar": [{"name": s.get("artist", "")}],
+        "al": {"name": s.get("album", ""), "id": s.get("album_id", "")},
+        "artists": [{"name": s.get("artist", "")}],
+        "albumName": s.get("album", ""),
+        "dt": int(s.get("duration") or 0) * 1000,
+        "duration_ms": int(s.get("duration") or 0) * 1000,
+    }
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "LocalNCM/1.0"
+    server_version = "LocalMusic/2.0"
 
     def log_message(self, *a):
         pass
@@ -204,63 +103,99 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         q = dict(urllib.parse.parse_qsl(u.query))
+        platform = sources.normalize(q.get("platform") or q.get("source") or "netease")
         ua = (self.headers.get("User-Agent") or "")[:40]
-        log("%s %s%s  UA=%s" % (self.client_address[0], path,
-                                ("?" + u.query) if u.query else "", ua))
+        log("%s %s%s  platform=%s UA=%s" % (self.client_address[0], path,
+                                            ("?" + u.query) if u.query else "",
+                                            platform, ua))
         try:
             if path == "/":
-                return self._json({"code": 200, "msg": "local ncm api", "port": PORT})
+                return self._json({"code": 200, "msg": "local music api", "port": PORT,
+                                   "platforms": [m["key"] for m in sources.meta()]})
+            if path == "/platforms":
+                items = []
+                for m in sources.meta():
+                    st = sources.login_status(m["key"])
+                    items.append(dict(m, login=bool(st.get("login")),
+                                      msg=st.get("msg") or "",
+                                      nickname=st.get("nickname") or ""))
+                return self._json({"code": 200, "platforms": items,
+                                   "default": sources.DEFAULT})
+
+            # ---------------- 搜索 ----------------
             if path in ("/search", "/cloudsearch", "/cloudsearch/pc", "/search/get",
                         "/search/get/web"):
-                kw = q.get("keywords") or q.get("s") or q.get("key") or q.get("query") or ""
+                kw = (q.get("keywords") or q.get("s") or q.get("key")
+                      or q.get("query") or q.get("w") or "")
                 if not kw:
-                    return self._json({"code": 400, "msg": "missing keywords", "result": {"songs": []}})
-                return self._json(search_songs(kw, q.get("type", "1"),
-                                               q.get("limit", "10"), q.get("offset", "0")))
+                    return self._json({"code": 400, "msg": "missing keywords",
+                                       "result": {"songs": []}})
+                limit = min(50, max(1, int(q.get("limit") or 10)))
+                offset = max(0, int(q.get("offset") or 0))
+                rows = sources.search(platform, kw, limit, offset)
+                songs = [_song_row(s) for s in rows]
+                return self._json({"code": 200, "platform": platform,
+                                   "songs": songs,
+                                   "result": {"songs": songs,
+                                              "songCount": len(songs)}})
+
+            # ---------------- 详情 ----------------
             if path in ("/song/detail", "/song"):
                 ids = q.get("ids") or q.get("id") or ""
-                ids = re.sub(r"[^\d,]", "", ids)
-                if not ids:
-                    return self._json({"code": 400, "songs": []})
-                arr = "[" + ",".join(x for x in ids.split(",") if x) + "]"
-                data = fetch("%s/api/song/detail?ids=%s" % (BASE, urllib.parse.quote(arr)))
-                data["songs"] = [norm_song(s) for s in (data.get("songs") or [])]
-                data["code"] = 200
-                return self._json(data)
+                arr = [x for x in re.split(r"[,|]", str(ids)) if x.strip()]
+                rows = sources.song_detail(platform, arr)
+                return self._json({"code": 200, "platform": platform,
+                                   "songs": [_song_row(x) for x in rows]})
+
+            # ---------------- 播放地址 ----------------
             if path in ("/song/url", "/song/url/v1"):
-                ids = re.sub(r"[^\d,]", "", q.get("id") or q.get("ids") or "")
-                br = q.get("br") or q.get("level") or "320000"
-                url = "%s/api/song/enhance/player/url?ids=[%s]&br=%s" % (
-                    BASE, ids, re.sub(r"[^\d]", "", str(br)) or "320000")
-                data = fetch(url)
-                data["code"] = 200
-                return self._json(data)
+                sid = q.get("id") or q.get("ids") or ""
+                sid = str(sid).split(",")[0].strip()
+                url = sources.song_url(platform, sid)
+                return self._json({"code": 200, "platform": platform,
+                                   "data": [{"id": sid, "url": url, "code": 200}]})
+
+            # ---------------- 登录态 ----------------
+            if path in ("/login/status", "/login/status/detail"):
+                st = sources.login_status(platform, force=("force" in q))
+                # 老格式字段（login/nickname/vip）+ 新格式字段（platform/label）
+                return self._json({"code": 200, **st})
+
+            # ---------------- 以下只对网易云实现（老插件的其它端点） ----------------
             if path in ("/lyric", "/song/lyric"):
                 sid = re.sub(r"[^\d]", "", q.get("id") or "")
-                data = fetch("%s/api/song/lyric?id=%s&lv=1&kv=1&tv=-1" % (BASE, sid))
-                data["code"] = 200
-                return self._json(data)
+                return self._json(dict(sources.get("netease").fetch(
+                    "/api/song/lyric?id=%s&lv=1&kv=1&tv=-1" % sid), code=200))
             if path == "/search/suggest":
                 kw = urllib.parse.quote(q.get("keywords", ""))
-                return self._json(fetch("%s/api/search/suggest/web?csrf_token=&s=%s" % (BASE, kw)))
+                return self._json(sources.get("netease").fetch(
+                    "/api/search/suggest/web?csrf_token=&s=%s" % kw))
             if path == "/comment/music":
                 sid = re.sub(r"[^\d]", "", q.get("id") or "")
-                return self._json(fetch(
-                    "%s/api/v1/resource/comments/R_SO_4_%s?limit=20&offset=0" % (BASE, sid)))
+                return self._json(sources.get("netease").fetch(
+                    "/api/v1/resource/comments/R_SO_4_%s?limit=20&offset=0" % sid))
             if path == "/toplist":
-                return self._json(fetch("%s/api/toplist/detail" % BASE))
-            if path in ("/login/status", "/login/status/detail"):
-                return self._json(login_status(force=("force" in q)))
+                return self._json(sources.get("netease").fetch("/api/toplist/detail"))
             if path == "/playlist/detail":
                 pid = re.sub(r"[^\d]", "", q.get("id") or "")
-                return self._json(fetch("%s/api/v6/playlist/detail?id=%s" % (BASE, pid)))
+                return self._json(sources.get("netease").fetch(
+                    "/api/v6/playlist/detail?id=%s" % pid))
+
             # 未实现的接口：返回空结构，避免客户端报解析错
             log("  ↳ 未实现端点，返回空结构: %s" % path)
             return self._json({"code": 200, "result": {"songs": [], "songCount": 0},
-                               "songs": [], "data": [], "_note": "endpoint not implemented by local api"})
+                               "songs": [], "data": [],
+                               "_note": "endpoint not implemented by local api"})
+        except SourceError as e:
+            log("  ↳ 取流失败: %s" % e)
+            return self._json({"code": 404 if not e.need_login else 403,
+                               "msg": str(e), "need_login": bool(e.need_login),
+                               "platform": platform,
+                               "data": [], "result": {"songs": []}}, code=200)
         except Exception as e:
             log("  ↳ 上游失败: %s: %s" % (type(e).__name__, e))
             return self._json({"code": 500, "msg": "%s: %s" % (type(e).__name__, e),
+                               "platform": platform,
                                "result": {"songs": []}})
 
 
@@ -324,6 +259,15 @@ def _wait_enter():
         pass
 
 
+def _login_line(platform):
+    st = sources.login_status(platform)
+    name = sources.get(platform).LABEL
+    if st.get("login"):
+        extra = ("：" + st["nickname"]) if st.get("nickname") else ""
+        return "  %-10s ✅ 已启用%s" % (name, extra)
+    return "  %-10s ⚠️  %s" % (name, st.get("msg") or "未登录")
+
+
 def main():
     _enable_ansi()
     try:
@@ -334,14 +278,11 @@ def main():
         return
     ips = _local_ips()
     print("=" * 56)
-    print("  本地网易云 API 已启动")
-    if _cookie_state()["login"]:
-        print("  登录态:     ✅ 已启用（VIP 曲目可拿完整音源）")
-        print("              换账号：双击 设置网易云Cookie.bat → 扫码登录（改完自动生效）")
-    else:
-        print("  登录态:     ⚠️  匿名模式（VIP / 独家曲目会拿不到地址）")
-        print("              要启用：双击同目录的 设置网易云Cookie.bat，扫码登录即可")
-    print("  电脑自测:   http://127.0.0.1:%d/search?keywords=十年&limit=3" % PORT)
+    print("  本地音源 API 已启动（网易云 / QQ 音乐 / 酷狗）")
+    for p in ("netease", "qq", "kugou"):
+        print(_login_line(p))
+    print("  配置 Cookie：控制台 http://127.0.0.1:8899 → 概览 → 音源平台")
+    print("  电脑自测:   http://127.0.0.1:%d/search?keywords=十年&limit=3&platform=qq" % PORT)
     if ips:
         print("  手机插件填: http://%s:%d" % (ips[0], PORT))
         for extra in ips[1:]:

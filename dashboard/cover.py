@@ -49,6 +49,47 @@ MODEL_LABELS = {
     "feiyu.pth": "小肥鱼（肥鱼声库）",
 }
 
+# 能点歌的音源平台。**必须和 ncmapi/sources 的注册表一致**（e2e 有断言守住）。
+PLATFORMS = {"netease": "网易云音乐", "qq": "QQ 音乐", "kugou": "酷狗音乐"}
+
+_SONG_ID_RE = re.compile(r"^[A-Za-z0-9]{1,40}$")
+
+
+def split_song_id(raw):
+    """`qq:0035GveV3i9dBM` → ("qq", "0035...")；纯数字 → ("netease", 数字)。
+
+    为什么用前缀而不是单独一个 platform 字段：song_id 已经贯穿搜索 → 申请 →
+    任务 → 成品索引 → 复用判断 → 后端下载，加字段要改十几处签名和两份持久化
+    结构（老索引里没有该字段）。前缀是自描述的，"老数据没有前缀" 正好等于
+    "网易云"，向后兼容零成本。
+
+    分隔符用 `-` 而不是 `:`：后端会把这个 id 拼进临时文件名/输出名，Windows
+    文件名不能有 `:`，两边的 sanitize 都会把它删掉 —— 那样面板按 `qq:x` 找
+    成品、后端实际写成 `qqx`，永远对不上。QQ mid、酷狗 hash、网易云数字都不
+    含 `-`，所以不会歧义。
+    返回 ("", "") 表示非法。
+    """
+    s = str(raw or "").strip()
+    m = re.match(r"^(netease|qq|kugou)[:\-]([A-Za-z0-9]{1,40})$", s, re.I)
+    if m:
+        return m.group(1).lower(), m.group(2)
+    if re.fullmatch(r"\d{1,20}", s):
+        return "netease", s
+    return "", ""
+
+
+def platform_label(key):
+    return PLATFORMS.get(key) or PLATFORMS["netease"]
+
+
+def default_platform():
+    """默认音源：设置页里选的，非法/读失败都退回网易云。"""
+    try:
+        p = str(settings_mod.get().get("music_platform") or "").lower()
+    except Exception:
+        p = ""
+    return p if p in PLATFORMS else "netease"
+
 # 本机回环不走系统代理，否则会被代理截走返回 502
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -295,30 +336,50 @@ def trusted_src(path: str) -> bool:
 
 
 # ---------------- 搜索 / 模型 ----------------
-def search(kw: str, limit: int = 12) -> dict:
+def search(kw: str, limit: int = 12, platform: str = "") -> dict:
+    """搜索。platform 为空时用设置里的默认音源。
+
+    返回的 id 一律是 `platform:id`（网易云也带前缀），这样「同一首歌在两家
+    都有」时不会互相认成同一份成品 —— 两家的音频母带不同，成品不该复用。
+    """
     kw = (kw or "").strip()[:40]
     if not kw:
         return {"ok": False, "msg": "请输入歌名"}
     limit = max(1, min(30, int(limit or 12)))
-    url = "%s/search?keywords=%s&limit=%d" % (NCM_BASE, urllib.parse.quote(kw), limit)
+    plat = str(platform or "").strip().lower() or default_platform()
+    if plat not in PLATFORMS:
+        plat = default_platform()
+    url = "%s/search?keywords=%s&limit=%d&platform=%s" % (
+        NCM_BASE, urllib.parse.quote(kw), limit, plat)
     try:
         raw = _json_get(url)
     except Exception as e:
-        return {"ok": False, "msg": "网易云搜索服务当前不可用（127.0.0.1:3002 没响应），请先在控制台里启动它"}
+        return {"ok": False, "msg": "音源服务（127.0.0.1:3002）没响应，"
+                                    "请先在控制台点「一键开启服务」", "platform": plat}
 
-    songs = (raw.get("result") or {}).get("songs") or []
+    songs = raw.get("songs") or (raw.get("result") or {}).get("songs") or []
     out = []
     for s in songs[:limit]:
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
         artists = s.get("ar") or s.get("artists") or []
         album = s.get("al") or s.get("album") or {}
+        artist = s.get("artist") or "/".join(
+            a.get("name", "") for a in artists if isinstance(a, dict))
+        title = s.get("name") or "(无标题)"
         out.append({
-            "id": str(s.get("id")),
-            "name": s.get("name") or "(无标题)",
-            "artist": "/".join(a.get("name", "") for a in artists) or "未知",
-            "album": album.get("name") or "",
-            "duration": round((s.get("dt") or s.get("duration") or 0) / 1000),
+            "id": "%s-%s" % (plat, sid),
+            "name": title,
+            "artist": artist or "未知",
+            "album": s.get("album") or album.get("name") or "",
+            "duration": int(s.get("duration") or round((s.get("dt") or 0) / 1000)),
+            "platform": plat,
+            "platform_label": platform_label(plat),
         })
-    return {"ok": True, "songs": out}
+    return {"ok": True, "songs": out, "platform": plat,
+            "platform_label": platform_label(plat),
+            "msg": "" if out else "这个平台没搜到，换个关键词或换个平台试试"}
 
 
 def models() -> dict:
@@ -523,7 +584,7 @@ def find_cached(song_id, model, key_shift, acapella) -> dict | None:
 def cached_variants(song_id: str, limit: int = 8) -> list:
     """这首歌已经做过的成品清单（给访客页提示「已有成品，不用再等」）。"""
     song_id = str(song_id or "").strip()
-    if not song_id.isdigit():
+    if not split_song_id(song_id)[0]:
         return []
     out, seen = [], set()
     for it in reversed(_load_index()):
@@ -645,8 +706,11 @@ def start_cover(payload: dict) -> dict:
         key_shift = 0
     acapella = bool(payload.get("acapella"))
 
-    if not song_id.isdigit() or len(song_id) > 20:
+    plat, pure = split_song_id(song_id)
+    if not plat:
         return {"ok": False, "msg": "歌曲 ID 不合法，请先搜索选歌"}
+    # 网易云沿用纯数字（老索引/老队列都是这个格式），其它平台带前缀
+    song_id = pure if plat == "netease" else "%s-%s" % (plat, pure)
     if not model.lower().endswith(".pth"):
         return {"ok": False, "msg": "请选择一个声音模型"}
     if not os.path.isfile(os.path.join(WEIGHTS_DIR, model)):
@@ -838,8 +902,13 @@ def handle_get(path: str, query: dict) -> tuple[int, dict]:
     q = query or {}
     try:
         if path == "/api/cover/search":
-            return 200, search(q.get("kw", [""])[0] if isinstance(q.get("kw"), list) else q.get("kw", ""),
-                               int((q.get("limit") or ["12"])[0] if isinstance(q.get("limit"), list) else (q.get("limit") or 12)))
+            def _one(k, dflt=""):
+                v = q.get(k)
+                return (v[0] if isinstance(v, list) else v) if v is not None else dflt
+            return 200, search(_one("kw"), int(_one("limit", 12) or 12), _one("platform"))
+        if path == "/api/cover/platforms":
+            return 200, {"ok": True, "default": default_platform(),
+                         "platforms": [{"key": k, "label": v} for k, v in PLATFORMS.items()]}
         if path == "/api/cover/models":
             return 200, models()
         if path == "/api/cover/job":

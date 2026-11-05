@@ -1,5 +1,6 @@
 # ============ 凭据 / 私人数据（绝不能提交） ============
 ncmapi/ncm_cookie.txt
+ncmapi/cookies/
 dashboard/guest_db.json
 dashboard/advanced_settings.json
 dashboard/update_cache.json

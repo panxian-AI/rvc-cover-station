@@ -201,29 +201,52 @@ def _looks_like_audio(data):
     return True
   return False
 
-def _ncm_local_urls(song_id):
-  """从自建 3001 拿直链，v1 优先（给高码率），老接口兜底。
+PLATFORMS = ("netease", "qq", "kugou")
+
+def _split_sid(raw):
+  """`qq:0035Gve...` → ("qq", "0035Gve...")；纯数字 → ("netease", 数字)。
+
+  v2.2.0 起支持多家音源：前缀是谁、就走谁的取流接口。老队列/老成品索引里
+  存的都是纯数字，默认按网易云处理，不需要迁移。
+  """
+  s = str(raw or "").strip()
+  m = re.match(r"^(netease|qq|kugou)[:\-]([A-Za-z0-9]{1,40})$", s, re.I)
+  if m:
+    return m.group(1).lower(), m.group(2)
+  return "netease", s
+
+def _ncm_local_urls(song_id, platform="netease"):
+  """从自建 3002 拿直链。v1 优先（给高码率），老接口兜底（仅网易云）。
   返回 (候选列表, 接口是否连得上)——用于失败时区分“服务没开”和“歌没版权”。"""
   urls, reached = [], False
-  for api in ("/song/url/v1?id=%s&level=exhigh", "/song/url?id=%s&br=320000"):
+  apis = ["/song/url?platform=%s&id=%s" % (platform, song_id)]
+  if platform == "netease":
+    apis.append("/song/url/v1?platform=netease&id=%s&level=exhigh" % song_id)
+  for api in apis:
     try:
-      r = _LOCAL_HTTP.get(NCM_LOCAL + (api % song_id), timeout=12)
+      r = _LOCAL_HTTP.get(NCM_LOCAL + api, timeout=15)
       reached = True
       payload = r.json()
       rows = payload.get("data") or []
       if isinstance(rows, list) and rows:
         u = rows[0].get("url")
         if u:
-          urls.append(("本地网易云" + api.split("?")[0], u))
+          urls.append(("本地音源" + api.split("?")[0], u))
         else:
-          print(f"ℹ️ {api.split('?')[0]} 未返回直链（code={rows[0].get('code')}，多为 VIP/无版权）")
+          print(f"ℹ️ {api.split('?')[0]} 未返回直链（code={rows[0].get('code')}）："
+                f"{payload.get('msg') or ''}")
+      elif payload.get("msg"):
+        print(f"ℹ️ {api.split('?')[0]} 未返回直链：{payload.get('msg')}")
     except Exception as e:
-      print(f"⚠️ 本地网易云接口 {api.split('?')[0]} 不可用: {type(e).__name__}: {e}")
+      print(f"⚠️ 本地音源接口 {api.split('?')[0]} 不可用: {type(e).__name__}: {e}")
   return urls, reached
 
-def _candidate_sources(song_id, local=None):
-  """按可靠性排序的候选直链"""
+def _candidate_sources(song_id, local=None, platform="netease"):
+  """按可靠性排序的候选直链。非网易云只有本地音源一条路 ——
+  那些公共外链/公共源都是网易云的，套在 QQ/酷狗的 id 上只会下到错误音频。"""
   cands = list(local or [])
+  if platform != "netease":
+    return cands
   # 网易云官方外链（会 302 到真实 mp3）
   cands.append(("网易云官方外链", f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"))
   # 老公共源，靠内容校验兜住它可能返回 HTML 的情况
@@ -236,21 +259,22 @@ def _candidate_sources(song_id, local=None):
     pass
   return cands
 
-def _song_real_ms(song_id):
+def _song_real_ms(song_id, platform="netease"):
   """查歌曲真实时长（毫秒），用于识别试听片段。查不到返回 0。"""
   try:
-    r = _LOCAL_HTTP.get(f"{NCM_LOCAL}/song/detail?ids={song_id}", timeout=8)
+    r = _LOCAL_HTTP.get("%s/song/detail?platform=%s&ids=%s" % (NCM_LOCAL, platform, song_id),
+                        timeout=8)
     s = (r.json().get("songs") or [{}])[0]
     return int(s.get("dt") or s.get("duration") or 0)
   except Exception:
     return 0
 
 def get_response(song_id):
-  sid = str(song_id).strip()
-  print(f"开始下载歌曲: {sid}")
-  local, reached = _ncm_local_urls(sid)
+  platform, sid = _split_sid(song_id)
+  print(f"开始下载歌曲: {sid}（平台: {platform}）")
+  local, reached = _ncm_local_urls(sid, platform)
   tried = []
-  for label, url in _candidate_sources(sid, local):
+  for label, url in _candidate_sources(sid, local, platform):
     tried.append(label)
     try:
       resp = requests.get(url, timeout=90, allow_redirects=True)
@@ -263,11 +287,12 @@ def get_response(song_id):
     except Exception as e:
       print(f"⚠️ 源 {label} 请求失败: {type(e).__name__}: {e}")
   if reached:
-    hint = ("本地网易云接口能连上，但没拿到播放地址——这首歌多半是 VIP 专享、"
-            "无版权或已下架，换一首试试。")
+    name = {"netease": "网易云", "qq": "QQ 音乐", "kugou": "酷狗"}.get(platform, platform)
+    hint = ("%s 能连上，但没拿到播放地址——多半是 VIP 专享/付费曲、无版权或已下架；"
+            "也可能该平台的 Cookie 过期了（控制台 → 概览 → 音源平台 可以重新配置）。" % name)
   else:
-    hint = ("本地网易云接口 3001 连不上——打开监控面板 http://127.0.0.1:8899 "
-            "点「一键全部启动」再试。")
+    hint = ("本地音源服务（127.0.0.1:3002）连不上——打开控制台 http://127.0.0.1:8899 "
+            "点「一键开启服务」再试。")
   raise RuntimeError("下载失败（已尝试: " + " / ".join(tried) + "）。" + hint)
 
 def change_model(model):
@@ -580,14 +605,17 @@ def wwy_downloader(
     # ./output/<split_model>/<filename>/），而且是**外部请求直接传进来的字符串**。
     # 不清洗的话，split_model = "../../../Users/xxx/Desktop" 就能让下面的 makedirs
     # 和 UVR 把文件写到盘上任意位置。这里统一切成安全字符。
-    filename = re.sub(r"[^0-9A-Za-z_.\-]", "", os.path.basename(str(filename or "")))[:120]
+    raw_song = str(filename or "").strip()
+    plat, sid = _split_sid(raw_song)     # 前缀只用于取流
+    # 落盘名一律用纯 id：Windows 文件名不能有 ':'，而且前缀对临时文件没意义
+    filename = re.sub(r"[^0-9A-Za-z_.\-]", "", os.path.basename(sid))[:120]
     if filename in ("", ".", ".."):
         filename = "song"
     split_model = re.sub(r"[^0-9A-Za-z_.\-]", "_", str(split_model or "UVR-HP5"))[:40]
     if split_model in ("", ".", "..") or ".." in split_model:
         split_model = "UVR-HP5"
 
-    audio_content = get_response(filename).content
+    audio_content = get_response(sid if plat == "netease" else "%s-%s" % (plat, sid)).content
     # 1. 下载到带前缀的临时文件，避免冲突
     temp_prefixed_path = "rvc_" + filename.strip() + ".wav"
     with open(temp_prefixed_path, mode="wb") as f:
@@ -600,7 +628,7 @@ def wwy_downloader(
     print(f"原始音频时长: {duration_minutes:.2f} 分钟")
     # 匿名状态下载 VIP 曲目时，网易云只返回 30~45 秒试听片段，接口照样 200。
     # 用歌曲真实时长对比才判得准（单看“很短”会把短歌误判）。
-    real_ms = _song_real_ms(filename)
+    real_ms = _song_real_ms(sid, plat)
     if real_ms and got_ms < real_ms * 0.8:
         print(f"⚠️⚠️ 只下到 {got_ms / 1000:.0f} 秒，但这首歌实际 {real_ms / 1000:.0f} 秒"
               f"（{got_ms / real_ms * 100:.0f}%）——这是【试听片段】，不是整首！")

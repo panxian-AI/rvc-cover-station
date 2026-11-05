@@ -59,6 +59,13 @@ SPEC = [
     {"key": "inst_vol", "default": 0.0, "type": "float", "min": -10.0, "max": 10.0, "step": 0.5,
      "label": "伴奏音量（dB）",
      "hint": "伴奏相对人声的音量增减，0=不调整。注意压到 -40 以下会变成清唱模式。"},
+    # 音源平台：默认用哪家搜索/取流。访客页也能临时切换，这里定的是「打开就是谁」。
+    # 取值必须和 ncmapi/sources 的注册表一致（e2e 有断言守住，加平台要一起改）。
+    {"key": "music_platform", "default": "netease", "type": "enum",
+     "choices": ["netease", "qq", "kugou"],
+     "label": "默认音源平台",
+     "hint": "netease=网易云（扫码登录最好用）；qq=QQ 音乐（必须配 Cookie 才能取流）；"
+             "kugou=酷狗（免费曲不配也能翻唱）。某个平台搜不到时，搜索框旁边可以临时切换。"},
 ]
 
 _BY_KEY = {s["key"]: s for s in SPEC}

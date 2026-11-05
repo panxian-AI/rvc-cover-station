@@ -79,6 +79,7 @@ def _status_obj():
         accs = mod.accounts(key)            # 逐账号明细（同一份缓存）
         items.append({
             "key": key, "label": m["label"], "hint": m["hint"],
+            "qr_hint": mod.qr_app_hint(key),
             "cookie_dir": m.get("cookie_dir") or "",
             "cookie_file": m.get("cookie_file") or "",
             "has_cookie": bool(accs),
@@ -212,3 +213,73 @@ def platforms_meta():
         return _sources().meta()
     except Exception:
         return list(META_FALLBACK)
+
+
+# ---------------- 扫码登录（v2.4.0：三家统一走这里） ----------------
+# 会话对象在 sources/__init__ 的进程内表里；网易云没有现成二维码图，
+# 用 ncmapi/_qr.py 把链接画成 SVG 内联，QQ/酷狗上游直接给 PNG(base64)。
+
+_QR_CACHE = {"path": "", "mod": None}
+
+
+def _qr_mod():
+    path = os.path.abspath(core.NCM_DIR or "")
+    with _LOCK:
+        if _QR_CACHE["mod"] is not None and _QR_CACHE["path"] == path:
+            return _QR_CACHE["mod"]
+        qm = os.path.join(path, "_qr.py")
+        if not os.path.isfile(qm):
+            raise RuntimeError("二维码组件缺失（%s）" % qm)
+        spec = _ilu.spec_from_file_location("rvc_music_qr", qm)
+        mod = _ilu.module_from_spec(spec)
+        sys.modules["rvc_music_qr"] = mod
+        spec.loader.exec_module(mod)
+        _QR_CACHE.update(path=path, mod=mod)
+        return mod
+
+
+def qr_start(platform):
+    """申请一个扫码会话：返回 {ok, key, svg|img, hint, label}。"""
+    try:
+        mod = _sources()
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+    key = mod.normalize(platform)
+    paint = None
+    try:
+        qr = _qr_mod()
+
+        def paint(text):
+            mat, _ver, _mask = qr.encode(text)
+            return qr.to_svg(mat, border=3)
+    except Exception:
+        paint = None       # 画图组件坏了就交给 sources 返回 qr_text 兜底
+    try:
+        out = mod.qr_start(key)
+    except Exception as e:
+        return {"ok": False, "msg": "二维码生成失败：%s: %s（可以改用粘贴 Cookie）"
+                                    % (type(e).__name__, e)}
+    if paint and out.get("qr_text") and not out.get("img"):
+        try:
+            out["svg"] = paint(out.pop("qr_text"))
+        except Exception as e:
+            return {"ok": False, "msg": "二维码绘制失败：%s: %s" % (type(e).__name__, e)}
+    out.pop("qr_text", None)     # 前端不显示裸链接，防呆
+    return out
+
+
+def qr_poll(platform, key):
+    """问一次扫码状态；803 时 sources 层已把 Cookie 存进账号池。"""
+    try:
+        mod = _sources()
+    except Exception as e:
+        return {"ok": False, "code": 0, "msg": str(e)}
+    try:
+        r = mod.qr_poll(mod.normalize(platform), key)
+    except Exception as e:
+        # 网络抖动不算失败：前端继续轮询，别把二维码丢掉
+        return {"ok": True, "code": 0, "retry": True,
+                "msg": "网络不稳，正在重试…（%s）" % type(e).__name__}
+    if r.get("code") == 803:
+        _invalidate()
+    return r

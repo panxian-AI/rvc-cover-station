@@ -598,6 +598,129 @@ def test_panel(src):
     chk("访客提交：非法 id 仍被拒", v.get("ok") is False, v)
 
 
+# =====================================================================
+# A4. 扫码登录（三家统一入口；不联网，QrLogin 全部打桩）
+# =====================================================================
+def test_qr(src):
+    print("\n== A4. 扫码登录（会话 / 落盘 / 状态码）==")
+    base = src.base
+    tmp = tempfile.mkdtemp()
+    real_dir = base.COOKIE_DIR
+    base.COOKIE_DIR = tmp
+    keep = (src.netease.QrLogin, src.qq.QrLogin, src.kugou.QrLogin,
+            src.netease.STORE, src.qq.STORE, src.kugou.STORE)
+    fakes = {}
+
+    class FakeQr(object):
+        """start/poll 都从外面喂，模拟「申请 → 等待 → 已扫 → 成功」全流程。"""
+        plan = []                       # [(state, cookie), ...] 逐次弹出
+
+        def start(self):
+            return {"key": "fakekey", "qr": "https://example/qr?k=fakekey"}
+
+        def poll(self):
+            if not self.plan:
+                raise base.SourceError("FakeQr 的脚本演完了")
+            return self.plan.pop(0)
+
+    fakes["netease"] = type("Fne", (FakeQr,), {})
+    fakes["qq"] = type("Fqq", (FakeQr,), {})
+    fakes["kugou"] = type("Fkg", (FakeQr,), {})
+    try:
+        src.netease.QrLogin = fakes["netease"]
+        src.qq.QrLogin = fakes["qq"]
+        src.kugou.QrLogin = fakes["kugou"]
+        # STORE 也一起换成指向 tmp 的：原装实例的 dir 在构造时就固定到了
+        # 真实 cookies/ 目录，只改 base.COOKIE_DIR 拦不住它们（踩过：测试
+        # 把扫码落盘写进仓库目录，污染了下一个用例的取流断言）
+        for k in src.ORDER:
+            setattr(getattr(src, k), "STORE",
+                    base.CookieBook(k, src.store(k).markers))
+
+        chk("三家都声明支持扫码（加第四家要有 QrLogin 才不给按钮）",
+            all(src.qr_supported(k) for k in src.ORDER), src.ORDER)
+
+        # QQ 全流程：801 → 802 → 803 且 Cookie 落进账号池
+        fakes["qq"].plan = [(801, ""), (802, ""), (803, "uin=o555; qm_keyst=zz")]
+        r0 = src.qr_start("qq")
+        chk("扫码会话：start 返回 token + App 指引，不把平台密钥给前端",
+            r0.get("ok") and r0.get("key") and r0.get("hint") and "fakekey" not in r0["key"],
+            {k: r0.get(k) for k in ("ok", "key", "hint")})
+        p1 = src.qr_poll("qq", r0["key"])
+        p2 = src.qr_poll("qq", r0["key"])
+        p3 = src.qr_poll("qq", r0["key"])
+        chk("轮询状态码：801 等待 → 802 已扫 → 803 成功",
+            (p1["code"], p2["code"], p3["code"]) == (801, 802, 803),
+            (p1.get("code"), p2.get("code"), p3.get("code")))
+        chk("803 后 Cookie 已进账号池（扫码 = 添加一个账号）",
+            any(x["id"] == "u555" for x in src.store("qq").accounts()),
+            [x["id"] for x in src.store("qq").accounts()])
+        chk("成功后会话被清掉：同一个 token 再轮询 → 800（不会重复落盘）",
+            src.qr_poll("qq", r0["key"])["code"] == 800)
+
+        # 酷狗：成功拿 token/userid；网易云：MUSIC_U
+        fakes["kugou"].plan = [(803, "token=kk; userid=420000")]
+        rk = src.qr_start("kugou")
+        pk = src.qr_poll("kugou", rk["key"])
+        chk("酷狗扫码 803：token/userid 存成账号（自动取名 u420000）",
+            pk["ok"] and any(x["id"] == "u420000" for x in src.store("kugou").accounts()),
+            (pk.get("code"), [x["id"] for x in src.store("kugou").accounts()]))
+        fakes["netease"].plan = [(803, "MUSIC_U=ccc333")]
+        rn = src.qr_start("netease")
+        pn = src.qr_poll("netease", rn["key"])
+        chk("网易云扫码 803：同样进账号池（不再是只有一个 legacy）",
+            pn["ok"] and any(x["id"] == "nccc333" for x in src.store("netease").accounts()),
+            [x["id"] for x in src.store("netease").accounts()])
+
+        # 失败路径
+        fakes["qq"].plan = [(803, "")]
+        rq = src.qr_start("qq")
+        pq = src.qr_poll("qq", rq["key"])
+        chk("登录成功但没拿到 Cookie：明确说改用粘贴（不假装成功）",
+            pq["ok"] is False and "粘贴" in pq.get("msg", ""), pq)
+        fakes["kugou"].plan = [(800, "")]
+        rk2 = src.qr_start("kugou")
+        pk2 = src.qr_poll("kugou", rk2["key"])
+        chk("二维码过期：返回 800 且会话清掉",
+            pk2["code"] == 800 and src.qr_poll("kugou", rk2["key"])["code"] == 800, pk2)
+
+        # token 随便编 / 平台不认识
+        chk("编造的 token 当作二维码已失效（800），不抛 500",
+            src.qr_poll("netease", "made-up")["code"] == 800)
+        try:
+            src.qr_start("nope")
+            err = None
+        except base.SourceError as e:
+            err = e
+        chk("不认识的平台：扫码直接拒绝（不拿网易云的码冒充）",
+            err is not None and "nope" in str(err) and "netease" in str(err), err)
+
+        # 过期会话回收（防进程里堆几十个没人领的会话）
+        tok = "old-old-old"
+        src._QR_SESS[tok] = ("qq", fakes["qq"](), 0.0)      # 1970 年的会话
+        src._qr_trim()
+        chk("过期扫码会话被回收（TTL / 上限）", tok not in src._QR_SESS)
+    finally:
+        (src.netease.QrLogin, src.qq.QrLogin, src.kugou.QrLogin,
+         src.netease.STORE, src.qq.STORE, src.kugou.STORE) = keep
+        src._QR_SESS.clear()
+        base.COOKIE_DIR = real_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 签名 / token 算法对拍（离线）：这两处错了扫码会直接挂，值要钉死
+    chk("酷狗 web 签名算法与已知值一致（盐 + 排序参数 + 盐）",
+        src.kugou.web_sig({"appid": 1005, "clientver": 20489, "clienttime": 1700000000,
+                           "dfid": "-", "mid": "abc", "uuid": "-", "plat": 4,
+                           "srcappid": 2919, "qrcode": "K1"})
+        == "9309f68e07ee99ef22c0958f4d71f62c",
+        src.kugou.web_sig({"appid": 1005, "clientver": 20489, "clienttime": 1700000000,
+                           "dfid": "-", "mid": "abc", "uuid": "-", "plat": 4,
+                           "srcappid": 2919, "qrcode": "K1"}))
+    chk("QQ hash33 / g_tk 算法与已知值一致",
+        src.qq.hash33("abc") == 108966 and src.qq.gtk_of("abc") == 193485963,
+        (src.qq.hash33("abc"), src.qq.gtk_of("abc")))
+
+
 def test_music_module(src):
     print("\n== D. 面板音源模块 ==")
     import panel
@@ -720,6 +843,32 @@ def test_wiring(src):
         "s.paid?" in cover_html and "VIP" in cover_html
         and "s.paid?" in guest_html and "VIP" in guest_html)
 
+    # --- v2.4.0：三家统一扫码登录 ---
+    post_src = open(os.path.join(HERE, "panelkit", "routes_post.py"), encoding="utf-8").read()
+    get_src = open(os.path.join(HERE, "panelkit", "routes_get.py"), encoding="utf-8").read()
+    music_src = open(os.path.join(HERE, "panelkit", "music.py"), encoding="utf-8").read()
+    init_src = open(os.path.join(NCM, "sources", "__init__.py"), encoding="utf-8").read()
+    chk("概览页是通用扫码弹层（qrModal），旧网易云专属弹层已退场",
+        'id="qrModal"' in html and 'id="qrBox"' in html and "function qrOpen(" in js
+        and "function qrPoll(" in js and "ncmModal" not in html)
+    chk("每家都有扫码 + 粘贴两个按钮（扫码不再是网易云专属）",
+        "qrOpen('${jsq(p.key)}')" in js and "ckOpen('${jsq(p.key)}')" in js
+        and "'📱 再扫一个号'" in js)
+    chk("三家适配器都有 QrLogin，状态码统一 801/802/803/800",
+        all(hasattr(src.get(k), "QrLogin") for k in src.ORDER)
+        and src.qr_supported("qq") and src.qr_supported("kugou")
+        and src.qr_supported("netease"))
+    chk("扫码会话只在 sources 里管理（803 才落盘、TTL 回收）",
+        "def qr_start(" in init_src and "def qr_poll(" in init_src
+        and "_QR_TTL" in init_src and "_QR_SESS" in init_src)
+    chk("面板扫码路由：申请 POST / 轮询 GET，轮询查同源",
+        'elif act == "qr"' in post_src and "music.qr_start(" in post_src
+        and 'path == "/api/music/qr"' in get_src and "music.qr_poll(" in get_src
+        and 'path == "/api/music/qr"' in get_src)
+    chk("面板侧会画网易云的 SVG（QQ/酷狗用上游图）",
+        "def _qr_mod(" in music_src and "qr.to_svg(" in music_src
+        and 'rvc_music_qr' in music_src)
+
 
 def main():
     print("RVC 多音源平台回归测试（网易云 / QQ 音乐 / 酷狗）")
@@ -727,6 +876,7 @@ def main():
     test_adapters(src)
     test_accounts(src)
     test_rotate(src)
+    test_qr(src)
     test_netease(src)
     test_gateway(src)
     test_aggregate(src)

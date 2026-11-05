@@ -4,7 +4,7 @@
 
 **开箱即用的 AI 翻唱站：访客点歌 → 站长审批排队 → GPU 制作 → 在线下载**
 
-[![Release](https://img.shields.io/badge/Release-v2.3.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
+[![Release](https://img.shields.io/badge/Release-v2.4.0-blue)](https://github.com/panxian-AI/rvc-cover-station/releases)
 [![e2e](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/panxian-AI/rvc-cover-station/actions/workflows/e2e.yml)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-0078D6)](#一键安装给完全不懂代码的人)
@@ -53,6 +53,14 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   再错照常锁，绝不从此豁免
 - 🪶 **模型按需加载**：人声分离器不再开机常驻内存，首个任务现场加载、空闲 15 分钟
   自动释放（`RVC_UVR_IDLE_UNLOAD` 可调）——装再多声线也不白占内存
+- 📱 **三家都能扫码登录**（v2.4.0）：以前只有网易云能扫码，QQ 音乐和酷狗得自己去浏览器
+  F12 里翻 Cookie。现在概览页每家都有「📱 扫码登录」，二维码直接画在页面里、手机 App 扫一下
+  确认就生效（不用重启 3002）。三条链路各按各家官方流程走：网易云申请 unikey 后轮询；
+  QQ 走 QQ 互联的网页扫码（扫码 → `p_skey` → 互联授权换 `code` → `QQConnectLogin` 换
+  `qm_keyst`）；酷狗走官方 `login-user.kugou.com` 的二维码接口（带 web 签名，直接返回官方
+  二维码图）。扫完的 Cookie 和粘贴一样进**账号池**——扫第二个号就是多一个账号，
+  之后照样按顺序轮换。任何一步失手都会说清是「二维码没过期但没扫」「扫了没确认」还是
+  「登录成功但没拿到 Cookie」，并给「粘贴 Cookie」这条备用路
 - 👥 **一个平台存多个账号**（v2.3.0）：同一家音源以前只能存一份 Cookie，换个账号就得把
   旧的覆盖掉；小号限流、会员过期、收藏在不同号上时只能来回粘贴。现在每个平台是一个**账号池**
   （`ncmapi/cookies/<平台>/<账号>.txt`），可以一直往里加，取流时**按顺序轮换**——前一个
@@ -164,7 +172,7 @@ AI 点歌插件的**自托管后端**（兼容其 RVC API 调用方式）。
   不再把无鉴权的模型管理交给整个局域网
 - 验证码阶梯锁、取图/搜索/申请多层限流、全局取图闸、请求体上限、安全响应头
 - 慢连接耗光防护（并发连接上限）、写盘节流、路径穿越/目录清理防护
-- 附带 20 套回归测试共 1141 项断言（`dashboard/e2e_*.py`），一条命令全跑：
+- 附带 20 套回归测试共 1161 项断言（`dashboard/e2e_*.py`），一条命令全跑：
   在 `dashboard` 里执行 `..\apienv\Scripts\python.exe run_e2e.py`
   （在安装目录里跑时加 `--repo <仓库根>`；失败的套会回显末尾输出并写 `logs\e2e_run-last.log`）
   发布脚本 `_release/create_release.py` 会先跑这遍全量，不绿不许发版
@@ -292,13 +300,16 @@ dashboard/
    人声分离模型 `5_HP-Karaoke-UVR.pth` 放进 `RVCSVC-API/uvr5/uvr_model/`。
    完整环境锁定（含全部间接依赖）见 `RVCSVC-API/requirements-freeze.txt`。
 4. **启动**：双击 `启动RVC.bat` → 控制台点「⚡ 一键开启服务」。
-5. **音源登录态（可选，三家分别配，每家的账号可以有很多个）**：控制台概览页的「音源平台」
+5. **音源登录态（可选，三家都能扫码，每家的账号可以有很多个）**：控制台概览页的「音源平台」
    一栏列出网易云 / QQ 音乐 / 酷狗各自的登录状态和账号列表，点哪家配哪家——
-   - 网易云：点「📱 扫码登录」手机 App 扫一下确认，或展开「粘贴 Cookie」；
-     也可双击 `ncmapi/设置网易云Cookie.bat` 用独立窗口
-   - QQ 音乐 / 酷狗：展开粘贴框，把浏览器里已登录页面的整段 Cookie 粘进去（QQ 要有 `qm_keyst=`）
-   - **再加一个号**：账号行下面点「粘贴再加一个」，粘进去就是新账号（同名会覆盖那一个），
-     想加几个加几个；每个平台的文件在 `ncmapi/cookies/<平台>/`，老版本的单份文件
+   - **扫码（推荐）**：点「📱 扫码登录」，二维码画在弹出层里，用对应 App 扫一下确认即可
+     - 网易云：网易云音乐 App → 首页左上角「☰」→ 扫一扫
+     - QQ 音乐：手机 QQ → 右上角「+」→ 扫一扫（走 QQ 互联，扫完在手机上确认授权）
+     - 酷狗：酷狗音乐 App → 我的 → 右上角「≡」→ 扫一扫
+   - **粘贴（备选）**：展开「粘贴 Cookie」，把浏览器里该平台已登录页面的整段 Cookie
+     粘进去（QQ 要有 `qm_keyst=`）；网易云也可双击 `ncmapi/设置网易云Cookie.bat` 用独立窗口
+   - **再加一个号**：再点一次「📱 再扫一个号」换个号扫，或「粘贴再加一个」；
+     每个平台的文件在 `ncmapi/cookies/<平台>/`，老版本的单份文件
      （`ncmapi/ncm_cookie.txt`、`ncmapi/cookies/<平台>.txt`）自动当「默认账号」只读兼容，不用迁移
    - **取流顺序**：老文件（默认账号）优先，其后按加入时间新→旧，前一个拿不到地址自动换下一个
    - **退出某个账号**：该账号行右侧点「退出」，只删这一个（其余账号、其余平台都不动）；

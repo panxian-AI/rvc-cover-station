@@ -24,10 +24,10 @@ import urllib.request
 
 REPO = "panxian-AI/rvc-cover-station"
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TAG = "v2.3.0"
-NAME = "RVC 翻唱站 v2.3.0 · 音源支持多账号 + 三家聚合搜索"
-ASSET = r"E:\rvc-cover-station\_release\RVC翻唱站-一键安装包-v2.3.0.zip"
-ASSET_NAME = "RVC-Cover-Station-Installer-v2.3.0.zip"
+TAG = "v2.4.0"
+NAME = "RVC 翻唱站 v2.4.0 · 三家音源全部支持扫码登录"
+ASSET = r"E:\rvc-cover-station\_release\RVC翻唱站-一键安装包-v2.4.0.zip"
+ASSET_NAME = "RVC-Cover-Station-Installer-v2.4.0.zip"
 NOTES = open(r"E:\rvc-cover-station\_release\ReleaseNotes.md", encoding="utf-8").read()
 
 CK_MARK = "<!-- rvc-checksums -->"

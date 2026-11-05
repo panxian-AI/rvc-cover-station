@@ -306,7 +306,6 @@ async function loadDeps(){
    这里只做两件事：显示每家配没配 Cookie、把 Cookie 存到本机。
    二维码由 ncmapi/_qr.py 现画成 SVG，页面直接内联，不落图片文件；
    Cookie 存进 ncmapi/ 下对应文件，3002 按 mtime 热更新，不用重启服务。 */
-let NCM = {key:'', timer:0, busy:false};
 let MUSIC = null;
 let CK = {key:'', label:''};
 
@@ -358,9 +357,8 @@ async function loadMusic(force){
         ${p.key === d.default ? '<span class="tag t-on" style="font-size:10px">默认</span>' : ''}
         <span class="mstat">${esc(musicStatusText(p))}</span>
         <span class="sp"></span>
-        <button class="gray mini" onclick="ckOpen('${jsq(p.key)}')">${p.key === 'netease' ? (p.count ? '重新扫码' : '扫码 / 配置') : (p.count ? '再加一个' : '配置 Cookie')}</button>
-        ${p.key === 'netease' && p.count
-          ? `<button class="gray mini" onclick="ckOpen('netease',1)">粘贴再加一个</button>` : ''}
+        <button class="gray mini" onclick="qrOpen('${jsq(p.key)}')">${p.count ? '📱 再扫一个号' : '📱 扫码登录'}</button>
+        <button class="gray mini" onclick="ckOpen('${jsq(p.key)}')">${p.count ? '粘贴再加一个' : '粘贴 Cookie'}</button>
         ${p.key === d.default ? ''
           : `<button class="gray mini" onclick="musicDefault('${jsq(p.key)}')">设为默认</button>`}
       </div>
@@ -395,11 +393,131 @@ async function musicDefault(key){
   }catch(e){ toast('切换失败：' + e.message); }
 }
 
-/* ---------- 通用 Cookie 弹层（QQ / 酷狗；网易云可扫码也可粘） ---------- */
+/* ---------- 通用扫码登录弹层（v2.4.0：网易云 / QQ 音乐 / 酷狗三家一个弹层） ----------
+   二维码两种来源：网易云由后端现画 SVG，QQ / 酷狗上游直接给 PNG(base64)；
+   轮询状态码统一用网易云那套（801 等待 / 802 已扫 / 803 成功 / 800 过期），
+   803 时后端把 Cookie 直接存进该平台的账号池。 */
+let QR = {key:'', plat:'', timer:0, busy:false};
+
+function qrMsg(text, kind){
+  const el = $('#qrMsg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.className = 'ncmmsg' + (kind ? ' ' + kind : '');
+}
+
+function qrOpen(key){
+  const p = (MUSIC && MUSIC.platforms || []).find(x => x.key === key) || {};
+  QR = {key:'', plat:key, timer:0, busy:false};
+  $('#qrTitle').textContent = p.label ? (p.label + ' · 扫码登录') : '扫码登录';
+  $('#qrHint').textContent = p.qr_hint || '';
+  $('#qrRaw').value = '';
+  qrMsg('');
+  $('#qrModal').classList.add('on');
+  qrRegen();
+}
+
+function qrClose(){
+  $('#qrModal').classList.remove('on');
+  qrStop();
+}
+
+function qrStop(){
+  if(QR.timer){ clearTimeout(QR.timer); QR.timer = 0; }
+  QR.busy = false;
+  QR.key = '';
+}
+
+function qrBox(html){ $('#qrBox').innerHTML = html; }
+
+async function qrRegen(){
+  qrStop();
+  QR.plat = QR.plat || 'netease';
+  qrBox('<div class="ncmwait">正在生成二维码…</div>');
+  qrMsg('正在申请二维码…');
+  try{
+    const r = await (await fetch('/api/music/qr', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({platform: QR.plat})})).json();
+    if(!r.ok){
+      qrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
+      qrMsg(r.msg || '二维码生成失败', 'bad');
+      return;
+    }
+    QR.key = r.key;
+    $('#qrHint').textContent = r.hint || $('#qrHint').textContent;
+    if(r.svg) qrBox(r.svg);
+    else if(r.img) qrBox('<img src="' + r.img + '" alt="二维码" style="width:220px;height:220px">');
+    else qrBox('<div class="ncmwait">二维码内容拿不到<br>请改用粘贴</div>');
+    qrMsg('等待扫码…（二维码 5 分钟内有效）');
+    qrPoll();
+  }catch(e){
+    qrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
+    qrMsg('请求失败：' + e.message, 'bad');
+  }
+}
+
+async function qrPoll(){
+  if(!QR.key || QR.busy) return;
+  QR.busy = true;
+  let again = true;
+  try{
+    const q = '?platform=' + encodeURIComponent(QR.plat) + '&key=' + encodeURIComponent(QR.key);
+    const r = await (await fetch('/api/music/qr' + q, {cache:'no-store'})).json();
+    if(r.code === 803){
+      qrStop();
+      if(r.ok){
+        qrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
+        qrMsg(r.msg || '登录成功', 'good');
+        toast((MUSIC && (MUSIC.platforms||[]).find(x=>x.key===QR.plat) || {}).label || QR.plat + ' 登录成功');
+        loadMusic(true); loadStatus();
+      }else{
+        qrBox('<div class="ncmwait">登录成功但没保存下来<br>请改用「粘贴 Cookie」</div>');
+        qrMsg(r.msg || '保存失败', 'bad');
+      }
+      again = false;
+    }else if(r.code === 800){
+      qrMsg(r.msg || '二维码过期了，点「换一张」', 'warn');
+      again = false;
+    }else if(r.code === 802){
+      qrMsg(r.msg || '已扫码，请在手机上点「确认登录」', 'good');
+    }else if(r.code === 801){
+      qrMsg(r.msg || '等待扫码…');
+    }else if(r.retry){
+      qrMsg(r.msg || '网络不稳，正在重试…', 'warn');
+    }else{
+      qrMsg(r.msg || '未知状态', 'bad');
+      again = false;
+    }
+  }catch(e){
+    qrMsg('网络不稳，正在重试…', 'warn');
+  }finally{
+    QR.busy = false;
+  }
+  if(again && $('#qrModal').classList.contains('on'))
+    QR.timer = setTimeout(qrPoll, 2000);
+}
+
+async function qrSaveRaw(){
+  const raw = ($('#qrRaw').value || '').trim();
+  if(!raw){ qrMsg('先把 Cookie 粘进来', 'bad'); return; }
+  qrMsg('正在保存并检测…');
+  try{
+    const d = await (await fetch('/api/music/cookie', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({platform: QR.plat, raw: raw})})).json();
+    qrMsg((d.ok ? '' : '⚠ ') + (d.msg || ''), d.ok ? (d.login ? 'good' : 'warn') : 'bad');
+    if(d.ok){
+      qrStop();
+      qrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
+      toast(d.msg || '已保存');
+      loadMusic(true); loadStatus();
+    }
+  }catch(e){ qrMsg('保存失败：' + e.message, 'bad'); }
+}
+
+/* ---------- 通用 Cookie 粘贴弹层（扫码的备选，三家通用） ---------- */
 function ckOpen(key, force){
-  // 网易云默认走扫码；force=1 时打开粘贴框，用来「再加一个」网易云账号
-  // （扫码只会替换「默认账号」那个旧文件，不能用来加）
-  if(key === 'netease' && !force){ ncmOpen(); return; }
   const p = (MUSIC && MUSIC.platforms || []).find(x => x.key === key);
   CK = {key:key, label:(p && p.label) || key};
   $('#ckTitle').textContent = '配置 ' + CK.label + ' Cookie';
@@ -440,127 +558,6 @@ async function ckClear(){
     toast(d.msg || (d.ok ? '已清除' : '清除失败'));
     loadMusic(true);
   }catch(e){ toast('清除失败：' + e.message); }
-}
-
-/* ---------- 网易云扫码登录（内嵌弹层，不弹独立窗口） ---------- */
-function ncmMsg(text, kind){
-  const el = $('#ncmMsg');
-  if(!el) return;
-  el.textContent = text || '';
-  el.className = 'ncmmsg' + (kind ? ' ' + kind : '');
-}
-
-function ncmOpen(){
-  $('#ncmModal').classList.add('on');
-  $('#ncmRaw').value = '';
-  ncmMsg('');
-  ncmRegen();
-}
-
-function ncmClose(){
-  $('#ncmModal').classList.remove('on');
-  ncmStop();
-}
-
-function ncmStop(){
-  if(NCM.timer){ clearTimeout(NCM.timer); NCM.timer = 0; }
-  NCM.busy = false;
-}
-
-function ncmQrBox(html){ $('#ncmQr').innerHTML = html; }
-
-async function ncmRegen(){
-  ncmStop();
-  NCM.key = '';
-  ncmQrBox('<div class="ncmwait">正在生成二维码…</div>');
-  ncmMsg('正在向网易云申请二维码…');
-  try{
-    const r = await (await fetch('/api/ncm/login/qr', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:'{}'})).json();
-    if(!r.ok){
-      ncmQrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
-      ncmMsg(r.msg || '二维码生成失败', 'bad');
-      return;
-    }
-    NCM.key = r.key;
-    ncmQrBox(r.svg);
-    ncmMsg('等待扫码…（二维码 5 分钟内有效）');
-    ncmPoll();
-  }catch(e){
-    ncmQrBox('<div class="ncmwait">二维码生成失败<br>可以展开下面的「粘贴 Cookie」</div>');
-    ncmMsg('请求失败：' + e.message, 'bad');
-  }
-}
-
-async function ncmPoll(){
-  if(!NCM.key || NCM.busy) return;
-  NCM.busy = true;
-  let again = true;
-  try{
-    const key = encodeURIComponent(NCM.key);
-    const r = await (await fetch('/api/ncm/login/poll?key=' + key, {cache:'no-store'})).json();
-    if(r.code === 803){
-      ncmStop();
-      NCM.key = '';
-      if(r.ok){
-        ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
-        ncmMsg(r.msg || '登录成功', 'good');
-        toast('网易云登录成功');
-        loadMusic(true); loadStatus();
-      }else{
-        ncmQrBox('<div class="ncmwait">登录成功但没保存下来<br>请改用「粘贴 Cookie」</div>');
-        ncmMsg(r.msg || '保存失败', 'bad');
-      }
-      again = false;
-    }else if(r.code === 800){
-      ncmMsg(r.msg || '二维码过期了，点「换一张」', 'warn');
-      again = false;
-    }else if(r.code === 802){
-      ncmMsg(r.msg || '已扫码，请在手机上点「确认登录」', 'good');
-    }else if(r.code === 801){
-      ncmMsg(r.msg || '等待扫码…');
-    }else if(r.retry){
-      ncmMsg(r.msg || '网络不稳，正在重试…', 'warn');
-    }else{
-      ncmMsg(r.msg || '未知状态', 'bad');
-      again = false;
-    }
-  }catch(e){
-    ncmMsg('网络不稳，正在重试…', 'warn');
-  }finally{
-    NCM.busy = false;
-  }
-  if(again && $('#ncmModal').classList.contains('on'))
-    NCM.timer = setTimeout(ncmPoll, 2000);
-}
-
-async function ncmSaveRaw(){
-  const raw = ($('#ncmRaw').value || '').trim();
-  if(!raw){ ncmMsg('先把 Cookie 粘进来', 'bad'); return; }
-  ncmMsg('正在检测…');
-  try{
-    const r = await (await fetch('/api/ncm/login/cookie', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({raw: raw})})).json();
-    ncmMsg((r.ok ? '' : '⚠ ') + (r.msg || ''), r.ok ? 'good' : 'bad');
-    if(r.ok){
-      ncmStop();
-      NCM.key = '';
-      ncmQrBox('<div class="ncmwait">✅<br>已登录，可以关掉这个窗口了</div>');
-      toast('网易云登录成功');
-      loadMusic(true); loadStatus();
-    }
-  }catch(e){ ncmMsg('保存失败：' + e.message, 'bad'); }
-}
-
-async function ncmLogout(){
-  if(!confirm('退出网易云登录？\n之后的搜索会退回匿名模式（VIP / 独家曲目搜不到）。')) return;
-  try{
-    const r = await (await fetch('/api/ncm/login/logout', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:'{}'})).json();
-    toast(r.msg || '已退出');
-    ncmMsg(r.msg || '已退出', r.ok ? 'warn' : 'bad');
-    loadMusic(true); loadStatus();
-  }catch(e){ toast('操作失败：' + e.message); }
 }
 
 function refresh(){ loadStatus(); loadPublic(); loadDeps(); loadMusic(); if(LOG_OPEN) logLoad(); }

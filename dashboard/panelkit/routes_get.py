@@ -234,6 +234,19 @@ def handle(h):
             obj = {"ok": False, "platforms": [], "default": "netease",
                    "msg": "%s: %s" % (type(e).__name__, e)}
         h._send(200, json.dumps(obj, ensure_ascii=False))
+    # 扫码登录轮询（三家）：803 时有写盘副作用（Cookie 进账号池），
+    # 和网易云那个 poll 一样不许跨站触发。
+    elif path == "/api/music/qr":
+        if not h._same_origin():
+            h._send(403, json.dumps({"ok": False, "code": 0,
+                                     "msg": "跨站请求已被拒绝"}, ensure_ascii=False))
+            return
+        try:
+            obj = music.qr_poll((q.get("platform") or [""])[0],
+                                (q.get("key") or [""])[0])
+        except Exception as e:
+            obj = {"ok": False, "code": 0, "msg": "%s: %s" % (type(e).__name__, e)}
+        h._send(200, json.dumps(obj, ensure_ascii=False))
     # 网易云登录（概览页内嵌扫码）：状态 / 轮询。
     # poll 在 803 时会写 ncm_cookie.txt —— 有写盘副作用的 GET，同样不许跨站触发。
     elif path == "/api/ncm/login/status":

@@ -158,3 +158,96 @@ def logout(platform, account):
 
 def logout_all(platform):
     return get(platform).STORE.clear()
+
+
+# ---------------- 扫码登录（v2.4.0：三家统一入口） ----------------
+# 每家适配器提供一个 QrLogin 类：start() -> {"key", "qr"/"img"}、
+# poll() -> (state, cookie)，state 用网易云那套 801/802/803/800。
+# 会话对象（cookie jar、qrsig、unikey）保存在进程内，key 是随机 token ——
+# 前端只拿 token，不碰平台的会话密钥。803 时 Cookie 直接进账号池。
+
+import secrets as _secrets
+import time as _time
+
+_QR_SESS = {}          # token -> (platform_key, QrLogin 实例, 创建时间)
+_QR_TTL = 360.0        # 二维码 5 分钟过期，留点余量
+_QR_MAX = 40
+
+
+def qr_supported(platform):
+    return hasattr(get(platform), "QrLogin")
+
+
+def qr_app_hint(platform):
+    return {"netease": "网易云音乐 App：首页左上角「☰」→ 扫一扫",
+            "qq": "手机 QQ：右上角「+」→ 扫一扫，确认后回到本页",
+            "kugou": "酷狗音乐 App：我的 → 右上角「≡」→ 扫一扫",
+            }.get(normalize(platform), "打开对应平台的手机 App → 扫一扫")
+
+
+def _qr_trim():
+    # 过期会话无论多少都回收；超上限再按先后挤掉最老的
+    now = _time.time()
+    for k, (_, _o, ts) in list(_QR_SESS.items()):
+        if now - ts > _QR_TTL:
+            _QR_SESS.pop(k, None)
+    while len(_QR_SESS) > _QR_MAX:
+        _QR_SESS.pop(next(iter(_QR_SESS)), None)
+
+
+def qr_start(platform):
+    """申请二维码；paint(qr_text) 是可选的画图函数（网易云没有现成图时用）。"""
+    raw = str(platform or "").strip().lower()
+    if raw not in REGISTRY and raw not in ALIAS:
+        # 不能走 normalize() 的「未知回落网易云」：那会拿网易云的二维码
+        # 冒充用户要的平台，扫了也登不到想去的那家
+        raise SourceError("不认识的音源平台：%r（支持的：%s）"
+                          % (platform, " / ".join(ORDER)))
+    m = get(raw)
+    cls = getattr(m, "QrLogin", None)
+    if cls is None:
+        raise SourceError("%s 暂不支持扫码登录，请用粘贴 Cookie" % m.LABEL)
+    obj = cls()
+    info = obj.start()          # {"key":…, "img":…} 或 {"key":…, "qr":…}
+    _qr_trim()
+    tok = _secrets.token_hex(8)
+    _QR_SESS[tok] = (m.KEY, obj, _time.time())
+    out = {"ok": True, "key": tok, "label": m.LABEL,
+           "hint": qr_app_hint(platform), "ttl": int(_QR_TTL)}
+    if info.get("img"):
+        out["img"] = info["img"]
+    elif info.get("qr"):
+        out["qr_text"] = info["qr"]     # 没传 paint 时前端显示不了，兜底给文本
+    return out
+
+
+_QR_MSG = {801: "等待扫码…（二维码 5 分钟内有效）",
+           802: "已扫码，请在手机上点「确认登录」",
+           800: "二维码过期了，点「换一张」"}
+
+
+def qr_poll(platform, token):
+    """问一次扫码状态；803 时把 Cookie 存进该平台的账号池。"""
+    _qr_trim()
+    tok = str(token or "").strip()
+    ent = _QR_SESS.get(tok)
+    if not ent or ent[0] != normalize(platform):
+        return {"ok": True, "code": 800, "msg": _QR_MSG[800]}
+    plat, obj, _ts = ent
+    state, cookie = obj.poll()
+    if state == 803:
+        _QR_SESS.pop(tok, None)
+        if not cookie:
+            return {"ok": False, "code": 803,
+                    "msg": "登录成功但没拿到 Cookie（可能没跟到跳转），请改用粘贴方式"}
+        got = store(plat).save(cookie)
+        accs = accounts(plat, force=True)
+        acc = next((a for a in accs if a["id"] == got["id"]), None)
+        nick = (acc or {}).get("nickname") or ""
+        msg = "✅ 登录成功%s，已存为账号「%s」（%s 现在共 %d 个）" % (
+            ("：" + nick) if nick else "", got["id"], get(plat).LABEL, len(accs))
+        return {"ok": True, "code": 803, "account": got["id"], "nickname": nick,
+                "msg": msg}
+    if state == 800:
+        _QR_SESS.pop(tok, None)
+    return {"ok": True, "code": state, "msg": _QR_MSG.get(state, "")}

@@ -38,6 +38,28 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def qr_opener():
+    """扫码登录用的独立会话：一个 cookie jar 跟一次登录全程。
+
+    不能用全局 OPENER：二维码申请时种的 Cookie（网易云 NMTID、QQ 的 qrsig）
+    要跟着同一个会话走到底，且不同扫码窗口之间不能串。每个 QrLogin 实例一个。
+    """
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                       urllib.request.HTTPCookieProcessor(jar)), jar
+
+
+def jar_cookie(jar, domain_kw):
+    """从 jar 里拼一行 Cookie：只挑域名含 domain_kw 的，按名字排序保证稳定。"""
+    items = []
+    for c in jar:
+        if c.value and (not c.domain or domain_kw in c.domain):
+            items.append((c.name, c.value))
+    items.sort()
+    return "; ".join("%s=%s" % kv for kv in items)
+
+
 class SourceError(Exception):
     """适配器统一的失败类型。
 

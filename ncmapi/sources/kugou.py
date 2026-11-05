@@ -159,3 +159,86 @@ def login_status(force=False):
     base.update(login=True,
                 msg="" if len(accs) == 1 else "共 %d 个账号（都算「已保存」，验不了活）" % len(accs))
     return base
+
+
+# ---------------- 扫码登录（v2.4.0） ----------------
+# 酷狗官方的扫码登录接口（login-user.kugou.com，App 扫码）：
+#   取码  /v2/qrcode            返回 qrcode key + 官方画的二维码 PNG(base64)
+#   轮询  /v2/get_userinfo_qrcode  status: 1 等待 / 2 待确认 / 4 成功(带 token,userid)
+# 签名是酷狗 web 那套：md5(盐 + 排序后的 "k=v" 连接串 + 盐)，盐是公开的固定值。
+# 成功拿到的 token/userid 正好是取流 Cookie 的标记键，直接存进账号池。
+
+KG_SALT = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
+QR_HOST = "login-user.kugou.com"
+QR_APPID = 1005           # 标准版 App
+QR_CLIENTVER = 20489
+QR_SRC = 2919
+QR_TEXT = "https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=%d&" % QR_APPID
+
+
+def _md5(s):
+    return hashlib.md5(str(s).encode("utf-8")).hexdigest()
+
+
+def web_sig(params):
+    """酷狗 web 签名：参数按 key=value 排序后连成一串，前后各拼一次盐再 md5。"""
+    s = "".join(sorted("%s=%s" % (k, params[k]) for k in params))
+    return hashlib.md5((KG_SALT + s + KG_SALT).encode("utf-8")).hexdigest()
+
+
+class QrLogin(object):
+    def __init__(self):
+        from .base import qr_opener
+        self.opener, self.jar = qr_opener()
+
+    def _get(self, path, extra, timeout=12):
+        import json as _json
+        import urllib.request
+        p = {"dfid": "-", "mid": _md5(time.time()), "uuid": "-",
+             "appid": QR_APPID, "clientver": QR_CLIENTVER,
+             "clienttime": int(time.time())}
+        p.update(extra)
+        p["signature"] = web_sig(p)
+        q = "&".join("%s=%s" % (k, urllib.parse.quote(str(p[k]), safe=""))
+                     for k in p)
+        url = "https://%s%s?%s" % (QR_HOST, path, q)
+        req = urllib.request.Request(url, headers={
+            "User-Agent": MOBILE_UA, "Referer": "https://www.kugou.com/"})
+        with self.opener.open(req, timeout=timeout) as r:
+            return _json.loads(r.read().decode("utf-8", "ignore"))
+
+    def start(self):
+        d = self._get("/v2/qrcode", {"appid": 1014, "type": 1, "plat": 4,
+                                     "qrcode_txt": QR_TEXT, "srcappid": QR_SRC})
+        data = d.get("data") or {}
+        key = data.get("qrcode") or ""
+        if not key:
+            raise SourceError("酷狗没返回 qrcode key（%s）" % repr(d)[:120])
+        self._key = key
+        out = {"key": key, "qr": QR_TEXT + "qrcode=" + key}
+        img = data.get("qrcode_img") or ""
+        if img.startswith("data:image"):
+            out["img"] = img          # 官方现画的 PNG，直接内联最保真
+        return out
+
+    def poll(self):
+        if not getattr(self, "_key", ""):
+            raise SourceError("还没申请二维码")
+        d = self._get("/v2/get_userinfo_qrcode",
+                      {"plat": 4, "appid": QR_APPID, "srcappid": QR_SRC,
+                       "qrcode": self._key})
+        data = d.get("data") or {}
+        st = data.get("status")
+        if st == 4:
+            token, userid = data.get("token") or "", data.get("userid") or ""
+            if not token:
+                return 803, ""
+            cookie = "token=%s" % token
+            if userid:
+                cookie += "; userid=%s" % userid
+            return 803, cookie
+        if st == 2:
+            return 802, ""
+        if st in (0, "0"):
+            return 800, ""
+        return 801, ""

@@ -9,7 +9,8 @@ import re
 import time
 import urllib.parse
 
-from .base import CookieBook, SourceError, http_get_json, try_accounts
+from .base import (CookieBook, SourceError, UA, http_get_json, jar_cookie,
+                   qr_opener, try_accounts)
 
 KEY = "netease"
 LABEL = "网易云音乐"
@@ -168,3 +169,54 @@ def login_status(force=False):
     base.update(login=True, nickname=ok[0]["nickname"], vip=ok[0]["vip"],
                 msg="" if len(ok) == 1 else "共 %d 个账号，%d 个可用" % (len(accs), len(ok)))
     return base
+
+
+# ---------------- 扫码登录（v2.4.0，逻辑与 ncm_login.py 相同但走账号池） ----------------
+# 独立窗口入口（cookie_setup.py）继续走 ncm_login.py 写 legacy 文件；
+# 面板的扫码走这里的 QrLogin，Cookie 直接进 CookieBook（cookies/netease/<id>.txt），
+# 于是「扫一个号就多一个账号」，和粘贴的行为一致。
+
+QR_KEY_URL = BASE + "/api/login/qrcode/unikey"
+QR_POLL_URL = BASE + "/api/login/qrcode/client/login"
+
+
+class QrLogin(object):
+    """网易云扫码：申请 unikey → 手机 App 扫 → 轮询到 803 拿 Cookie。
+
+    共用同一个 cookie jar：unikey 申请时种的 NMTID 轮询时要带上，
+    否则个别账号会被判成不同会话。
+    """
+
+    def __init__(self):
+        import urllib.request
+        self.opener, self.jar = qr_opener()
+
+    def _post(self, url, fields, timeout=12):
+        import json as _json
+        import urllib.request
+        data = urllib.parse.urlencode(fields).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "User-Agent": UA, "Referer": BASE + "/",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": "os=pc; appver=2.9.7"})
+        with self.opener.open(req, timeout=timeout) as r:
+            return _json.loads(r.read().decode("utf-8", "ignore"))
+
+    def start(self):
+        d = self._post(QR_KEY_URL, {"type": 1})
+        key = d.get("unikey") or ""
+        if not key:
+            raise SourceError("网易云没返回 unikey（code=%s）" % d.get("code"))
+        self._key = key
+        return {"key": key, "qr": BASE + "/login?codekey=" + key}
+
+    def poll(self):
+        """返回 (state, cookie)。state 复用网易云自己的 801/802/803/800。"""
+        if not getattr(self, "_key", ""):
+            raise SourceError("还没申请二维码")
+        d = self._post(QR_POLL_URL, {"key": self._key, "type": 1})
+        code = d.get("code")
+        cookie = ""
+        if code == 803:
+            cookie = d.get("cookie") or jar_cookie(self.jar, "163.com")
+        return code, cookie

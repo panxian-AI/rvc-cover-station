@@ -7,7 +7,7 @@
 ## 这是什么
 
 Windows 上的 AI 翻唱整套栈：RVC 训练/推理 WebUI（7865）+ 翻唱后端（3333）+ 音源网关（3002，
-支持网易云 / QQ 音乐 / 酷狗，**每家的账号可存多个、取流按顺序轮换**，三家可**聚合搜索**）+ 监控面板（8899）。安装器会自动完成：多线路测速 → 下载代码 →
+支持网易云 / QQ 音乐 / 酷狗，**三家都能在控制台扫码登录**，每家的账号可存多个、取流按顺序轮换，三家可**聚合搜索**）+ 监控面板（8899）。安装器会自动完成：多线路测速 → 下载代码 →
 装便携 Python 3.12（不写系统 PATH）→ 建两个 venv → 装依赖（可选 CUDA 版 torch）→
 下载基础模型（rmvpe / ffmpeg / 示例声线）。
 
@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing 'ht
 只要判断一句话：**最后一行 JSON 里 `ok` 是不是 `true`**。
 
 ```json
-{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"2.3.0","missing":[],"panel":"http://127.0.0.1:8899","error":""}
+{"ok":true,"exit_code":0,"dir":"D:\\RVC-Cover-Station","gpu":"gpu","version":"2.4.0","missing":[],"panel":"http://127.0.0.1:8899","error":""}
 ```
 
 ## 第二步：先空跑核对（可选，约 20 秒）

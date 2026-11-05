@@ -94,33 +94,31 @@
       <div class="hint">Cookie 等同登录凭证：只存在本机 <b>ncmapi\cookies\</b> 下，不会上传。改密码或退出登录后会失效，重新复制一次即可。</div>
     </div>
     <div class="ft">
-      <button class="gray" onclick="ckClear()" style="margin-right:auto">清除这个平台的 Cookie</button>
+      <button class="gray" onclick="ckClear()" style="margin-right:auto">清空这个平台的所有账号</button>
       <button class="gray" onclick="ckClose()">关闭</button>
       <button class="green" onclick="ckSave()">保存并检测</button>
     </div>
   </div>
 </div>
 
-<div class="modal" id="ncmModal">
+<div class="modal" id="qrModal">
   <div class="box" style="max-width:420px">
     <div class="hd">
-      <b>网易云扫码登录</b>
-      <div style="color:#75869f;font-size:12px;margin-top:4px">手机 App 首页左上角「☰」→ 扫一扫；
-        这里登录的是「默认账号」，要再加一个账号请用列表里的「粘贴再加一个」</div>
+      <b id="qrTitle">扫码登录</b>
+      <div style="color:#75869f;font-size:12px;margin-top:4px" id="qrHint"></div>
     </div>
     <div class="bd">
-      <div class="ncmqr" id="ncmQr"><div class="ncmwait">正在生成二维码…</div></div>
-      <div class="ncmmsg" id="ncmMsg"></div>
-      <details id="ncmPaste">
+      <div class="ncmqr" id="qrBox"><div class="ncmwait">正在生成二维码…</div></div>
+      <div class="ncmmsg" id="qrMsg"></div>
+      <details id="qrPaste">
         <summary>扫码失败？粘贴 Cookie（备选）</summary>
-        <textarea id="ncmRaw" placeholder="把浏览器里 music.163.com 的整段 Cookie 粘到这里（含 MUSIC_U 即可）"></textarea>
-        <button class="gray mini" onclick="ncmSaveRaw()">保存并检测</button>
+        <textarea id="qrRaw" placeholder="把浏览器里该平台已登录页面的整段 Cookie 粘到这里"></textarea>
+        <button class="gray mini" onclick="qrSaveRaw()">保存并检测</button>
       </details>
     </div>
     <div class="ft">
-      <a class="link" href="#" onclick="ncmRegen();return false" style="margin-right:auto">换一张</a>
-      <button class="gray" id="btnNcmLogout" onclick="ncmLogout()">退出这个账号</button>
-      <button class="gray" onclick="ncmClose()">关闭</button>
+      <a class="link" href="#" onclick="qrRegen();return false" style="margin-right:auto">换一张</a>
+      <button class="gray" onclick="qrClose()">关闭</button>
     </div>
   </div>
 </div>

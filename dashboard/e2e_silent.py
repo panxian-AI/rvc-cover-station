@@ -333,27 +333,31 @@ def test_quiet_and_cover_jobs():
         '"/login/status"' in nsrc and "sources.login_status(platform" in nsrc
         and "api/nuser/account/get" in rd(os.path.join("..", "ncmapi", "sources", "netease.py")))
 
-    # --- 扫码登录内嵌在控制台（v2.1.5）：页面按钮 + 弹层 + 面板路由 ---
+    # --- 扫码登录内嵌在控制台（v2.1.5 网易云起；v2.4.0 三家统一走 /api/music/qr） ---
     phtml = rd(os.path.join("console_page.html"))
     pjs = rd(os.path.join("assets", "page_overview.js"))
     rget = rd(os.path.join("panelkit", "routes_get.py"))
     rpost = rd(os.path.join("panelkit", "routes_post.py"))
     nmod = rd(os.path.join("panelkit", "ncmlogin.py"))
     chk("概览页有音源平台行 + 二维码/粘贴两种弹层",
-        'id="musicRows"' in phtml and 'id="ncmModal"' in phtml
-        and 'id="ncmQr"' in phtml and 'id="ncmRaw"' in phtml
+        'id="musicRows"' in phtml and 'id="qrModal"' in phtml
+        and 'id="qrBox"' in phtml and 'id="qrRaw"' in phtml
         and 'id="ckModal"' in phtml and 'id="ckRaw"' in phtml)
-    chk("前端把 SVG 直接塞进页面并按 2 秒轮询",
-        "function ncmRegen(" in pjs and "function ncmPoll(" in pjs
-        and "r.svg" in pjs and "setTimeout(ncmPoll, 2000)" in pjs)
-    chk("前端不再让用户去双击 bat（入口改成页面按钮）",
-        "设置网易云Cookie.bat" not in pjs and "ncmOpen()" in pjs)
-    chk("面板有扫码登录路由（qr/poll/status/cookie/logout）",
-        '"/api/ncm/login/status"' in rget and '"/api/ncm/login/poll"' in rget
-        and '"/api/ncm/login/"' in rpost and '"qr"' in rpost
-        and '"cookie"' in rpost and '"logout"' in rpost)
-    chk("轮询写盘前查同源（803 会改本机 Cookie 文件）",
-        'path == "/api/ncm/login/poll"' in rget and "_same_origin()" in rget)
+    chk("前端按 2 秒轮询扫码状态，SVG 与 base64 图两种二维码都接",
+        "function qrRegen(" in pjs and "function qrPoll(" in pjs
+        and "r.svg" in pjs and "r.img" in pjs
+        and "setTimeout(qrPoll, 2000)" in pjs)
+    chk("三家都有扫码按钮（不再只有网易云能扫）",
+        "function qrOpen(" in pjs and "'📱 再扫一个号'" in pjs
+        and "粘贴再加一个" in pjs and "ncmOpen()" not in pjs)
+    chk("面板有三家统一的扫码路由（申请 POST + 轮询 GET）",
+        'elif act == "qr"' in rpost and "music.qr_start(" in rpost
+        and 'path == "/api/music/qr"' in rget and "music.qr_poll(" in rget
+        # 老网易云路由保留（独立窗口 / 老插件还在用）
+        and '"/api/ncm/login/status"' in rget and '"/api/ncm/login/poll"' in rget)
+    chk("扫码轮询写盘前查同源（803 会改本机 Cookie 文件）",
+        'path == "/api/ncm/login/poll"' in rget
+        and 'path == "/api/music/qr"' in rget and "_same_origin()" in rget)
     chk("面板侧懒加载 ncmapi（不 import 包、不污染 sys.path）",
         "spec_from_file_location" in nmod and "core.NCM_DIR" in nmod
         and "STATUS_TTL" in nmod)

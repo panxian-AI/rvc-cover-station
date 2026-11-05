@@ -153,7 +153,7 @@ def handle(h):
         h._send(200 if obj.get("ok") else 400,
                    json.dumps(obj, ensure_ascii=False))
         return
-    # 多平台音源：存 Cookie / 清 Cookie / 设默认平台
+    # 多平台音源：存 Cookie / 清 Cookie / 设默认平台 / 扫码会话
     if path.startswith("/api/music/"):
         act = path[len("/api/music/"):].strip("/").lower()
         try:
@@ -168,6 +168,9 @@ def handle(h):
                                    body.get("account") or body.get("id") or "")
             elif act == "default":
                 obj = music.set_default(body.get("platform") or "netease")
+            elif act == "qr":
+                # 申请扫码会话（三家一个入口：网易云画 SVG，QQ/酷狗上游给图）
+                obj = music.qr_start(body.get("platform") or "")
             else:
                 obj = {"ok": False, "msg": "未知操作"}
         except Exception as e:

@@ -183,3 +183,161 @@ def login_status(force=False):
     base.update(login=True, nickname=ok[0]["nickname"],
                 msg="" if len(ok) == 1 else "共 %d 个账号，%d 个可用" % (len(accs), len(ok)))
     return base
+
+
+# ---------------- 扫码登录（v2.4.0） ----------------
+# 走 QQ 互联的网页扫码（ptlogin2）：手机 QQ 右上角「+」→ 扫一扫 → 确认。
+# 二维码由腾讯现画（PNG 很小，直接转 base64 内联，内容我们没法自己编）；
+# 登录成功后跟随 check_sig 跳转，y.qq.com 会下发 qm_keyst —— 那就是取流要的登录态。
+
+PT_APPID = "716027609"      # y.qq.com 网页版
+PT_DAID = "383"
+PT_3RD = "100497308"
+PT_SHOW = ("https://ptlogin2.qq.com/ptqrshow?appid=716027609&e=2&l=M&s=3&d=72"
+           "&v=4&t={t}&daid=383&pt_3rd_aid=100497308")
+PT_LOGIN = ("https://ptlogin2.qq.com/ptqrlogin?u1=https%3A%2F%2Fgraph.qq.com"
+            "%2Foauth2.0%2Flogin_jump&ptqrtoken={tok}&ptredirect=0&h=1&t=1"
+            "&g=1&from_ui=1&ptlang=2052&action=0-0-{ts}&js_ver=20102616"
+            "&js_type=1&login_sig=&pt_uistyle=40&aid=716027609&daid=383"
+            "&pt_3rd_aid=100497308&has_u1sso=1&uin=")
+
+
+def hash33(s):
+    """qrsig → ptqrtoken（腾讯的 hash33，社区通用实现）。"""
+    e = 0
+    for ch in str(s or ""):
+        e += (e << 5) + ord(ch)
+    return 2147483647 & e
+
+
+def gtk_of(p_skey):
+    """p_skey → g_tk（初值 5381 的 hash33，QQ 互联授权要用）。"""
+    e = 5381
+    for ch in str(p_skey or ""):
+        e += (e << 5) + ord(ch)
+    return 2147483647 & e
+
+
+def _guid():
+    import random
+    return "".join(random.choice("0123456789abcdef") for _ in range(32))
+
+
+class QrLogin(object):
+    """QQ 扫码：ptqrshow 出图 + qrsig → 轮询 ptqrlogin → 跟 check_sig 收 Cookie。
+
+    状态映射成网易云那套码，前端一份逻辑通吃：
+    66 → 801 等待；67 → 800 过期；0 → 803 成功（跟 check_sig）。
+    QQ 没有「已扫码待确认」的中间态，扫完确认前一直是 66。
+    """
+
+    def __init__(self):
+        from .base import qr_opener
+        self.opener, self.jar = qr_opener()
+
+    def _get(self, url, referer, timeout=12):
+        import urllib.request
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA_QQ, "Referer": referer})
+        with self.opener.open(req, timeout=timeout) as r:
+            return r.read()
+
+    def start(self):
+        import base64
+        png = self._get(PT_SHOW.format(t=_now_ms()),
+                        "https://xui.ptlogin2.qq.com/")
+        if not png.startswith(b"\x89PNG"):
+            raise SourceError("腾讯没返回二维码图片（返回 %d 字节）" % len(png))
+        qrsig = ""
+        for c in self.jar:
+            if c.name == "qrsig" and c.value:
+                qrsig = c.value
+                break
+        if not qrsig:
+            raise SourceError("腾讯没种 qrsig，扫码会话建立不起来")
+        self._key = qrsig
+        return {"key": qrsig,
+                "img": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}
+
+    def poll(self):
+        if not getattr(self, "_key", ""):
+            raise SourceError("还没申请二维码")
+        text = self._get(PT_LOGIN.format(tok=hash33(self._key), ts=_now_ms()),
+                         "https://xui.ptlogin2.qq.com/").decode("utf-8", "ignore")
+        m = re.match(r"ptuiCB\('(\d+)','[^']*','([^']*)'", text)
+        if not m:
+            raise SourceError("腾讯返回的不是 ptuiCB：%r" % text[:80])
+        code, jump = int(m.group(1)), m.group(2)
+        if code == 0:
+            if not jump:
+                raise SourceError("腾讯说登录成功但没给跳转地址")
+            return 803, self._finish(jump)
+        if code == 67:
+            return 800, ""
+        return 801, ""
+
+    # ---- 登录成功后的收尾（照 y.qq.com 官网页面自己的顺序）----
+    # ① 跟 check_sig：种下 p_skey（.qq.com），用它的值算 g_tk；
+    # ② POST oauth2.0/authorize（已登录自动授权）→ 跳转地址里拿 code；
+    # ③ POST musicu.fcg 的 QQConnectLogin.LoginServer 用 code 换登录态，
+    #    qm_keyst 就在这一步的 Set-Cookie 里。少拿一步都取不了流。
+    def _finish(self, check_sig_url):
+        import json as _json
+        import urllib.parse
+        import urllib.request
+        self._get(check_sig_url, "https://xui.ptlogin2.qq.com/", timeout=15)
+        p_skey = self._jar_get("p_skey")
+        gtk = gtk_of(p_skey) if p_skey else 0
+        form = urllib.parse.urlencode({
+            "response_type": "code", "client_id": PT_3RD,
+            "redirect_uri": ("https://y.qq.com/portal/wx_redirect.html"
+                             "?login_type=1&surl=https://y.qq.com/"),
+            "scope": "get_user_info,get_app_friends", "state": "state",
+            "switch": "", "from_ptlogin": "1", "src": "1",
+            "update_auth": "1", "openapi": "1010_1030", "g_tk": gtk,
+            "auth_time": _now_ms(), "ui": _guid(),
+        }).encode()
+        req = urllib.request.Request("https://graph.qq.com/oauth2.0/authorize",
+                                     data=form, headers={
+            "User-Agent": UA_QQ, "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://graph.qq.com/oauth2.0/show?which=Login"})
+        code = ""
+        try:
+            with self.opener.open(req, timeout=15) as r:
+                final = r.geturl()
+            m = re.search(r"[?&]code=([A-Za-z0-9]+)", final)
+            if m:
+                code = m.group(1)
+        except Exception:
+            pass
+        if not code:
+            raise SourceError("QQ 授权没拿到 code（互联那边可能要求网页确认），"
+                              "请改用粘贴 Cookie")
+        body = _json.dumps({
+            "comm": {"g_tk": gtk, "platform": "yqq", "ct": 24, "cv": 0},
+            "req": {"module": "QQConnectLogin.LoginServer", "method": "QQLogin",
+                    "param": {"code": code}}}).encode()
+        req = urllib.request.Request("https://u.y.qq.com/cgi-bin/musicu.fcg",
+                                     data=body, headers={
+            "User-Agent": UA_QQ, "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://y.qq.com/"})
+        with self.opener.open(req, timeout=15) as r:
+            r.read()
+        from .base import jar_cookie
+        cookie = jar_cookie(self.jar, "qq.com")
+        return cookie if "qm_keyst=" in cookie else ""
+
+    def _jar_get(self, name):
+        for c in self.jar:
+            if c.name == name and c.value:
+                return c.value
+        return ""
+
+
+def _now_ms():
+    import time
+    return int(time.time() * 1000)
+
+
+UA_QQ = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")

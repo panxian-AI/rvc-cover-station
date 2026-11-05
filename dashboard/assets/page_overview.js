@@ -311,9 +311,25 @@ let MUSIC = null;
 let CK = {key:'', label:''};
 
 function musicStatusText(p){
-  if(!p.has_cookie) return p.msg || '未配置 Cookie';
-  if(p.login) return '已就绪' + (p.nickname ? '：' + p.nickname : '');
-  return p.msg || 'Cookie 已保存，但还不能取流';
+  const n = p.count || 0, ready = p.ready || 0;
+  const tail = p.key === 'kugou' ? '' : (ready ? ' · ' + ready + ' 个可用' : '');
+  if(!n) return p.msg || '未配置 Cookie';
+  if(n === 1) return (p.login ? '已就绪' : '已保存') + (p.nickname ? '：' + p.nickname : '');
+  return '共 ' + n + ' 个账号' + tail + '（取流时按顺序轮换）';
+}
+
+/* 一个账号一行：状态 + 退出。legacy 是 v2.3.0 之前那个单文件（网易云扫码 / 旧版粘贴） */
+function accRow(p, a){
+  const name = a.nickname || (a.legacy ? '默认账号' : a.id);
+  const st = a.login ? (a.vip ? 'VIP 可用' : '可用')
+                     : (a.valid ? (a.msg || '已保存') : (a.msg || '无效'));
+  const cls = a.login ? 'on' : 'off';
+  const legacy = a.legacy ? '<span class="tag-legacy">旧版文件</span>' : '';
+  return '<div class="acc">'
+    + '<span class="dot ' + cls + '"></span><b>' + esc(name) + '</b>' + legacy
+    + '<span class="mstat">' + esc(st) + '</span><span class="sp"></span>'
+    + '<button class="gray mini" onclick="accLogout(\'' + jsq(p.key) + '\',\''
+    + jsq(a.id) + '\')">退出</button></div>';
 }
 
 async function loadMusic(force){
@@ -342,13 +358,32 @@ async function loadMusic(force){
         ${p.key === d.default ? '<span class="tag t-on" style="font-size:10px">默认</span>' : ''}
         <span class="mstat">${esc(musicStatusText(p))}</span>
         <span class="sp"></span>
-        <button class="gray mini" onclick="ckOpen('${jsq(p.key)}')">${p.key === 'netease' ? '扫码 / 配置' : '配置 Cookie'}</button>
+        <button class="gray mini" onclick="ckOpen('${jsq(p.key)}')">${p.key === 'netease' ? (p.count ? '重新扫码' : '扫码 / 配置') : (p.count ? '再加一个' : '配置 Cookie')}</button>
+        ${p.key === 'netease' && p.count
+          ? `<button class="gray mini" onclick="ckOpen('netease',1)">粘贴再加一个</button>` : ''}
         ${p.key === d.default ? ''
           : `<button class="gray mini" onclick="musicDefault('${jsq(p.key)}')">设为默认</button>`}
-      </div>`).join('');
+      </div>
+      ${(p.accounts || []).length
+        ? '<div class="maccs">' + p.accounts.map(a => accRow(p, a)).join('') + '</div>'
+        : ''}`).join('');
   }catch(e){
     el.innerHTML = '<span style="color:#ff9aa8">音源状态读取失败：' + esc(e.message) + '</span>';
   }
+}
+
+/* 退出一个账号：删掉它的 Cookie 文件，剩下的继续轮换 */
+async function accLogout(key, account){
+  const name = (MUSIC && (MUSIC.platforms || []).find(x => x.key === key) || {}).label || key;
+  if(!confirm('退出 ' + name + ' 的这个账号？\n\n只会删掉它的 Cookie 文件，'
+    + '同平台其它账号不受影响；删完立刻回到匿名/下一个账号。')) return;
+  try{
+    const d = await (await fetch('/api/music/logout', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({platform:key, account:account})})).json();
+    toast(d.msg || (d.ok ? '已退出' : '退出失败'));
+    loadMusic(true); loadStatus();
+  }catch(e){ toast('退出失败：' + e.message); }
 }
 
 async function musicDefault(key){
@@ -361,8 +396,10 @@ async function musicDefault(key){
 }
 
 /* ---------- 通用 Cookie 弹层（QQ / 酷狗；网易云可扫码也可粘） ---------- */
-function ckOpen(key){
-  if(key === 'netease'){ ncmOpen(); return; }
+function ckOpen(key, force){
+  // 网易云默认走扫码；force=1 时打开粘贴框，用来「再加一个」网易云账号
+  // （扫码只会替换「默认账号」那个旧文件，不能用来加）
+  if(key === 'netease' && !force){ ncmOpen(); return; }
   const p = (MUSIC && MUSIC.platforms || []).find(x => x.key === key);
   CK = {key:key, label:(p && p.label) || key};
   $('#ckTitle').textContent = '配置 ' + CK.label + ' Cookie';

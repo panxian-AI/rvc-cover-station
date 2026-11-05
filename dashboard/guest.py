@@ -1769,10 +1769,13 @@ def handle_get(path, query, gid, is_admin=False, ip=""):
                 res["pass_left"] = info["pass_left"]
             return 200, res
         if path == "/api/guest/platforms":
-            # 访客页也要能切音源：默认取站长设置，列表是静态的（不发网络请求）
-            plats = [{"key": k, "label": v} for k, v in cover_mod.PLATFORMS.items()]
+            # 访客页也要能切音源：默认取站长设置，列表是静态的（不发网络请求）。
+            # v2.3.0 起第一项是「全部平台」：聚合开着就是默认选中的那个。
+            plats = [{"key": "all", "label": "全部平台"}] + \
+                    [{"key": k, "label": v} for k, v in cover_mod.PLATFORMS.items()]
             return 200, {"ok": True, "platforms": plats,
-                         "default": cover_mod.default_platform()}
+                         "default": cover_mod.default_platform(),
+                         "aggregate": cover_mod.aggregate_on()}
         if path == "/api/guest/voices":
             if not tts_mod:
                 return 200, {"ok": False, "msg": "文字转语音功能未启用"}

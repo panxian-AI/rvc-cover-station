@@ -325,10 +325,10 @@ def test_quiet_and_cover_jobs():
         and "os.replace(tmp, COOKIE_FILE)" in lsrc and "os.fsync" in lsrc)
     # v2.2.0 起 Cookie 状态搬到 sources/base.py 的 CookieStore（一平台一份文件）
     bsrc = rd(os.path.join("..", "ncmapi", "sources", "base.py"))
-    chk("每平台一份 Cookie 文件、按 mtime 热更新（改完不用重启 3002）",
-        "class CookieStore" in bsrc and "os.path.getmtime(self.path)" in bsrc
-        and "_cache[\"mtime\"] = object()" in bsrc
-        and "os.replace(tmp, self.path)" in bsrc and "os.fsync(" in bsrc)
+    chk("多账号 Cookie 池：一平台多份、按修改时间热更新（改完不用重启 3002）",
+        "class CookieBook" in bsrc and "os.path.getmtime(self.path)" in bsrc
+        and "os.replace(tmp, path)" in bsrc and "os.fsync(" in bsrc
+        and "def safe_id(" in bsrc and "def try_accounts(" in bsrc)
     chk("网关 /login/status 按平台分派（能查到昵称和 VIP）",
         '"/login/status"' in nsrc and "sources.login_status(platform" in nsrc
         and "api/nuser/account/get" in rd(os.path.join("..", "ncmapi", "sources", "netease.py")))

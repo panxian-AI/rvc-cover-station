@@ -12,14 +12,14 @@ Cookie 获取：浏览器打开 y.qq.com 登录 → F12 → Network → 任意�
 import re
 import time
 
-from .base import CookieStore, SourceError, http_get_json, http_post_json
+from .base import CookieBook, SourceError, http_get_json, http_post_json, try_accounts
 
 KEY = "qq"
 LABEL = "QQ 音乐"
 COOKIE_HINT = ("浏览器打开 y.qq.com 登录 → F12 → Network → 任意请求 → 复制整段 Cookie"
-               "（关键项：uin、qm_keyst），粘进来保存即可")
+               "（关键项：uin、qm_keyst），粘进来保存即可；可以存多个账号轮流试")
 COOKIE_NAME = "qq"
-STORE = CookieStore("qq", ("qm_keyst=", "qqmusic_key="))
+STORE = CookieBook("qq", ("qm_keyst=", "qqmusic_key="))
 
 SEARCH_URL = ("https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
               "?format=json&p=%d&n=%d&w=%s&cr=1&new_json=1")
@@ -33,13 +33,14 @@ GUID = "1000000000"          # 官方客户端用的就是 10 位；固定值即
 PROBE_MID = "0035GveV3i9dBM"
 
 
-def _headers():
-    return {"Referer": "https://y.qq.com/", "Cookie": STORE.cookie()}
+def _headers(cookie=None):
+    ck = cookie if cookie is not None else STORE.cookie()
+    return {"Referer": "https://y.qq.com/", "Cookie": ck}
 
 
-def uin():
+def uin(cookie=None):
     """从 Cookie 里取数字 uin（浏览器常写成 uin=o1234567890）。"""
-    c = STORE.cookie()
+    c = cookie if cookie is not None else STORE.cookie()
     m = re.search(r"(?:^|;\s*)(?:uin|wxuin)=o?(\d+)", c or "")
     return m.group(1) if m else "0"
 
@@ -71,8 +72,8 @@ def search(kw, limit=12, offset=0):
     return [x for x in out if x["id"]]
 
 
-def _vkey(mid):
-    u = uin()
+def _vkey(mid, cookie=None):
+    u = uin(cookie)
     body = {
         "req_0": {"module": "vkey.GetVkeyServer", "method": "CgiGetVkey",
                   "param": {"guid": GUID, "songmid": [mid], "songtype": [0],
@@ -80,7 +81,7 @@ def _vkey(mid):
         "comm": {"uin": int(u) if u.isdigit() else 0, "format": "json",
                  "ct": 24, "cv": 0},
     }
-    d = http_post_json(MUSICU_URL, body, _headers())
+    d = http_post_json(MUSICU_URL, body, _headers(cookie))
     data = (d.get("req_0") or {}).get("data") or {}
     info = (data.get("midurlinfo") or [{}])[0]
     purl = info.get("purl") or ""
@@ -94,15 +95,22 @@ def song_url(song_id):
     mid = str(song_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9]{8,20}", mid):
         raise SourceError("QQ 音乐歌曲 ID 不对：%r" % (song_id,))
-    url = _vkey(mid)
+    entries = STORE.entries()
+    if entries:
+        try:
+            url, _acc = try_accounts(entries, lambda ck: _vkey(mid, ck))
+            return url
+        except SourceError as e:
+            raise SourceError("QQ 音乐没给这首歌的直链：多为 VIP / 数字专辑曲目"
+                              "（换一个账号往往就有了）—— %s" % e)
+    # 一个账号都没配：先按匿名试一次（上游现在基本只回试听，留着是为了兼容
+    # 以后放开的可能），拿不到再明确让用户去配 Cookie
+    url = _vkey(mid, "")
     if url:
         return url
-    if not STORE.logged_in():
-        raise SourceError("QQ 音乐需要登录 Cookie 才能拿到完整音源（匿名只给试听，"
-                          "拿它翻唱会得到半首歌）。去控制台「音源平台」粘贴 y.qq.com "
-                          "的 Cookie 即可", need_login=True)
-    raise SourceError("QQ 音乐没给这首歌的直链：多为 VIP / 数字专辑曲目，"
-                      "或 Cookie 已过期（重新登录 y.qq.com 复制一次）")
+    raise SourceError("QQ 音乐需要登录 Cookie 才能拿到完整音源（匿名只给试听，"
+                      "拿它翻唱会得到半首歌）。去控制台「音源平台」粘贴 y.qq.com "
+                      "的 Cookie 即可", need_login=True)
 
 
 def song_detail(ids):
@@ -123,24 +131,55 @@ def song_detail(ids):
     return out
 
 
-_LOGIN_CACHE = {"at": 0.0, "obj": None}
+_LOGIN_CACHE = {"at": 0.0, "key": "", "obj": [], "one": None}
+
+
+def accounts_status(force=False):
+    """逐个账号拿一首免费曲试 vkey：有 purl = 这个 Cookie 真能取流。"""
+    items = STORE.accounts()
+    sig = tuple((x["id"], round(x["mtime"], 3)) for x in items)
+    now = time.time()
+    if not force and _LOGIN_CACHE["key"] == sig and _LOGIN_CACHE["at"] \
+            and now - _LOGIN_CACHE["at"] < 60:
+        return [dict(x) for x in _LOGIN_CACHE["obj"]]
+    out, probed = [], 0
+    for x in items:
+        u = uin(x["cookie"])
+        row = {"id": x["id"], "file": x["file"], "legacy": x["legacy"],
+               "valid": x["valid"], "login": False, "nickname":
+               ("QQ " + u) if u != "0" else "", "vip": False, "msg": ""}
+        if not x["valid"]:
+            row["msg"] = "文件里没有 qm_keyst，不算登录态"
+        elif probed >= STORE.PROBE_MAX:
+            row.update(login=True, msg="已保存（账号多，没逐个验活）")
+        else:
+            probed += 1
+            try:
+                ok = bool(_vkey(PROBE_MID, x["cookie"]))
+                row.update(login=ok, msg="✅ 有效，能取完整音源" if ok
+                           else "取不到直链：可能已过期，重新登录 y.qq.com 复制一次")
+            except Exception as e:
+                # 同上：没验成功就别显示成可用
+                row.update(login=False,
+                           msg="没验成功（网络或上游异常）：%s: %s"
+                               % (type(e).__name__, e))
+        out.append(row)
+    _LOGIN_CACHE.update(at=now, key=sig, obj=[dict(x) for x in out])
+    return out
 
 
 def login_status(force=False):
+    accs = accounts_status(force)
     base = {"platform": KEY, "label": LABEL, "login": False, "nickname": "",
-            "vip": False}
-    if not STORE.logged_in():
+            "vip": False, "accounts": len(accs),
+            "ready": sum(1 for a in accs if a["login"])}
+    if not accs:
         base["msg"] = "未配置 Cookie：能搜索，但拿不到播放地址（QQ 音乐不再给匿名发直链）"
         return base
-    now = time.time()
-    if not force and _LOGIN_CACHE["obj"] and now - _LOGIN_CACHE["at"] < 60:
-        return _LOGIN_CACHE["obj"]
-    try:
-        ok = bool(_vkey(PROBE_MID))
-        obj = dict(base, login=ok,
-                   msg="✅ Cookie 有效，可以获取完整音源" if ok else
-                       "Cookie 已保存但取不到直链：可能已过期，重新登录 y.qq.com 复制一次")
-    except Exception as e:
-        obj = dict(base, login=False, msg="检测失败：%s: %s" % (type(e).__name__, e))
-    _LOGIN_CACHE.update(at=now, obj=obj)
-    return obj
+    ok = [a for a in accs if a["login"]]
+    if not ok:
+        base["msg"] = "有 %d 个 Cookie，但都取不到直链（可能都已过期）" % len(accs)
+        return base
+    base.update(login=True, nickname=ok[0]["nickname"],
+                msg="" if len(ok) == 1 else "共 %d 个账号，%d 个可用" % (len(accs), len(ok)))
+    return base

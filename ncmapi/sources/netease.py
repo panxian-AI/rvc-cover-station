@@ -1,35 +1,35 @@
 # -*- coding: utf-8 -*-
 """网易云音源（v2.2.0 从 ncm_proxy.py 里搬出来，行为不变）。
 
-Cookie 仍然沿用 ncmapi/ncm_cookie.txt：扫码登录、手工粘贴、老的
+Cookie 仍然优先沿用 ncmapi/ncm_cookie.txt：扫码登录、手工粘贴、老的
 设置网易云Cookie.bat 都写这一个文件，老用户升级后不用重新登录。
+v2.3.0 起还能再存多个账号（cookies/netease/<id>.txt），取流时按顺序轮换。
 """
 import re
 import time
 import urllib.parse
 
-from .base import CookieStore, SourceError, http_get_json
+from .base import CookieBook, SourceError, http_get_json, try_accounts
 
 KEY = "netease"
 LABEL = "网易云音乐"
 COOKIE_HINT = ("控制台点「扫码登录」最省事；也可以浏览器打开 music.163.com 登录后，"
                "F12 → Network → 任意请求 → 复制整段 Cookie（含 MUSIC_U）粘进来")
 COOKIE_NAME = "netease"
-STORE = CookieStore("netease", ("MUSIC_U=",), filename="ncm_cookie.txt")
+STORE = CookieBook("netease", ("MUSIC_U=",), legacy_filename="ncm_cookie.txt")
 
 BASE = "https://music.163.com"
 _ANON_COOKIE = "os=pc; appver=2.9.7"
 
 
-def _headers(extra=None):
-    st = STORE.state()
-    cookie = st["cookie"] if st["login"] else _ANON_COOKIE
-    return {"Referer": BASE + "/", "Cookie": cookie, **(extra or {})}
+def _headers(extra=None, cookie=None):
+    ck = cookie if cookie is not None else STORE.cookie()
+    return {"Referer": BASE + "/", "Cookie": ck or _ANON_COOKIE, **(extra or {})}
 
 
-def fetch(path, extra=None, timeout=12):
+def fetch(path, extra=None, timeout=12, cookie=None):
     """打网易云内部接口（老端点保留给 AstrBot 插件用）。"""
-    return http_get_json(BASE + path, _headers(extra), timeout=timeout)
+    return http_get_json(BASE + path, _headers(extra, cookie), timeout=timeout)
 
 
 def norm_song(s):
@@ -67,15 +67,27 @@ def song_url(song_id):
     sid = re.sub(r"[^\d]", "", str(song_id))
     if not sid:
         raise SourceError("网易云歌曲 ID 不对：%r" % (song_id,))
-    data = fetch("/api/song/enhance/player/url?ids=[%s]&br=320000" % sid)
-    rows = data.get("data") or []
-    u = rows[0].get("url") if rows else ""
-    if u:
-        return u
-    code = (rows[0].get("code") if rows else "") or data.get("code")
-    raise SourceError("网易云没给播放地址（code=%s）：这首歌是 VIP 专享、无版权或已下架。"
-                      "换一首，或在控制台登录网易云后重试" % code,
-                      need_login=not STORE.logged_in())
+
+    def _one(cookie):
+        data = fetch("/api/song/enhance/player/url?ids=[%s]&br=320000" % sid,
+                     cookie=cookie)
+        rows = data.get("data") or []
+        u = rows[0].get("url") if rows else ""
+        if u:
+            return u
+        code = (rows[0].get("code") if rows else "") or data.get("code")
+        raise SourceError("没给地址（code=%s）：VIP 专享 / 无版权 / 已下架" % code)
+
+    entries = STORE.entries()
+    if not entries:
+        # 匿名也试一次：免费曲匿名就能拿直链，别一上来就让用户去登录
+        try:
+            return _one("")
+        except SourceError as e:
+            raise SourceError("网易云没给播放地址（%s）：这首歌是 VIP 专享、无版权或已下架。"
+                              "换一首，或在控制台登录网易云后重试" % e, need_login=True)
+    url, _acc = try_accounts(entries, _one)
+    return url
 
 
 def song_detail(ids):
@@ -95,28 +107,64 @@ def song_detail(ids):
     return out
 
 
-_LOGIN_CACHE = {"at": 0.0, "obj": None}
+_LOGIN_CACHE = {"at": 0.0, "key": "", "obj": [], "one": None}
+
+
+def _profile(cookie):
+    data = fetch("/api/nuser/account/get", timeout=8, cookie=cookie)
+    prof = data.get("profile") or {}
+    return prof.get("nickname") or "", (prof.get("vipType") or 0) > 0
+
+
+def accounts_status(force=False):
+    """每个账号的登录态。最多真去验 PROBE_MAX 个，其余只报「已保存」。"""
+    items = STORE.accounts()
+    sig = tuple((x["id"], round(x["mtime"], 3)) for x in items)
+    now = time.time()
+    if not force and _LOGIN_CACHE["key"] == sig and _LOGIN_CACHE["at"] \
+            and now - _LOGIN_CACHE["at"] < 60:
+        return [dict(x) for x in _LOGIN_CACHE["obj"]]
+    out, probed = [], 0
+    for x in items:
+        row = {"id": x["id"], "file": x["file"], "legacy": x["legacy"],
+               "valid": x["valid"], "login": False, "nickname": "", "vip": False,
+               "msg": ""}
+        if not x["valid"]:
+            row["msg"] = "文件里没有 MUSIC_U，不算登录态"
+        elif probed >= STORE.PROBE_MAX:
+            row.update(login=True, msg="已保存（账号多，没逐个验活）")
+        else:
+            probed += 1
+            try:
+                nick, vip = _profile(x["cookie"])
+                row.update(login=bool(nick), nickname=nick, vip=vip,
+                           msg="" if nick else "Cookie 没有登录态（可能已过期）")
+            except Exception as e:
+                # 验活失败 ≠ 已登录：网络/上游抽风时别把「没验过」说成「可用」
+                row.update(login=False,
+                           msg="没验成功（网络或上游异常）：%s: %s"
+                               % (type(e).__name__, e))
+        out.append(row)
+    _LOGIN_CACHE.update(at=now, key=sig, obj=[dict(x) for x in out])
+    return out
 
 
 def login_status(force=False):
-    """返回 {platform, key, label, login, nickname, vip, msg}。缓存 60 秒。"""
-    st = STORE.state()
+    """汇总成一个摘要（网关 /login/status、插件兼容用）。
+
+    逐账号明细在 accounts_status()；这里返回「最像能用的那个账号」的信息。
+    """
+    accs = accounts_status(force)
     base = {"platform": KEY, "label": LABEL, "login": False, "nickname": "",
-            "vip": False}
-    if not st["login"]:
+            "vip": False, "accounts": len(accs),
+            "ready": sum(1 for a in accs if a["login"])}
+    if not accs:
         base["msg"] = "未配置 Cookie，当前是匿名模式（VIP / 独家曲目拿不到地址）"
         return base
-    now = time.time()
-    if not force and _LOGIN_CACHE["obj"] and now - _LOGIN_CACHE["at"] < 60:
-        return _LOGIN_CACHE["obj"]
-    try:
-        prof = (fetch("/api/nuser/account/get", timeout=8).get("profile") or {})
-        nick = prof.get("nickname") or ""
-        obj = dict(base, login=bool(nick), nickname=nick,
-                   vip=(prof.get("vipType") or 0) > 0,
-                   msg="" if nick else "Cookie 没有登录态（可能已过期），重新扫码登录一次")
-    except Exception as e:
-        obj = dict(base, login=st["login"],
-                   msg="查询失败：%s: %s" % (type(e).__name__, e))
-    _LOGIN_CACHE.update(at=now, obj=obj)
-    return obj
+    ok = [a for a in accs if a["login"]]
+    if not ok:
+        base["msg"] = "有 %d 个 Cookie 文件，但都没登录态（可能已过期），重新扫码登录一次" % len(accs)
+        return base
+    base.update(login=True, nickname=ok[0]["nickname"], vip=ok[0]["vip"],
+                msg="" if len(ok) == 1 else "共 %d 个账号，%d 个可用" % (len(accs), len(ok)))
+    return base

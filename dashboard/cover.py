@@ -90,6 +90,18 @@ def default_platform():
         p = ""
     return p if p in PLATFORMS else "netease"
 
+
+# 聚合搜索：一次打三家、结果交错。和 settings.py 的 music_aggregate 是同一个开关。
+ALL_PLATFORMS = "all"
+
+
+def aggregate_on():
+    try:
+        v = settings_mod.get().get("music_aggregate")
+    except Exception:
+        return True
+    return True if v is None else bool(v)
+
 # 本机回环不走系统代理，否则会被代理截走返回 502
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -337,49 +349,99 @@ def trusted_src(path: str) -> bool:
 
 # ---------------- 搜索 / 模型 ----------------
 def search(kw: str, limit: int = 12, platform: str = "") -> dict:
-    """搜索。platform 为空时用设置里的默认音源。
+    """搜索。platform 为空时按设置走（聚合开着就三家一起搜）。
 
-    返回的 id 一律是 `platform:id`（网易云也带前缀），这样「同一首歌在两家
+    返回的 id 一律是 `platform-id`（网易云也带前缀），这样「同一首歌在两家
     都有」时不会互相认成同一份成品 —— 两家的音频母带不同，成品不该复用。
+    聚合模式下每行的 platform 来自该行自己的来源平台（不是请求参数）。
     """
     kw = (kw or "").strip()[:40]
     if not kw:
         return {"ok": False, "msg": "请输入歌名"}
     limit = max(1, min(30, int(limit or 12)))
-    plat = str(platform or "").strip().lower() or default_platform()
-    if plat not in PLATFORMS:
-        plat = default_platform()
+    raw = str(platform or "").strip().lower()
+    if raw in ("all", "any", "*", "全部", "聚合"):
+        agg, plat = True, ALL_PLATFORMS
+    elif raw:
+        # 明确指定了平台就只搜那一家（用户临时换一家，不该被「聚合」覆盖）
+        agg, plat = False, (raw if raw in PLATFORMS else default_platform())
+    else:
+        agg = aggregate_on()
+        plat = ALL_PLATFORMS if agg else default_platform()
     url = "%s/search?keywords=%s&limit=%d&platform=%s" % (
         NCM_BASE, urllib.parse.quote(kw), limit, plat)
     try:
-        raw = _json_get(url)
-    except Exception as e:
+        raw_json = _json_get(url, timeout=25)
+    except Exception:
         return {"ok": False, "msg": "音源服务（127.0.0.1:3002）没响应，"
                                     "请先在控制台点「一键开启服务」", "platform": plat}
 
-    songs = raw.get("songs") or (raw.get("result") or {}).get("songs") or []
+    songs = raw_json.get("songs") or (raw_json.get("result") or {}).get("songs") or []
     out = []
-    for s in songs[:limit]:
+    for s in (songs if agg else songs[:limit]):
         sid = str(s.get("id") or "")
         if not sid:
             continue
+        row_plat = str(s.get("platform") or "").lower() if agg else plat
+        if row_plat not in PLATFORMS:
+            row_plat = plat if plat in PLATFORMS else default_platform()
         artists = s.get("ar") or s.get("artists") or []
         album = s.get("al") or s.get("album") or {}
         artist = s.get("artist") or "/".join(
             a.get("name", "") for a in artists if isinstance(a, dict))
         title = s.get("name") or "(无标题)"
         out.append({
-            "id": "%s-%s" % (plat, sid),
+            "id": "%s-%s" % (row_plat, sid),
             "name": title,
             "artist": artist or "未知",
             "album": s.get("album") or album.get("name") or "",
             "duration": int(s.get("duration") or round((s.get("dt") or 0) / 1000)),
-            "platform": plat,
-            "platform_label": platform_label(plat),
+            "platform": row_plat,
+            "platform_label": platform_label(row_plat),
+            "paid": bool(s.get("paid")),
         })
+    if not agg:
+        out = out[:limit]
+    else:
+        # 交错合并后按 limit 截断时，别把某一家整段砍掉：每家先各留 1/3
+        out = _trim_interleaved(out, limit)
+    errs = raw_json.get("errors") or []
+    msg = ""
+    if not out:
+        msg = "三家都没搜到，换个关键词试试" if agg else "这个平台没搜到，换个关键词或换个平台试试"
+    elif errs:
+        msg = "部分平台失败：" + "；".join(errs)
     return {"ok": True, "songs": out, "platform": plat,
-            "platform_label": platform_label(plat),
-            "msg": "" if out else "这个平台没搜到，换个关键词或换个平台试试"}
+            "platform_label": "全部平台" if agg else platform_label(plat),
+            "aggregate": agg, "errors": errs,
+            "msg": msg}
+
+
+def _trim_interleaved(rows, limit):
+    """聚合结果按 limit 截断：保持交错顺序，但别让排前面的平台吃满配额。"""
+    if len(rows) <= limit:
+        return rows
+    keep, per = [], {}
+    cap = max(1, limit // max(1, len(PLATFORMS)))
+    for r in rows:
+        p = r.get("platform")
+        if per.get(p, 0) >= cap:
+            continue
+        per[p] = per.get(p, 0) + 1
+        keep.append(r)
+        if len(keep) >= limit:
+            return keep
+    # 有的平台结果少，配额没用完 → 再按原顺序补齐，别浪费空位
+    seen = set((r.get("platform"), r.get("id")) for r in keep)
+    for r in rows:
+        if len(keep) >= limit:
+            break
+        key = (r.get("platform"), r.get("id"))
+        if key not in seen:
+            seen.add(key)
+            keep.append(r)
+    return keep
+
 
 
 def models() -> dict:
@@ -908,7 +970,9 @@ def handle_get(path: str, query: dict) -> tuple[int, dict]:
             return 200, search(_one("kw"), int(_one("limit", 12) or 12), _one("platform"))
         if path == "/api/cover/platforms":
             return 200, {"ok": True, "default": default_platform(),
-                         "platforms": [{"key": k, "label": v} for k, v in PLATFORMS.items()]}
+                         "aggregate": aggregate_on(),
+                         "platforms": [{"key": ALL_PLATFORMS, "label": "全部平台"}] +
+                                      [{"key": k, "label": v} for k, v in PLATFORMS.items()]}
         if path == "/api/cover/models":
             return 200, models()
         if path == "/api/cover/job":

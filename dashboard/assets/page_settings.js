@@ -172,6 +172,11 @@ function advField(f){
     input = '<select data-k="' + esc(f.key) + '" style="width:110px">'
       + f.choices.map(c => '<option value="' + esc(c) + '"' + (c === cur ? ' selected' : '') + '>'
                            + esc(c) + '</option>').join('') + '</select>';
+  }else if(f.type === 'bool'){
+    // 布尔项用勾选框：值在 saveAdv 里按 el.checked 收，别再当 el.value 读
+    input = '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px">'
+      + '<input type="checkbox" data-k="' + esc(f.key) + '"' + (cur ? ' checked' : '') + '>'
+      + (cur ? '开启' : '关闭') + '</label>';
   }else{
     const step = (f.step != null) ? f.step : 1;
     input = '<input type="number" data-k="' + esc(f.key) + '" value="' + esc(String(cur)) + '"'
@@ -213,7 +218,9 @@ async function advPost(body){
 async function saveAdv(){
   ADV_DIRTY = false;
   const values = {};
-  document.querySelectorAll('#advBox [data-k]').forEach(el => { values[el.dataset.k] = el.value; });
+  document.querySelectorAll('#advBox [data-k]').forEach(el => {
+    values[el.dataset.k] = (el.type === 'checkbox') ? el.checked : el.value;
+  });
   try{
     const d = await advPost({values});
     toast(d.msg || (d.ok ? '已保存' : '保存失败'));

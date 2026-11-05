@@ -162,6 +162,10 @@ def handle(h):
                                         body.get("raw") or "")
             elif act == "cookie/clear":
                 obj = music.clear_cookie(body.get("platform") or "netease")
+            elif act == "logout":
+                # 退出单个账号：删掉它的 Cookie 文件，其余账号继续轮换
+                obj = music.logout(body.get("platform") or "netease",
+                                   body.get("account") or body.get("id") or "")
             elif act == "default":
                 obj = music.set_default(body.get("platform") or "netease")
             else:

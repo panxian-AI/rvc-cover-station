@@ -125,3 +125,11 @@ border-radius:8px;color:#c8d6ea;font:12px/1.5 Consolas,ui-monospace,monospace;pa
 .mrow:last-child{border-bottom:0}
 .mrow b{font-size:13px}
 .mrow .mstat{font-size:12px;color:#8fa3c2}
+/* 多账号列表（v2.3.0）：每个 Cookie 一行，右端一个「退出」 */
+.maccs{margin:0 0 8px 16px;padding-left:10px;border-left:1px dashed #24334c}
+.acc{display:flex;align-items:center;gap:7px;padding:4px 0;font-size:12px;color:#c3d0e2;flex-wrap:wrap}
+.acc .dot{width:7px;height:7px}
+.acc b{font-size:12px;color:#e6edf7;font-weight:600}
+.acc .mstat{color:#8fa3c2;font-size:11.5px}
+.acc .mini{padding:1px 7px;font-size:11px}
+.tag-legacy{background:#243044;color:#8fa3c2;border:1px solid #33445f;border-radius:4px;padding:0 4px;font-size:10px}

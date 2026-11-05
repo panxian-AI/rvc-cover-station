@@ -38,7 +38,7 @@ from paths import DATA, DASH, PROJ, RVC_ROOT
 import speed
 
 REPO = "panxian-AI/rvc-cover-station"
-FALLBACK_VERSION = "2.2.0"          # 没有 VERSION 文件时（老安装）显示这个
+FALLBACK_VERSION = "2.3.0"          # 没有 VERSION 文件时（老安装）显示这个
 VERSION_FILE = os.path.join(PROJ, "VERSION")
 CACHE_FILE = os.path.join(DASH, "update_cache.json")
 BACKUP_DIR = os.path.join(PROJ, "_update_backup")
@@ -74,7 +74,7 @@ SKIP_PARTS = {
     "logs", "log", "output", "temp", "tmp", "gradio_tmp", "TEMP",
     "dataset", "weights", "indices", "rmvpe", "pymss_weights",
     "covers", "_update_backup", "_tts_work",
-    # 各平台 Cookie（v2.2.0）：ncmapi/cookies/*.txt 是账号凭证，
+    # 各平台 Cookie（v2.3.0）：ncmapi/cookies/*.txt 是账号凭证，
     # 更新包哪怕带了同名文件也不许落盘，否则一次更新就把登录态洗掉
     "cookies",
 }

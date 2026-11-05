@@ -309,6 +309,28 @@ def test_gateway(src):
         d = get("/nonsense")
         chk("网关：未实现端点仍返回空结构（老客户端不炸）",
             d.get("code") == 200 and d.get("result", {}).get("songs") == [], d)
+
+        # --- 聚合搜索（v2.3.0）---
+        real_all, real_acc = gw.sources.search_all, gw.sources.accounts
+        gw.sources.search_all = lambda kw, limit=12: ([
+            {"id": "X1", "name": kw, "artist": "A", "album": "", "duration": 100,
+             "album_id": "", "platform": "qq", "platform_label": "QQ 音乐"}], [])
+        gw.sources.accounts = lambda p, force=False: [
+            {"id": "u111", "file": "u111.txt", "legacy": False, "valid": True,
+             "login": True, "nickname": "QQ 123", "vip": False, "msg": ""}]
+        try:
+            d = get("/search?keywords=hi&platform=all")
+            chk("网关：platform=all 走聚合，每行带来源平台",
+                d["platform"] == "all" and d["songs"][0]["platform"] == "qq"
+                and d["songs"][0]["platform_label"] == "QQ 音乐", d.get("songs"))
+            d = get("/accounts?platform=qq")
+            chk("网关：/accounts 列账号明细（面板退出按钮靠它）",
+                d["count"] == 1 and d["accounts"][0]["id"] == "u111"
+                and d["label"] == "QQ 音乐", d)
+            d = get("/platforms")
+            chk("网关：/platforms 每家带账号数", all("accounts" in p for p in d["platforms"]), d)
+        finally:
+            gw.sources.search_all, gw.sources.accounts = real_all, real_acc
     finally:
         gw.sources.search, gw.sources.song_url, gw.sources.login_status = (
             real_search, real_url, real_login)
@@ -317,6 +339,223 @@ def test_gateway(src):
 
 # =====================================================================
 # C. 面板接线
+# =====================================================================
+# A2. 账号池（同一平台存多个 Cookie）
+# =====================================================================
+def test_accounts(src):
+    print("\n== A2. 账号池（同一平台多个 Cookie）==")
+    base = src.base
+    tmp = tempfile.mkdtemp()
+    real_dir = base.COOKIE_DIR
+    base.COOKIE_DIR = tmp
+    try:
+        book = base.CookieBook("qq", ("qm_keyst=",))
+        book.save("uin=o111; qm_keyst=aa")
+        book.save("uin=o222; qm_keyst=bb")
+        ids = [x["id"] for x in book.accounts()]
+        chk("存两个账号 → 两条记录，两个都能取流",
+            sorted(ids) == ["u111", "u222"] and len(book.entries()) == 2, ids)
+
+        book.save("uin=o111; qm_keyst=zz")
+        chk("同一账号再存 = 覆盖（重登不产生重复条目）",
+            len(book.accounts()) == 2 and book.get("u111")["cookie"].endswith("zz"),
+            [x["cookie"][-10:] for x in book.accounts()])
+
+        chk("删一个账号只动它自己",
+            book.remove("u222") is True and [x["id"] for x in book.accounts()] == ["u111"]
+            and not os.path.exists(os.path.join(tmp, "qq", "u222.txt")))
+        chk("删不存在的账号返回 False（不抛错）", book.remove("nope") is False)
+        chk("清空 = 这个平台的账号全删", book.clear() >= 1 and book.accounts() == [])
+
+        # legacy：v2.1.x 的 ncm_cookie.txt / v2.2.0 的 cookies/<key>.txt 都要继续能用
+        with open(os.path.join(tmp, "qq.txt"), "w", encoding="utf-8") as f:
+            f.write("uin=o999; qm_keyst=legacy")
+        book2 = base.CookieBook("qq", ("qm_keyst=",))
+        book2.save("uin=o888; qm_keyst=pool")
+        first = book2.accounts()[0]
+        chk("旧版单文件被当成 legacy 账号、且排在池前面",
+            first["id"] == "legacy" and first["legacy"] is True
+            and len(book2.accounts()) == 2, [x["id"] for x in book2.accounts()])
+        chk("退出 legacy = 删掉那个旧文件（网易云就是 ncm_cookie.txt）",
+            book2.remove("legacy") is True
+            and not os.path.exists(os.path.join(tmp, "qq.txt"))
+            and [x["id"] for x in book2.accounts()] == ["u888"])
+
+        # 文件名安全：ident 最终要当文件名，绝不能借 ../ 写到池外
+        chk("账号 id 落到文件名前先清洗（不许带路径分隔符）",
+            "/" not in base.safe_id("../../evil") and "\\" not in base.safe_id("..\\..\\evil")
+            and ".." not in base.safe_id("../../evil"), base.safe_id("../../evil"))
+        book3 = base.CookieBook("qq", ("qm_keyst=",))
+        book3.save("uin=o777; qm_keyst=x", ident="../../escape")
+        chk("带 ../ 的 ident 仍然只落在池目录里",
+            os.path.isfile(os.path.join(tmp, "qq", "escape.txt")),
+            os.listdir(os.path.join(tmp, "qq")))
+
+        # 轮换
+        seen = []
+        def fn(ck):
+            seen.append(ck)
+            return "URL" if ck.endswith("2") else ""
+        res, used = base.try_accounts([("a", "c1"), ("b", "c2")], fn)
+        chk("取流轮换：第一个拿不到就换下一个",
+            res == "URL" and used == "b" and seen == ["c1", "c2"], (res, used, seen))
+        try:
+            base.try_accounts([("a", "c1"), ("b", "c2")], lambda ck: "")
+            err = None
+        except base.SourceError as e:
+            err = e
+        chk("全失败时把每个账号的原因带出来（不只说「失败」）",
+            err is not None and "a：" in str(err) and "b：" in str(err), err)
+        try:
+            base.try_accounts([], lambda ck: "x")
+            err2 = None
+        except base.SourceError as e:
+            err2 = e
+        chk("一个账号都没有 → need_login=True（界面据此提示去配）",
+            err2 is not None and err2.need_login is True, err2)
+    finally:
+        base.COOKIE_DIR = real_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# =====================================================================
+# A3. 取流按账号轮换（三家各自的失败语义）
+# =====================================================================
+def test_rotate(src):
+    print("\n== A3. 取流按账号轮换 ==")
+    base, qq, kg, ne = src.base, src.qq, src.kugou, src.netease
+    tmp = tempfile.mkdtemp()
+    real_dir = base.COOKIE_DIR
+    base.COOKIE_DIR = tmp
+    keep = (qq.STORE, ne.STORE, kg.STORE)
+    keep_fn = (qq.http_post_json, ne.http_get_json, kg.http_get_json)
+    try:
+        # QQ：第一个账号 purl 空（VIP 曲 / 过期），第二个有
+        qb = base.CookieBook("qq", ("qm_keyst=",))
+        qb.save("uin=o111; qm_keyst=aa")
+        qb.save("uin=o222; qm_keyst=bb")
+        qq.STORE = qb
+        cnt = {"n": 0}
+        def post(url, body, headers=None, timeout=12):
+            cnt["n"] += 1
+            purl = "M500.mp3?vkey=9" if cnt["n"] > 1 else ""
+            return {"req_0": {"data": {"sip": ["http://dl/"],
+                                       "midurlinfo": [{"purl": purl}]}}}
+        qq.http_post_json = post
+        url = qq.song_url("0035GveV3i9dBM")
+        chk("QQ：第一个账号没直链就自动换下一个",
+            url == "http://dl/M500.mp3?vkey=9" and cnt["n"] == 2, (url, cnt["n"]))
+
+        # 网易云：第一个账号 code=404（没版权），第二个有
+        nb = base.CookieBook("netease", ("MUSIC_U=",))
+        nb.save("MUSIC_U=aaa111; os=pc")
+        nb.save("MUSIC_U=bbb222; os=pc")
+        ne.STORE = nb
+        c2 = {"n": 0}
+        def neget(url, headers=None, timeout=12):
+            c2["n"] += 1
+            if c2["n"] == 1:
+                return {"data": [{"url": "", "code": 404}], "code": 404}
+            return {"data": [{"url": "http://m/2.mp3", "code": 200}]}
+        ne.http_get_json = neget
+        chk("网易云：第一个账号没版权就换下一个",
+            ne.song_url("12345") == "http://m/2.mp3" and c2["n"] == 2, c2["n"])
+
+        # 酷狗：第一个账号是付费曲（status=2），第二个免费
+        kb = base.CookieBook("kugou", ("token=", "userid="))
+        kb.save("userid=111; token=t1")
+        kb.save("userid=222; token=t2")
+        kg.STORE = kb
+        c3 = {"n": 0}
+        def kget(url, headers=None, timeout=12):
+            c3["n"] += 1
+            if c3["n"] == 1:
+                return {"status": 2, "url": []}
+            return {"status": 1, "url": ["http://kg/2.mp3"]}
+        kg.http_get_json = kget
+        chk("酷狗：第一个账号付费拿不到就换账号（且不白试三种音质）",
+            kg.song_url("5146461A5717") == "http://kg/2.mp3" and c3["n"] == 2, c3["n"])
+    finally:
+        qq.STORE, ne.STORE, kg.STORE = keep
+        qq.http_post_json, ne.http_get_json, kg.http_get_json = keep_fn
+        base.COOKIE_DIR = real_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# =====================================================================
+# B2. 聚合搜索
+# =====================================================================
+def test_aggregate(src):
+    print("\n== B2. 聚合搜索 ==")
+    import cover
+    mods = src.REGISTRY
+    real = {k: mods[k].search for k in src.ORDER}
+    try:
+        mods["netease"].search = lambda kw, limit=12, offset=0: [
+            {"id": "1", "name": "n1", "artist": "a", "album": "", "duration": 100}]
+        mods["qq"].search = lambda kw, limit=12, offset=0: [
+            {"id": "A", "name": "q1", "artist": "b", "album": "", "duration": 100},
+            {"id": "B", "name": "q2", "artist": "b", "album": "", "duration": 100}]
+        mods["kugou"].search = lambda kw, limit=12, offset=0: []
+        rows, errs = src.search_all("x", 6)
+        chk("聚合：三家一起搜，结果按平台交错（不是一家排满再下一家）",
+            [(r["platform"], r["name"]) for r in rows]
+            == [("netease", "n1"), ("qq", "q1"), ("qq", "q2")] and errs == [],
+            [(r["platform"], r["name"]) for r in rows])
+        chk("聚合：每行自带来源平台名",
+            rows[1]["platform_label"] == "QQ 音乐", rows[1])
+
+        def boom(kw, limit=12, offset=0):
+            raise RuntimeError("上游 502")
+        mods["kugou"].search = boom
+        rows2, errs2 = src.search_all("x", 6)
+        chk("聚合：一家挂了不影响另外两家，失败原因带平台名",
+            len(rows2) == 3 and errs2 and "酷狗" in errs2[0], errs2)
+    finally:
+        for k, fn in real.items():
+            mods[k].search = fn
+
+    old_get, old_agg = cover._json_get, cover.aggregate_on
+    stub = lambda url, timeout=25: {
+        "songs": [
+            {"id": "1", "name": "n1", "platform": "netease", "duration": 100},
+            {"id": "A", "name": "q1", "platform": "qq", "duration": 100, "paid": True},
+            {"id": "H", "name": "k1", "platform": "kugou", "duration": 100}],
+        "errors": []}
+    cover._json_get = stub
+    try:
+        cover.aggregate_on = lambda: True
+        r = cover.search("x", 6, "")
+        chk("面板：聚合开着且没选平台 → 走 platform=all，id 按各行来源加前缀",
+            r["aggregate"] is True and r["platform"] == "all"
+            and [x["id"] for x in r["songs"]] == ["netease-1", "qq-A", "kugou-H"],
+            [x["id"] for x in r["songs"]])
+        chk("面板：付费曲带 paid 标记（界面提前显示 VIP，别等点进去才失败）",
+            r["songs"][1]["paid"] is True and r["songs"][0]["paid"] is False,
+            [(x["id"], x["paid"]) for x in r["songs"]])
+        r2 = cover.search("x", 6, "qq")
+        chk("面板：明确选了平台就不聚合（临时换一家必须生效）",
+            r2["aggregate"] is False and r2["platform"] == "qq", r2.get("platform"))
+        cover.aggregate_on = lambda: False
+        r3 = cover.search("x", 6, "")
+        chk("面板：关掉聚合就只搜默认平台",
+            r3["aggregate"] is False and r3["platform"] == cover.default_platform(),
+            r3.get("platform"))
+    finally:
+        cover._json_get, cover.aggregate_on = old_get, old_agg
+
+    rows = []
+    for i in range(4):
+        for p in ("netease", "qq", "kugou"):
+            rows.append({"platform": p, "id": "%s%d" % (p, i)})
+    keep = cover._trim_interleaved(rows, 6)
+    chk("聚合结果截断：limit=6 时每家各留 2 首（不让第一家吃满）",
+        len(keep) == 6 and all(
+            sum(1 for x in keep if x["platform"] == p) == 2
+            for p in ("netease", "qq", "kugou")),
+        [(x["platform"], x["id"]) for x in keep])
+
+
 # =====================================================================
 def test_panel(src):
     print("\n== C. 面板（搜索前缀 / 默认平台 / 访客校验）==")
@@ -373,8 +612,15 @@ def test_music_module(src):
         panel.NCM_DIR = tmp
         music._CACHE.update(dir="", mod=None)
         mod = music._sources()
+
+        def _offline(*a, **kw):
+            raise RuntimeError("offline（测试不联网）")
         for _k in ("netease", "qq", "kugou"):
-            setattr(getattr(mod, _k), "login_status",
+            m = getattr(mod, _k)
+            m.http_get_json = _offline
+            if hasattr(m, "http_post_json"):
+                m.http_post_json = _offline
+            setattr(m, "login_status",
                     lambda *a, **kw: {"platform": _k, "login": False, "nickname": "",
                                       "vip": False, "msg": "stub"})
         st = music.status(force=True)
@@ -385,6 +631,30 @@ def test_music_module(src):
         chk("保存垃圾 Cookie 被拒（不写盘）", r["ok"] is False and "qm_keyst" in r["msg"], r)
         r = music.save_cookie("netease", "MUSIC_U=abc")
         chk("网易云只检查 MUSIC_U（保存成功即认为已配置）", r["ok"] is True, r)
+
+        r2 = music.save_cookie("netease", "MUSIC_U=def")
+        chk("再粘一个账号 → 变成 2 个（不是互相覆盖）",
+            r2["ok"] and r2["count"] == 2 and "已添加账号" in r2["msg"], r2)
+        r3 = music.save_cookie("netease", "MUSIC_U=abc")
+        chk("同一个账号再粘 → 覆盖，不重复计数",
+            r3["count"] == 2 and "已更新账号" in r3["msg"], r3)
+
+        st = music.status(force=True)
+        ne_row = next(p for p in st["platforms"] if p["key"] == "netease")
+        chk("状态里带逐账号明细（概览页靠它渲染「退出」按钮）",
+            ne_row["count"] == 2 and len(ne_row["accounts"]) == 2
+            and all(a.get("id") for a in ne_row["accounts"]), ne_row.get("accounts"))
+
+        who = ne_row["accounts"][0]["id"]
+        out = music.logout("netease", who)
+        chk("退出一个账号：只少一个，其余继续可用",
+            out["ok"] and out["left"] == 1 and out["removed"] is True, out)
+        out2 = music.logout("netease", who)
+        chk("重复退出同一个账号不报错（幂等）",
+            out2["ok"] and out2["removed"] is False, out2)
+        out3 = music.clear_cookie("netease")
+        chk("清空 = 这个平台的账号全删",
+            out3["ok"] and out3["removed"] == 1 and out3["removed"], out3)
     finally:
         panel.NCM_DIR = real
         music._CACHE.update(dir="", mod=None)
@@ -422,13 +692,44 @@ def test_wiring(src):
     chk("song_id 分隔符不用冒号（Windows 文件名不能有 ':'）",
         "-" in src.base.make_id("qq", "a") and ":" not in src.base.make_id("qq", "a"))
 
+    # --- v2.3.0：多账号 / 退出 / 聚合 ---
+    ov_js = open(os.path.join(HERE, "assets", "page_overview.js"), encoding="utf-8").read()
+    ov_css = open(os.path.join(HERE, "assets", "console.css"), encoding="utf-8").read()
+    post_src = open(os.path.join(HERE, "panelkit", "routes_post.py"), encoding="utf-8").read()
+    set_js = open(os.path.join(HERE, "assets", "page_settings.js"), encoding="utf-8").read()
+    chk("概览页能渲染账号列表并逐个退出",
+        "function accRow(" in ov_js and "function accLogout(" in ov_js
+        and "p.accounts" in ov_js and "/api/music/logout" in ov_js
+        and ".maccs" in ov_css and ".acc " in ov_css)
+    chk("面板有「退出单个账号」的路由（不是只清整个平台）",
+        '"logout"' in post_src and "music.logout(" in post_src
+        and '"cookie/clear"' in post_src)
+    chk("翻唱页 / 访客页的下拉都有「全部平台」且按聚合开关预选",
+        '<option value="all">' in cover_html and "j.aggregate ? 'all'" in cover_html
+        and "d.aggregate ? 'all'" in guest_html)
+    agg = next((x for x in settings.SPEC if x["key"] == "music_aggregate"), None)
+    chk("设置里有「聚合搜索」开关，且默认开",
+        agg is not None and agg["type"] == "bool" and agg["default"] is True, agg)
+    chk("布尔设置能收 true/false/1/0，乱写回落默认",
+        settings._coerce(agg, "0")[0] is False and settings._coerce(agg, True)[0] is True
+        and settings._coerce(agg, "yes")[0] is True
+        and settings._coerce(agg, "乱写")[0] is True)
+    chk("设置页把布尔项画成勾选框（否则会渲染成数字输入框）",
+        "f.type === 'bool'" in set_js and "el.type === 'checkbox'" in set_js)
+    chk("搜索结果给付费曲打 VIP 标记（翻唱页 + 访客页）",
+        "s.paid?" in cover_html and "VIP" in cover_html
+        and "s.paid?" in guest_html and "VIP" in guest_html)
+
 
 def main():
     print("RVC 多音源平台回归测试（网易云 / QQ 音乐 / 酷狗）")
     src = load_pkg("e2e_src", os.path.join(NCM, "sources"))
     test_adapters(src)
+    test_accounts(src)
+    test_rotate(src)
     test_netease(src)
     test_gateway(src)
+    test_aggregate(src)
     test_panel(src)
     test_music_module(src)
     test_wiring(src)

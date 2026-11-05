@@ -66,6 +66,11 @@ SPEC = [
      "label": "默认音源平台",
      "hint": "netease=网易云（扫码登录最好用）；qq=QQ 音乐（必须配 Cookie 才能取流）；"
              "kugou=酷狗（免费曲不配也能翻唱）。某个平台搜不到时，搜索框旁边可以临时切换。"},
+    # 聚合搜索：一次打三家、结果交错。搜不到歌多半是「这家没有」，聚合能少走一趟。
+    {"key": "music_aggregate", "default": True, "type": "bool",
+     "label": "聚合搜索",
+     "hint": "开=一次同时搜网易云 / QQ 音乐 / 酷狗，结果按平台交错排列（哪家有这首一眼看到，"
+             "代价是略慢一两秒）；关=只搜默认平台。搜索框里选了具体平台时不受这个开关影响。"},
 ]
 
 _BY_KEY = {s["key"]: s for s in SPEC}
@@ -74,6 +79,17 @@ _BY_KEY = {s["key"]: s for s in SPEC}
 def _coerce(spec: dict, raw) -> tuple[object, list[str]]:
     """把任意输入收窄成合法值。返回 (值, 警告列表)。"""
     warns: list[str] = []
+    if spec["type"] == "bool":
+        # JSON 里可能是 true/false，表单里是 "1"/"0"，别的一律按默认值兜住
+        if isinstance(raw, bool):
+            return raw, warns
+        v = str(raw).strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True, warns
+        if v in ("0", "false", "no", "off", ""):
+            return False, warns
+        warns.append("%s 只认开/关，已恢复为 %s" % (spec["label"], spec["default"]))
+        return spec["default"], warns
     if spec["type"] == "enum":
         v = str(raw or "").strip().lower()
         if v in spec["choices"]:

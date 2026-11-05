@@ -33,9 +33,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ACCESS_LOG = os.path.join(HERE, "access.log")
 
 # 老的 3002 只服务网易云，很多地方（README/文档/手机插件）写着这个地址
-PUBLIC_PATHS = ("/", "/platforms", "/search", "/cloudsearch", "/cloudsearch/pc",
-                "/search/get", "/search/get/web", "/song/detail", "/song",
-                "/song/url", "/song/url/v1", "/login/status", "/login/status/detail")
+PUBLIC_PATHS = ("/", "/platforms", "/accounts", "/search", "/cloudsearch",
+                "/cloudsearch/pc", "/search/get", "/search/get/web",
+                "/song/detail", "/song", "/song/url", "/song/url/v1",
+                "/login/status", "/login/status/detail")
 
 
 def log(line):
@@ -62,6 +63,11 @@ def _song_row(s):
         "albumName": s.get("album", ""),
         "dt": int(s.get("duration") or 0) * 1000,
         "duration_ms": int(s.get("duration") or 0) * 1000,
+        # 聚合搜索时每行自带来源平台；单平台搜索留空，老客户端不看这两个字段
+        "platform": s.get("platform", ""),
+        "platform_label": s.get("platform_label", ""),
+        # 付费/会员曲：面板和访客页据此提前提示，别等点进去才发现取不到流
+        "paid": bool(s.get("paid")),
     }
 
 
@@ -103,11 +109,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         q = dict(urllib.parse.parse_qsl(u.query))
-        platform = sources.normalize(q.get("platform") or q.get("source") or "netease")
+        raw_plat = str(q.get("platform") or q.get("source") or "").strip().lower()
+        all_plat = sources.is_all(raw_plat)
+        platform = sources.normalize(raw_plat or "netease")
         ua = (self.headers.get("User-Agent") or "")[:40]
         log("%s %s%s  platform=%s UA=%s" % (self.client_address[0], path,
                                             ("?" + u.query) if u.query else "",
-                                            platform, ua))
+                                            "all" if all_plat else platform, ua))
         try:
             if path == "/":
                 return self._json({"code": 200, "msg": "local music api", "port": PORT,
@@ -118,9 +126,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     st = sources.login_status(m["key"])
                     items.append(dict(m, login=bool(st.get("login")),
                                       msg=st.get("msg") or "",
-                                      nickname=st.get("nickname") or ""))
+                                      nickname=st.get("nickname") or "",
+                                      accounts=int(st.get("accounts") or 0),
+                                      ready=int(st.get("ready") or 0)))
                 return self._json({"code": 200, "platforms": items,
-                                   "default": sources.DEFAULT})
+                                   "default": sources.DEFAULT,
+                                   "aggregate": True})
+
+            if path == "/accounts":
+                accs = sources.accounts(platform, force=("force" in q))
+                return self._json({"code": 200, "platform": platform,
+                                   "count": len(accs), "accounts": accs,
+                                   "label": sources.get(platform).LABEL})
 
             # ---------------- 搜索 ----------------
             if path in ("/search", "/cloudsearch", "/cloudsearch/pc", "/search/get",
@@ -132,12 +149,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                        "result": {"songs": []}})
                 limit = min(50, max(1, int(q.get("limit") or 10)))
                 offset = max(0, int(q.get("offset") or 0))
-                rows = sources.search(platform, kw, limit, offset)
+                errs = []
+                if all_plat:
+                    rows, errs = sources.search_all(kw, limit)
+                else:
+                    rows = sources.search(platform, kw, limit, offset)
                 songs = [_song_row(s) for s in rows]
-                return self._json({"code": 200, "platform": platform,
+                return self._json({"code": 200,
+                                   "platform": "all" if all_plat else platform,
                                    "songs": songs,
                                    "result": {"songs": songs,
-                                              "songCount": len(songs)}})
+                                              "songCount": len(songs)},
+                                   "errors": errs})
 
             # ---------------- 详情 ----------------
             if path in ("/song/detail", "/song"):
@@ -262,9 +285,11 @@ def _wait_enter():
 def _login_line(platform):
     st = sources.login_status(platform)
     name = sources.get(platform).LABEL
+    n, ready = int(st.get("accounts") or 0), int(st.get("ready") or 0)
+    tail = ("（%d 个账号%s）" % (n, "，%d 个可用" % ready if ready else "")) if n > 1 else ""
     if st.get("login"):
         extra = ("：" + st["nickname"]) if st.get("nickname") else ""
-        return "  %-10s ✅ 已启用%s" % (name, extra)
+        return "  %-10s ✅ 已启用%s%s" % (name, extra, tail)
     return "  %-10s ⚠️  %s" % (name, st.get("msg") or "未登录")
 
 

@@ -364,7 +364,7 @@ async function doSearch(){
       `<div class="song" data-id="${esc(s.id)}" onclick="pick(this, ${i})">
          <div class="t"><div class="n">${esc(s.name)}</div><div class="a">${esc(s.artist)}${s.album?' · '+esc(s.album):''}</div></div>
          <div class="d">${mmss(s.duration)}</div>
-         <div class="p">${esc(s.platform_label||'')}</div>
+         <div class="p">${esc(s.platform_label||'')}${s.paid?' · <span style="color:#f0c674" title="会员/付费曲">VIP</span>':''}</div>
        </div>`).join('');
   }catch(e){
     box.innerHTML = '<div class="empty">搜索请求失败：' + esc(e.message) + '</div>';
@@ -734,7 +734,8 @@ if(!passValid()) newCap();
     const sel = $('#platform');
     if(!d.ok || !sel || !d.platforms) return;
     sel.innerHTML = d.platforms.map(p => `<option value="${esc(p.key)}">${esc(p.label.replace('音乐',''))}</option>`).join('');
-    if(d.default) sel.value = d.default;
+    // 聚合开着默认「全部平台」：访客不该先猜哪家有版权
+    sel.value = d.aggregate ? 'all' : (d.default || 'netease');
   }catch(e){}
 })();
 

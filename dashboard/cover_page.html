@@ -88,7 +88,8 @@
   <h2>1 · 搜索歌曲</h2>
   <div class="searchbar">
     <input type="text" id="kw" placeholder="歌名或歌手，例如「春日影」" onkeydown="if(event.key==='Enter')doSearch()">
-    <select id="platform" title="搜索哪个平台；某家搜不到就换一家" style="padding:9px 10px;border-radius:9px;border:1px solid #2b3a57;background:#0c1220;color:#c8d6ea">
+    <select id="platform" title="搜索哪个平台；全部平台 = 三家一起搜、结果交错" style="padding:9px 10px;border-radius:9px;border:1px solid #2b3a57;background:#0c1220;color:#c8d6ea">
+      <option value="all">全部平台</option>
       <option value="netease">网易云音乐</option>
       <option value="qq">QQ 音乐</option>
       <option value="kugou">酷狗音乐</option>
@@ -197,6 +198,7 @@ async function doSearch(){
       <div class="song">
         <div class="t"><b>${esc(s.name)}</b><span>${esc(s.artist)}${s.album?' · '+esc(s.album):''}</span></div>
         <span class="tag" style="font-size:11px;color:#8fa3c2">${esc(s.platform_label||'')}</span>
+        ${s.paid?'<span class="tag" style="font-size:11px;color:#f0c674" title="会员/付费曲，没有对应账号可能取不到音频">VIP</span>':''}
         <span class="dur">${fmtDur(s.duration)}</span>
         <button class="btn sm" onclick="pick('${jsq(s.id)}')">选这首</button>
       </div>`).join('');
@@ -364,7 +366,8 @@ async function loadPlatforms(){
     const sel = document.getElementById('platform');
     if(!j.ok || !sel) return;
     sel.innerHTML = (j.platforms||[]).map(p=>`<option value="${esc(p.key)}">${esc(p.label)}</option>`).join('');
-    if(j.default) sel.value = j.default;
+    // 聚合开着就默认选「全部平台」，关着才落到站长设的默认平台
+    sel.value = j.aggregate ? 'all' : (j.default || 'netease');
   }catch(e){}
 }
 refreshAll();
